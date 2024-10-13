@@ -1,6 +1,4 @@
-// File: internal/config/config.go
-
-package config
+// package config
 
 import (
 	"encoding/json"
@@ -26,13 +24,6 @@ var DefaultConfig = Config{
 	LogLevel:        "info",
 	PollingInterval: 1 * time.Second,
 }
-
-// These variables will be set by the init() functions in the platform-specific files
-var getConfigPath func() (string, error)
-var getDefaultDataDir func() (string, error)
-
-// This can be overridden in tests
-var generateDeviceID = defaultGenerateDeviceID
 
 func Load() (*Config, error) {
 	configPath, err := getConfigPath()
@@ -102,6 +93,6 @@ func (c *Config) Save() error {
 	return nil
 }
 
-func defaultGenerateDeviceID() string {
-    return utils.GenerateUUID()
+func generateDeviceID() string {
+	return utils.GenerateUUID()
 }
