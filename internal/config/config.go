@@ -103,5 +103,5 @@ func (c *Config) Save() error {
 }
 
 func defaultGenerateDeviceID() string {
-    return utils.GenerateUUID()
+	return utils.GenerateUUID()
 }

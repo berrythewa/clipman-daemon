@@ -3,43 +3,44 @@ package main
 import (
 	"log"
 	"path/filepath"
+	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	"github.com/berrythewa/clipman-daemon/internal/broker"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
 )
 
 func main() {
+	// Load config first
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatal(err)
 	}
 
-	logger := utils.NewLogger(cfg.LogLevel)
+	logger := utils.NewLogger(cfg.LogLevel, nil)
 
-	mqttClient, err := broker.NewMQTTClient(cfg, logger)
-	if err != nil {
-		logger.Fatal("Failed to create MQTT client", "error", err)
-	}
-
-	if err := mqttClient.SubscribeToCommands(); err != nil {
-		logger.Fatal("Failed to subscribe to commands", "error", err)
-	}
-
-	dbPath := filepath.Join(cfg.DataDir, "clipman.db")
+	// Use DataDir for storage
+	dbPath := filepath.Join(cfg.DataDir, "clipboard.db")
 	storage, err := storage.NewBoltStorage(dbPath)
 	if err != nil {
-		logger.Fatal("Failed to create storage", "error", err)
+		log.Fatal(err)
 	}
 	defer storage.Close()
 
-	monitor := clipboard.NewMonitor(cfg, mqttClient, logger, storage)
+	monitor := clipboard.NewMonitor(cfg, nil, logger, storage)
 	if err := monitor.Start(); err != nil {
-		logger.Fatal("Failed to start clipboard monitor", "error", err)
+		log.Fatal(err)
 	}
 
-	// Keep the main goroutine alive
-	select {}
+	time.Sleep(time.Minute)
+	monitor.Stop()
+
+	history := monitor.GetHistory(10)
+	for _, item := range history {
+		logger.Info("Clipboard item",
+			"type", item.Content.Type,
+			"time", item.Time,
+			"data", string(item.Content.Data))
+	}
 }

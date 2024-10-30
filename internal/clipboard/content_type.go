@@ -3,42 +3,47 @@ package clipboard
 import (
 	"bytes"
 	"encoding/base64"
+
+	// "net/http"
+	"log"
 	"net/url"
-	"net/http"
 	"strings"
+
+	// "strings"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 )
 
 func detectContentType(data []byte) types.ContentType {
-	// Check for empty data
 	if len(data) == 0 {
 		return types.TypeText
 	}
 
-	// Use http.DetectContentType for basic MIME type detection
-	mimeType := http.DetectContentType(data)
+	// Debug log
+	log.Printf("Detecting content type for: %q", string(data))
+
+	// Try to detect image data
+	if bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G'}) ||
+		bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}) || // JPEG
+		bytes.HasPrefix(data, []byte("GIF")) {
+		return types.TypeImage
+	}
 
 	// Check if it's a valid URL
-	_, err := url.ParseRequestURI(string(data)) // Convert []byte to string for URL parsing
-	if err == nil {
-		return types.TypeURL
+	if _, err := url.ParseRequestURI(string(data)); err == nil {
+		if strings.HasPrefix(string(data), "http") {
+			return types.TypeURL
+		}
 	}
 
-	switch {
-	case mimeType == "text/plain":
-		return types.TypeText
-	case isBase64Image(data):
-		return types.TypeImage
-	case bytes.Contains(data, []byte("/")) || bytes.Contains(data, []byte("\\")):
-		return types.TypeFilePath
-	case mimeType == "application/octet-stream":
-		// This could be a file, but we can't be sure. Let's assume it's a file.
+	// Check for file path - but ignore log lines
+	if (bytes.Contains(data, []byte("/")) || bytes.Contains(data, []byte("\\"))) &&
+		!bytes.Contains(data, []byte("logger.go")) {
 		return types.TypeFile
-	default:
-		// If it's not plaintext and not a generic binary, it's likely an image or other media
-		return types.TypeImage
 	}
+
+	// Default to text
+	return types.TypeText
 }
 
 func isBase64Image(data []byte) bool {
