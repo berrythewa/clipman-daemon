@@ -1,36 +1,43 @@
+//go:build linux
+// +build linux
+
 package platform
 
 import (
 	"fmt"
 	"time"
 
-	"github.com/berrythewa/clipman-daemon/internal/clipboard"
-	"github.com/atotto/clipboard"
+	cliplib "github.com/atotto/clipboard"
+	"github.com/berrythewa/clipman-daemon/internal/types"
 )
 
+// LinuxClipboard is the Linux-specific clipboard implementation
 type LinuxClipboard struct{}
 
-func NewClipboard() clipboard.Clipboard {
+// NewClipboard creates a new platform-specific clipboard implementation
+func NewClipboard() *LinuxClipboard {
 	return &LinuxClipboard{}
 }
 
-func (c *LinuxClipboard) Read() (*clipboard.ClipboardContent, error) {
-	text, err := clipboard.ReadAll()
+// Read gets the current clipboard content
+func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
+	text, err := cliplib.ReadAll()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read clipboard: %v", err)
 	}
 
-	return &clipboard.ClipboardContent{
-		Type:    clipboard.TypeText,
+	return &types.ClipboardContent{
+		Type:    types.TypeText,
 		Data:    []byte(text),
 		Created: time.Now(),
 	}, nil
 }
 
-func (c *LinuxClipboard) Write(content *clipboard.ClipboardContent) error {
-	if content.Type != clipboard.TypeText {
+// Write sets the clipboard content
+func (c *LinuxClipboard) Write(content *types.ClipboardContent) error {
+	if content.Type != types.TypeText {
 		return fmt.Errorf("only text content is supported on Linux")
 	}
 
-	return clipboard.WriteAll(string(content.Data))
+	return cliplib.WriteAll(string(content.Data))
 }

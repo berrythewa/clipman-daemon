@@ -1,20 +1,27 @@
+//go:build windows
+// +build windows
+
 package platform
 
 import (
 	"fmt"
 	"time"
+	"unsafe"
 
-	"github.com/berrythewa/clipman-daemon/internal/clipboard"
+	"github.com/berrythewa/clipman-daemon/internal/types"
 	"golang.org/x/sys/windows"
 )
 
+// WindowsClipboard is the Windows-specific clipboard implementation
 type WindowsClipboard struct{}
 
-func NewClipboard() clipboard.Clipboard {
+// NewClipboard creates a new platform-specific clipboard implementation
+func NewClipboard() *WindowsClipboard {
 	return &WindowsClipboard{}
 }
 
-func (c *WindowsClipboard) Read() (*clipboard.ClipboardContent, error) {
+// Read gets the current clipboard content
+func (c *WindowsClipboard) Read() (*types.ClipboardContent, error) {
 	err := windows.OpenClipboard(0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open clipboard: %v", err)
@@ -31,15 +38,16 @@ func (c *WindowsClipboard) Read() (*clipboard.ClipboardContent, error) {
 		return nil, fmt.Errorf("failed to convert clipboard data: %v", err)
 	}
 
-	return &clipboard.ClipboardContent{
-		Type:    clipboard.TypeText,
+	return &types.ClipboardContent{
+		Type:    types.TypeText,
 		Data:    []byte(data),
 		Created: time.Now(),
 	}, nil
 }
 
-func (c *WindowsClipboard) Write(content *clipboard.ClipboardContent) error {
-	if content.Type != clipboard.TypeText {
+// Write sets the clipboard content
+func (c *WindowsClipboard) Write(content *types.ClipboardContent) error {
+	if content.Type != types.TypeText {
 		return fmt.Errorf("only text content is supported on Windows")
 	}
 
@@ -54,12 +62,10 @@ func (c *WindowsClipboard) Write(content *clipboard.ClipboardContent) error {
 		return fmt.Errorf("failed to empty clipboard: %v", err)
 	}
 
-	utf16, err := windows.UTF16FromString(string(content.Data))
-	if err != nil {
-		return fmt.Errorf("failed to convert string to UTF16: %v", err)
-	}
+	data := windows.UTF16FromString(string(content.Data))
+	size := len(data) * int(windows.SizeofUint16)
 
-	h, err := windows.GlobalAlloc(windows.GMEM_MOVEABLE, uint32(len(utf16)*2))
+	h, err := windows.GlobalAlloc(windows.GMEM_MOVEABLE, uint32(size))
 	if err != nil {
 		return fmt.Errorf("failed to allocate memory: %v", err)
 	}
@@ -68,9 +74,9 @@ func (c *WindowsClipboard) Write(content *clipboard.ClipboardContent) error {
 	if err != nil {
 		return fmt.Errorf("failed to lock memory: %v", err)
 	}
-	defer windows.GlobalUnlock(h)
 
-	windows.Copy((*[1 << 30]uint16)(ptr)[:len(utf16)], utf16)
+	windows.CopyMemory(ptr, (uintptr)(unsafe.Pointer(&data[0])), uintptr(size))
+	windows.GlobalUnlock(h)
 
 	if _, err := windows.SetClipboardData(windows.CF_UNICODETEXT, h); err != nil {
 		return fmt.Errorf("failed to set clipboard data: %v", err)

@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-
 	// "time"
-
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
@@ -110,7 +108,7 @@ func (m *MQTTClient) PublishContent(content *types.ClipboardContent) error {
 //     }
 // }
 
-func (c *MQTTClient) PublishCache(cache *storage.CacheMessage) error {
+func (c *MQTTClient) PublishCache(cache *types.CacheMessage) error {
 	topic := fmt.Sprintf("clipman/cache/%s", cache.DeviceID)
 
 	payload, err := json.Marshal(cache)

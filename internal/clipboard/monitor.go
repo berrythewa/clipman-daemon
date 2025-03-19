@@ -78,9 +78,10 @@ func (m *Monitor) monitorClipboard() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			// For Darwin, use HasChanged
-			if darwinClip, ok := m.clipboard.(*DarwinClipboard); ok {
-				if !darwinClip.HasChanged() {
+			// Check if clipboard supports change tracking
+			if tracker, hasTracker := IsChangeTracker(m.clipboard); hasTracker {
+				// If the clipboard hasn't changed, skip this iteration
+				if !tracker.HasChanged() {
 					continue
 				}
 			}

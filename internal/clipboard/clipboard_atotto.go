@@ -1,3 +1,6 @@
+//go:build !darwin
+// +build !darwin
+
 package clipboard
 
 import (
@@ -8,8 +11,11 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/types"
 )
 
+// AtottoClipboard is a fallback clipboard implementation using the atotto/clipboard library
+// It only supports text content
 type AtottoClipboard struct{}
 
+// NewAtottoClipboard returns a new Atotto-based clipboard implementation
 func NewAtottoClipboard() *AtottoClipboard {
 	return &AtottoClipboard{}
 }

@@ -48,12 +48,6 @@ type StorageConfig struct {
 	MQTTClient *broker.MQTTClient
 }
 
-// CacheMessage represents a collection of clipboard contents to be published
-type CacheMessage struct {
-	DeviceID  string
-	Contents  []*types.ClipboardContent
-	Timestamp time.Time
-}
 
 func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
 	if config.MaxSize == 0 {
@@ -207,7 +201,7 @@ func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
 
 	// Publish to MQTT before deleting
 	if len(itemsToFlush) > 0 && s.mqttClient != nil {
-		cacheMsg := &CacheMessage{
+		cacheMsg := &types.CacheMessage{
 			DeviceID:  s.deviceID,
 			Contents:  itemsToFlush,
 			Timestamp: time.Now(),
@@ -256,7 +250,7 @@ func (s *BoltStorage) PublishCacheHistory(since time.Time) error {
 		return nil
 	}
 
-	cacheMsg := &CacheMessage{
+	cacheMsg := &types.CacheMessage{
 		DeviceID:  s.deviceID,
 		Contents:  contents,
 		Timestamp: time.Now(),

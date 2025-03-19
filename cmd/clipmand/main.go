@@ -22,13 +22,20 @@ func main() {
 
 	// Use DataDir for storage
 	dbPath := filepath.Join(cfg.DataDir, "clipboard.db")
-	storage, err := storage.NewBoltStorage(dbPath)
+	storageConfig := storage.StorageConfig{
+		DBPath:   dbPath,
+		MaxSize:  100 * 1024 * 1024, // 100MB default
+		DeviceID: cfg.DeviceID,
+		Logger:   logger,
+	}
+	
+	store, err := storage.NewBoltStorage(storageConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer storage.Close()
+	defer store.Close()
 
-	monitor := clipboard.NewMonitor(cfg, nil, logger, storage)
+	monitor := clipboard.NewMonitor(cfg, nil, logger, store)
 	if err := monitor.Start(); err != nil {
 		log.Fatal(err)
 	}

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/berrythewa/clipman-daemon/internal/clipboard"
+	"github.com/berrythewa/clipman-daemon/internal/types"
 )
 
 type Client struct {
@@ -21,7 +21,7 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
-func (c *Client) SendContent(content *clipboard.ClipboardContent) error {
+func (c *Client) SendContent(content *types.ClipboardContent) error {
 	url := fmt.Sprintf("%s/clipboard", c.baseURL)
 
 	payload, err := json.Marshal(content)
