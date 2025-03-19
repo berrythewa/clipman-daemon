@@ -70,43 +70,57 @@ func (m *Monitor) Stop() error {
 }
 
 func (m *Monitor) monitorClipboard() {
-	ticker := time.NewTicker(m.config.PollingInterval)
-	defer ticker.Stop()
-
+	m.logger.Info("Starting clipboard monitor using platform-specific implementation")
+	
+	// Create channels for communication
+	contentCh := make(chan *types.ClipboardContent, 10)
+	stopCh := make(chan struct{})
+	
+	// Start monitoring using the platform-specific implementation
+	m.clipboard.MonitorChanges(contentCh, stopCh)
+	
+	// Process incoming clipboard content
 	for {
 		select {
 		case <-m.ctx.Done():
+			close(stopCh)
 			return
-		case <-ticker.C:
-			// Check if clipboard supports change tracking
-			if tracker, hasTracker := IsChangeTracker(m.clipboard); hasTracker {
-				// If the clipboard hasn't changed, skip this iteration
-				if !tracker.HasChanged() {
-					continue
-				}
-			}
-
-			content, err := m.clipboard.Read()
-			if err != nil {
-				m.logger.Error("Error reading clipboard", "error", err)
+		case content := <-contentCh:
+			if content == nil {
+				m.logger.Debug("Received nil content, skipping")
 				continue
 			}
-
-			if content != nil {
-				m.logger.Debug("Read clipboard content",
-					"type", content.Type,
-					"size", len(content.Data),
-					"data_preview", string(content.Data[:min(len(content.Data), 100)]))
-			}
-
+			
+			m.logger.Debug("Received clipboard content from platform monitor",
+				"type", content.Type,
+				"size", len(content.Data),
+				"data_preview", string(content.Data[:min(len(content.Data), 50)]))
+			
 			m.mu.Lock()
 			if !m.isContentEqual(content, m.lastContent) {
 				m.logger.Debug("Processing new content")
 				m.processNewContent(content)
+			} else {
+				m.logger.Debug("Content is equal to previous, skipping")
 			}
 			m.mu.Unlock()
 		}
 	}
+}
+
+// checksumData creates a simple checksum of data
+func checksumData(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	
+	// Simple XOR-based checksum of the data
+	var checksum byte
+	for _, b := range data {
+		checksum ^= b
+	}
+	
+	return []byte{checksum}
 }
 
 func (m *Monitor) processNewContent(content *types.ClipboardContent) {
@@ -114,7 +128,7 @@ func (m *Monitor) processNewContent(content *types.ClipboardContent) {
 	m.logger.Debug("Raw content received",
 		"type", content.Type,
 		"data_length", len(content.Data),
-		"raw_data", string(content.Data))
+		"raw_data", string(content.Data[:min(len(content.Data), 50)]))
 
 	content = m.contentProcessor.Process(content)
 	if content == nil {
@@ -188,20 +202,24 @@ func (m *Monitor) isContentEqual(content1, content2 *types.ClipboardContent) boo
 		return content1 == content2
 	}
 
-	// Basic content equality
+	// Basic content equality - compare type and data
 	isEqual := content1.Type == content2.Type && bytes.Equal(content1.Data, content2.Data)
 
 	if !isEqual {
-		m.logger.Debug("Content changed",
-			"old_type", content2.Type,
-			"new_type", content1.Type,
-			"old_data", string(content2.Data),
-			"new_data", string(content1.Data))
+		// Only log at debug level to avoid spamming
+		if len(content2.Data) > 0 && len(content1.Data) > 0 {
+			m.logger.Debug("Content changed",
+				"old_type", content2.Type,
+				"new_type", content1.Type,
+				"old_length", len(content2.Data),
+				"new_length", len(content1.Data))
+		}
 		return false
 	}
 
 	// Even if content is the same, check if it's a new copy action
-	if content1.Created.Sub(content2.Created) > time.Second {
+	// But with a higher threshold to avoid false positives
+	if content1.Created.Sub(content2.Created) > 5*time.Second {
 		m.logger.Debug("Same content copied again after timeout",
 			"time_diff", content1.Created.Sub(content2.Created))
 		return false
