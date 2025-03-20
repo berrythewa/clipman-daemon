@@ -148,8 +148,11 @@ func Load() (*Config, error) {
 	}
 
 	config := DefaultConfig
+	configExists := false
 
+	// Check if config file exists
 	if _, err := os.Stat(configPath); err == nil {
+		configExists = true
 		file, err := os.Open(configPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open config file: %v", err)
@@ -180,6 +183,28 @@ func Load() (*Config, error) {
 	// Ensure the data directory exists
 	if err := os.MkdirAll(config.DataDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %v", err)
+	}
+
+	// Save default config if it doesn't exist
+	if !configExists {
+		// Create log directories
+		paths := config.GetPaths()
+		if err := os.MkdirAll(paths.LogDir, 0755); err != nil {
+			// Just log this error, don't fail
+			fmt.Printf("Warning: failed to create log directory: %v\n", err)
+		}
+		
+		// Create temp directory
+		if err := os.MkdirAll(paths.TempDir, 0755); err != nil {
+			// Just log this error, don't fail
+			fmt.Printf("Warning: failed to create temp directory: %v\n", err)
+		}
+
+		// Save the config
+		if err := config.Save(); err != nil {
+			// Just log this error, don't fail
+			fmt.Printf("Warning: failed to save default config: %v\n", err)
+		}
 	}
 
 	return &config, nil
