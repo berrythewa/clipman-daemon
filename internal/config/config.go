@@ -9,8 +9,33 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
 )
+
+// HistoryOptions defines options for retrieving and displaying clipboard history
+type HistoryOptions struct {
+	// Maximum number of entries to return (0 means no limit)
+	Limit int `json:"limit"`
+	
+	// Return entries starting from this time (zero value means no time filter)
+	Since time.Time `json:"since"`
+	
+	// Return entries before this time (zero value means no time filter)
+	Before time.Time `json:"before"`
+	
+	// Filter by content type (empty means all types)
+	ContentType types.ContentType `json:"content_type"`
+	
+	// Reverse order (newest first when true, oldest first when false)
+	Reverse bool `json:"reverse"`
+	
+	// Minimum size in bytes (0 means no minimum)
+	MinSize int `json:"min_size"`
+	
+	// Maximum size in bytes (0 means no maximum)
+	MaxSize int `json:"max_size"`
+}
 
 type Config struct {
 	LogLevel        string        `json:"log_level"`
@@ -20,11 +45,18 @@ type Config struct {
 	DeviceID        string        `json:"device_id"`
 	PollingInterval time.Duration `json:"polling_interval"`
 	DataDir         string        `json:"data_dir"`
+	
+	// History options for filtering and display
+	History         HistoryOptions `json:"history"`
 }
 
 var DefaultConfig = Config{
 	LogLevel:        "info",
 	PollingInterval: 1 * time.Second,
+	History: HistoryOptions{
+		Limit:   0,      // No limit by default
+		Reverse: false,  // Oldest first by default
+	},
 }
 
 // These variables will be set by the init() functions in the platform-specific files

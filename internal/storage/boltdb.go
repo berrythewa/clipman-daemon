@@ -11,6 +11,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/compression"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
+	"github.com/berrythewa/clipman-daemon/internal/config"
 
 	"go.etcd.io/bbolt"
 )
@@ -29,6 +30,8 @@ type BoltStorageInterface interface {
 	Close() error
 	GetCacheSize() int64
 	FlushCache() error
+	GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error)
+	LogCompleteHistory(options config.HistoryOptions) error
 }
 
 type BoltStorage struct {
@@ -275,4 +278,190 @@ func (s *BoltStorage) Close() error {
 		s.logger.Error("Failed to flush cache on close", "error", err)
 	}
 	return s.db.Close()
+}
+
+// GetHistory retrieves clipboard history based on the provided options
+func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error) {
+	var contents []*types.ClipboardContent
+	
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(clipboardBucket))
+		c := b.Cursor()
+		
+		// Determine starting position and iteration direction based on options
+		var k, v []byte
+		var iterateNext func() ([]byte, []byte)
+		
+		if options.Reverse {
+			// Start from the newest entry if going in reverse
+			if !options.Before.IsZero() {
+				// Start from the entry just before the 'Before' time
+				seekKey := []byte(options.Before.Format(time.RFC3339Nano))
+				k, v = c.Seek(seekKey)
+				// If we found an exact match or a later key, step back one
+				if k != nil && bytes.Compare(k, seekKey) >= 0 {
+					k, v = c.Prev()
+				}
+			} else {
+				// No 'Before' specified, start from the very last entry
+				k, v = c.Last()
+			}
+			iterateNext = c.Prev
+		} else {
+			// Start from the oldest entry if going in forward direction
+			if !options.Since.IsZero() {
+				// Start from entries at or after the 'Since' time
+				seekKey := []byte(options.Since.Format(time.RFC3339Nano))
+				k, v = c.Seek(seekKey)
+			} else {
+				// No 'Since' specified, start from the very first entry
+				k, v = c.First()
+			}
+			iterateNext = c.Next
+		}
+		
+		// Iterate through entries
+		count := 0
+		for ; k != nil; k, v = iterateNext() {
+			// Check time boundaries
+			timestamp, err := time.Parse(time.RFC3339Nano, string(k))
+			if err != nil {
+				s.logger.Error("Failed to parse timestamp", "key", string(k), "error", err)
+				continue
+			}
+			
+			if !options.Since.IsZero() && timestamp.Before(options.Since) {
+				continue
+			}
+			
+			if !options.Before.IsZero() && timestamp.After(options.Before) {
+				continue
+			}
+			
+			// Unmarshal the content
+			var content types.ClipboardContent
+			if err := json.Unmarshal(v, &content); err != nil {
+				s.logger.Error("Failed to unmarshal content", "key", string(k), "error", err)
+				continue
+			}
+			
+			// Apply content type filter
+			if options.ContentType != "" && content.Type != options.ContentType {
+				continue
+			}
+			
+			// Apply size filters
+			contentSize := len(content.Data)
+			if options.MinSize > 0 && contentSize < options.MinSize {
+				continue
+			}
+			
+			if options.MaxSize > 0 && contentSize > options.MaxSize {
+				continue
+			}
+			
+			// Handle decompression if needed
+			if content.Compressed {
+				decompressed, err := compression.DecompressContent(&content)
+				if err != nil {
+					s.logger.Error("Failed to decompress content", "key", string(k), "error", err)
+					continue
+				}
+				contents = append(contents, decompressed)
+			} else {
+				contents = append(contents, &content)
+			}
+			
+			// Check if we've reached the limit
+			count++
+			if options.Limit > 0 && count >= options.Limit {
+				break
+			}
+		}
+		
+		return nil
+	})
+	
+	if err != nil {
+		return nil, fmt.Errorf("failed to get history: %v", err)
+	}
+	
+	return contents, nil
+}
+
+// LogCompleteHistory dumps the clipboard history to the logger based on provided options
+func (s *BoltStorage) LogCompleteHistory(options config.HistoryOptions) error {
+	// If no specific options provided, use defaults for a complete history dump
+	if (options == config.HistoryOptions{}) {
+		options = config.HistoryOptions{
+			Reverse: false, // Oldest first for chronological display
+		}
+	}
+	
+	s.logger.Info("=== DUMPING CLIPBOARD HISTORY ===",
+		"limit", optionOrDefault(options.Limit, "no limit"),
+		"reverse", options.Reverse,
+		"content_type", optionOrDefault(string(options.ContentType), "all types"))
+	
+	// Get filtered history
+	contents, err := s.GetHistory(options)
+	if err != nil {
+		return fmt.Errorf("failed to get history: %v", err)
+	}
+	
+	// Log each history item
+	for i, content := range contents {
+		// Format preview based on content type
+		var preview string
+		switch content.Type {
+		case types.TypeImage:
+			preview = fmt.Sprintf("[Image: %d bytes]", len(content.Data))
+		case types.TypeFile:
+			preview = fmt.Sprintf("[File: %s]", string(content.Data))
+		case types.TypeURL:
+			preview = fmt.Sprintf("[URL: %s]", string(content.Data))
+		case types.TypeFilePath:
+			preview = fmt.Sprintf("[Path: %s]", string(content.Data))
+		default:
+			// For text, show preview
+			if len(content.Data) > 100 {
+				preview = fmt.Sprintf("%s... (%d more bytes)", 
+					string(content.Data[:100]), 
+					len(content.Data)-100)
+			} else {
+				preview = string(content.Data)
+			}
+		}
+		
+		s.logger.Info(fmt.Sprintf("History item %d:", i+1),
+			"timestamp", content.Created.Format(time.RFC3339),
+			"type", content.Type,
+			"size", len(content.Data),
+			"compressed", content.Compressed,
+			"content", preview)
+	}
+	
+	s.logger.Info("=== END OF CLIPBOARD HISTORY ===", 
+		"total_items", len(contents),
+		"total_size_bytes", s.GetCacheSize())
+		
+	return nil
+}
+
+// Helper function to display option values or defaults
+func optionOrDefault(value interface{}, defaultText string) string {
+	switch v := value.(type) {
+	case int:
+		if v == 0 {
+			return defaultText
+		}
+		return fmt.Sprintf("%d", v)
+	case string:
+		if v == "" {
+			return defaultText
+		}
+		return v
+	default:
+		return fmt.Sprintf("%v", value)
+	}
 }
