@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"path/filepath"
-
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/spf13/cobra"
@@ -24,12 +22,15 @@ operation, unless the --quiet flag is used.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logger.Info("Forcing clipboard cache flush")
 		
+		// Get all system paths
+		paths := cfg.GetPaths()
+		
 		// Initialize storage
-		dbPath := filepath.Join(cfg.DataDir, "clipboard.db")
 		storageConfig := storage.StorageConfig{
-			DBPath:   dbPath,
+			DBPath:   paths.DBFile,
 			DeviceID: cfg.DeviceID,
 			Logger:   logger,
+			MaxSize:  cfg.Storage.MaxSize,
 		}
 		
 		store, err := storage.NewBoltStorage(storageConfig)

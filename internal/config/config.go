@@ -13,6 +13,24 @@ import (
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
 )
 
+// SystemPaths holds all the important file and directory paths used by the application
+type SystemPaths struct {
+	// Config file location
+	ConfigFile string
+	
+	// Base directory for all application data
+	DataDir string
+	
+	// Database file location
+	DBFile string
+	
+	// Directory for temporary files
+	TempDir string
+	
+	// Directory for log files
+	LogDir string
+}
+
 // HistoryOptions defines options for retrieving and displaying clipboard history
 type HistoryOptions struct {
 	// Maximum number of entries to return (0 means no limit)
@@ -37,25 +55,55 @@ type HistoryOptions struct {
 	MaxSize int `json:"max_size"`
 }
 
+// StorageConfig defines storage-related configuration
+type StorageConfig struct {
+	// Path to the database file (if empty, default path will be used)
+	DBPath string `json:"db_path"`
+	
+	// Maximum size of the clipboard history cache in bytes
+	MaxSize int64 `json:"max_size"`
+	
+	// Number of items to keep when flushing the cache
+	KeepItems int `json:"keep_items"`
+}
+
+// BrokerConfig defines message broker configuration
+type BrokerConfig struct {
+	// URL of the message broker
+	URL string `json:"url"`
+	
+	// Username for broker authentication
+	Username string `json:"username"`
+	
+	// Password for broker authentication
+	Password string `json:"password"`
+}
+
+// Config is the main configuration struct
 type Config struct {
+	// General settings
 	LogLevel        string        `json:"log_level"`
-	BrokerURL       string        `json:"broker_url"`
-	BrokerUsername  string        `json:"broker_username"`
-	BrokerPassword  string        `json:"broker_password"`
 	DeviceID        string        `json:"device_id"`
 	PollingInterval time.Duration `json:"polling_interval"`
 	DataDir         string        `json:"data_dir"`
 	
-	// History options for filtering and display
+	// Subsystem configurations
+	Storage         StorageConfig  `json:"storage"`
+	Broker          BrokerConfig   `json:"broker"`
 	History         HistoryOptions `json:"history"`
 }
 
+// DefaultConfig provides sensible defaults for the application
 var DefaultConfig = Config{
 	LogLevel:        "info",
 	PollingInterval: 1 * time.Second,
+	Storage: StorageConfig{
+		MaxSize:   100 * 1024 * 1024, // 100MB default
+		KeepItems: 10,                // Keep 10 items when flushing
+	},
 	History: HistoryOptions{
-		Limit:   0,      // No limit by default
-		Reverse: false,  // Oldest first by default
+		Limit:   0,     // No limit by default
+		Reverse: false, // Oldest first by default
 	},
 }
 
@@ -66,6 +114,33 @@ var getDefaultDataDir func() (string, error)
 // This can be overridden in tests
 var generateDeviceID = defaultGenerateDeviceID
 
+// GetPaths returns all important file system paths used by the application
+func (c *Config) GetPaths() SystemPaths {
+	// Get the database path
+	dbPath := c.Storage.DBPath
+	if dbPath == "" {
+		dbPath = filepath.Join(c.DataDir, "clipboard.db")
+	}
+	
+	// Get config path
+	configPath, _ := getConfigPath()
+	
+	// Set up log directory
+	logDir := filepath.Join(c.DataDir, "logs")
+	
+	// Set up temp directory
+	tempDir := filepath.Join(c.DataDir, "temp")
+	
+	return SystemPaths{
+		ConfigFile: configPath,
+		DataDir:    c.DataDir,
+		DBFile:     dbPath,
+		LogDir:     logDir,
+		TempDir:    tempDir,
+	}
+}
+
+// Load loads the configuration from the file system or environment
 func Load() (*Config, error) {
 	configPath, err := getConfigPath()
 	if err != nil {
@@ -88,6 +163,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("error checking config file: %v", err)
 	}
 
+	// Override from environment variables
+	config = overrideFromEnv(config)
+
 	// Set computed values
 	if config.DeviceID == "" {
 		config.DeviceID = generateDeviceID()
@@ -107,6 +185,39 @@ func Load() (*Config, error) {
 	return &config, nil
 }
 
+// overrideFromEnv checks for environment variables and overrides config values
+func overrideFromEnv(config Config) Config {
+	// General settings
+	if val := os.Getenv("CLIPMAN_LOG_LEVEL"); val != "" {
+		config.LogLevel = val
+	}
+	if val := os.Getenv("CLIPMAN_DEVICE_ID"); val != "" {
+		config.DeviceID = val
+	}
+	if val := os.Getenv("CLIPMAN_DATA_DIR"); val != "" {
+		config.DataDir = val
+	}
+	
+	// Broker settings
+	if val := os.Getenv("CLIPMAN_BROKER_URL"); val != "" {
+		config.Broker.URL = val
+	}
+	if val := os.Getenv("CLIPMAN_BROKER_USERNAME"); val != "" {
+		config.Broker.Username = val
+	}
+	if val := os.Getenv("CLIPMAN_BROKER_PASSWORD"); val != "" {
+		config.Broker.Password = val
+	}
+	
+	// Storage settings
+	if val := os.Getenv("CLIPMAN_STORAGE_PATH"); val != "" {
+		config.Storage.DBPath = val
+	}
+	
+	return config
+}
+
+// Save saves the current configuration to a file
 func (c *Config) Save() error {
 	configPath, err := getConfigPath()
 	if err != nil {
@@ -134,6 +245,7 @@ func (c *Config) Save() error {
 	return nil
 }
 
+// defaultGenerateDeviceID generates a new UUID for device identification
 func defaultGenerateDeviceID() string {
 	return utils.GenerateUUID()
 }

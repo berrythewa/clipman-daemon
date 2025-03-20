@@ -39,10 +39,10 @@ func NewMQTTClient(cfg *config.Config, logger *utils.Logger) (*MQTTClient, error
 	}
 
 	opts := mqtt.NewClientOptions().
-		AddBroker(cfg.BrokerURL).
+		AddBroker(cfg.Broker.URL).
 		SetClientID(cfg.DeviceID).
-		SetUsername(cfg.BrokerUsername).
-		SetPassword(cfg.BrokerPassword).
+		SetUsername(cfg.Broker.Username).
+		SetPassword(cfg.Broker.Password).
 		SetAutoReconnect(true).
 		SetOnConnectHandler(client.onConnect).
 		SetConnectionLostHandler(client.onConnectionLost).

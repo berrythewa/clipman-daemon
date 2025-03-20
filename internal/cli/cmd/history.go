@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
@@ -47,10 +46,12 @@ Examples:
   clipmand history --min-size 1024
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Get all system paths
+		paths := cfg.GetPaths()
+		
 		// Initialize storage
-		dbPath := filepath.Join(cfg.DataDir, "clipboard.db")
 		storageConfig := storage.StorageConfig{
-			DBPath:   dbPath,
+			DBPath:   paths.DBFile,
 			DeviceID: cfg.DeviceID,
 			Logger:   logger,
 		}

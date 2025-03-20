@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"path/filepath"
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
@@ -26,22 +25,24 @@ until interrupted.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logger.Info("Starting Clipman daemon", "mode", "run")
 		
+		// If maxSize is specified, override config
+		if maxSize > 0 {
+			cfg.Storage.MaxSize = maxSize
+		}
+
+		// Get all system paths
+		paths := cfg.GetPaths()
+		
 		// Initialize storage
-		dbPath := filepath.Join(cfg.DataDir, "clipboard.db")
 		storageConfig := storage.StorageConfig{
-			DBPath:   dbPath,
-			MaxSize:  maxSize,
+			DBPath:   paths.DBFile,
+			MaxSize:  cfg.Storage.MaxSize,
 			DeviceID: cfg.DeviceID,
 			Logger:   logger,
 		}
 		
-		// Use default size if not specified
-		if storageConfig.MaxSize == 0 {
-			storageConfig.MaxSize = 100 * 1024 * 1024 // 100MB default
-		}
-		
 		logger.Info("Storage configuration", 
-			"db_path", dbPath,
+			"db_path", paths.DBFile,
 			"max_size_bytes", storageConfig.MaxSize,
 			"device_id", cfg.DeviceID)
 			
