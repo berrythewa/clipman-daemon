@@ -16,7 +16,7 @@ import (
 
 type Monitor struct {
 	config           *config.Config
-	mqttClient       *broker.MQTTClient
+	mqttClient       broker.MQTTClientInterface
 	logger           *utils.Logger
 	clipboard        Clipboard
 	storage          *storage.BoltStorage
@@ -28,7 +28,7 @@ type Monitor struct {
 	contentProcessor *ContentProcessor
 }
 
-func NewMonitor(cfg *config.Config, mqttClient *broker.MQTTClient, logger *utils.Logger, storage *storage.BoltStorage) *Monitor {
+func NewMonitor(cfg *config.Config, mqttClient broker.MQTTClientInterface, logger *utils.Logger, storage *storage.BoltStorage) *Monitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Monitor{
 		config:           cfg,

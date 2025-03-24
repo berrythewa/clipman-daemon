@@ -18,7 +18,7 @@ type MQTTClientInterface interface {
 	SubscribeToCommands() error
 	RegisterCommandHandler(commandType string, handler func([]byte) error)
 	IsConnected() bool
-	Disconnect()
+	Disconnect() error
 }
 
 type MQTTClient struct {
@@ -195,7 +195,8 @@ func (m *MQTTClient) IsConnected() bool {
 	return m.isConnected
 }
 
-func (m *MQTTClient) Disconnect() {
+func (m *MQTTClient) Disconnect() error {
 	m.client.Disconnect(250)
 	m.setConnected(false)
+	return nil
 }
