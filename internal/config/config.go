@@ -31,6 +31,21 @@ type SystemPaths struct {
 	LogDir string
 }
 
+// LogConfig defines logging-related configuration
+type LogConfig struct {
+	// Enable logging to file
+	EnableFileLogging bool `json:"enable_file_logging"`
+	
+	// Maximum size of log files in bytes before rotation (default 10MB)
+	MaxLogSize int64 `json:"max_log_size"`
+	
+	// Maximum number of log files to keep (default 5)
+	MaxLogFiles int `json:"max_log_files"`
+	
+	// Log format (text or json)
+	Format string `json:"format"`
+}
+
 // HistoryOptions defines options for retrieving and displaying clipboard history
 type HistoryOptions struct {
 	// Maximum number of entries to return (0 means no limit)
@@ -91,6 +106,7 @@ type Config struct {
 	Storage         StorageConfig  `json:"storage"`
 	Broker          BrokerConfig   `json:"broker"`
 	History         HistoryOptions `json:"history"`
+	Log             LogConfig      `json:"log"`
 }
 
 // DefaultConfig provides sensible defaults for the application
@@ -104,6 +120,12 @@ var DefaultConfig = Config{
 	History: HistoryOptions{
 		Limit:   0,     // No limit by default
 		Reverse: false, // Oldest first by default
+	},
+	Log: LogConfig{
+		EnableFileLogging: true,
+		MaxLogSize:        10 * 1024 * 1024, // 10MB
+		MaxLogFiles:       5,                // Keep 5 log files
+		Format:            "text",           // Default to plain text format
 	},
 }
 
@@ -237,6 +259,11 @@ func overrideFromEnv(config Config) Config {
 	// Storage settings
 	if val := os.Getenv("CLIPMAN_STORAGE_PATH"); val != "" {
 		config.Storage.DBPath = val
+	}
+	
+	// Logging settings
+	if val := os.Getenv("CLIPMAN_LOG_FILE_ENABLED"); val != "" {
+		config.Log.EnableFileLogging = val == "true" || val == "1" || val == "yes"
 	}
 	
 	return config

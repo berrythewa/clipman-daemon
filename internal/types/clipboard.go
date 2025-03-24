@@ -29,4 +29,3 @@ func (c1 *ClipboardContent) Equal(c2 *ClipboardContent) bool {
 	}
 	return c1.Type == c2.Type && bytes.Equal(c1.Data, c2.Data)
 }
-

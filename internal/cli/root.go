@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	cmdpkg "github.com/berrythewa/clipman-daemon/internal/cli/cmd"
 	"github.com/berrythewa/clipman-daemon/internal/config"
@@ -15,6 +17,7 @@ var (
 	logLevel    string
 	deviceID    string
 	cfgFile     string
+	noFileLog   bool
 
 	// The loaded configuration
 	cfg *config.Config
@@ -55,12 +58,41 @@ and inspection of clipboard history.`,
 			cfg.DeviceID = deviceID
 		}
 
-		// Initialize the logger
-		logger = utils.NewLogger(cfg.LogLevel, nil)
+		// Get system paths
+		paths := cfg.GetPaths()
+
+		// Initialize the logger with file logging
+		loggerOptions := utils.LoggerOptions{
+			Level:  cfg.LogLevel,
+			Output: os.Stdout,
+		}
+		
+		// Enable file logging unless explicitly disabled by flag or config
+		enableFileLogging := cfg.Log.EnableFileLogging && !noFileLog
+		if enableFileLogging {
+			loggerOptions.LogDir = paths.LogDir
+			loggerOptions.MaxSize = cfg.Log.MaxLogSize
+			loggerOptions.MaxFiles = cfg.Log.MaxLogFiles
+		}
+		
+		logger = utils.NewLogger(loggerOptions)
+		
+		// Set up signal handlers for graceful shutdown
+		setupSignalHandlers()
+		
 		logger.Debug("Configuration loaded", 
 			"log_level", cfg.LogLevel,
 			"device_id", cfg.DeviceID,
 			"data_dir", cfg.DataDir)
+		
+		if enableFileLogging {
+			logger.Info("File logging enabled", 
+				"log_dir", paths.LogDir,
+				"max_size", cfg.Log.MaxLogSize,
+				"max_files", cfg.Log.MaxLogFiles)
+		} else {
+			logger.Info("File logging disabled")
+		}
 			
 		// Share cfg and logger with cmd package
 		cmdpkg.SetConfig(cfg)
@@ -70,9 +102,33 @@ and inspection of clipboard history.`,
 	},
 }
 
+// setupSignalHandlers sets up handlers for OS signals to perform cleanup
+func setupSignalHandlers() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	
+	go func() {
+		<-c
+		fmt.Println("\nShutdown signal received, cleaning up...")
+		cleanup()
+		os.Exit(0)
+	}()
+}
+
+// cleanup performs cleanup operations before exit
+func cleanup() {
+	if logger != nil {
+		if err := logger.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error closing logger: %v\n", err)
+		}
+	}
+}
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
+	defer cleanup() // Ensure cleanup happens after command execution
+	
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -96,4 +152,5 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "Log level (debug, info, warn, error)")
 	RootCmd.PersistentFlags().StringVar(&deviceID, "device-id", "", "Override device ID")
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.clipman/config.json)")
+	RootCmd.PersistentFlags().BoolVar(&noFileLog, "no-file-log", false, "Disable logging to file")
 } 

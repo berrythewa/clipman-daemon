@@ -38,7 +38,7 @@ func TestMonitor_Start(t *testing.T) {
 	m := &Monitor{
 		config:     &config.Config{PollingInterval: time.Millisecond * 10},
 		mqttClient: mockMQ,
-		logger:     utils.NewLogger("debug", nil),
+		logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 		clipboard:  mockClip,
 		storage:    mockStore,
 		history:    NewClipboardHistory(10),
@@ -94,7 +94,7 @@ func TestMonitor_ProcessNewContent(t *testing.T) {
 			m := &Monitor{
 				config:     &config.Config{},
 				mqttClient: mockMQ,
-				logger:     utils.NewLogger("debug", nil),
+				logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 				storage:    mockStore,
 				history:    NewClipboardHistory(10),
 				contentProcessor: NewContentProcessor(),
@@ -160,7 +160,7 @@ func TestMonitor_MonitorClipboard(t *testing.T) {
 	m := &Monitor{
 		config:     &config.Config{PollingInterval: time.Millisecond * 10},
 		mqttClient: mockMQ,
-		logger:     utils.NewLogger("debug", nil),
+		logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 		clipboard:  mockClip,
 		storage:    mockStore,
 		history:    NewClipboardHistory(10),
@@ -202,7 +202,7 @@ func TestMonitor_ErrorHandling(t *testing.T) {
 	m := &Monitor{
 		config:     &config.Config{PollingInterval: time.Millisecond * 10},
 		mqttClient: mockMQ,
-		logger:     utils.NewLogger("debug", nil),
+		logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 		clipboard:  mockClip,
 		storage:    mockStore,
 		history:    NewClipboardHistory(10),
@@ -238,7 +238,7 @@ func BenchmarkMonitor_ProcessNewContent(b *testing.B) {
 	m := &Monitor{
 		config:     &config.Config{},
 		mqttClient: mockMQ,
-		logger:     utils.NewLogger("debug", nil),
+		logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 		storage:    mockStore,
 		history:    NewClipboardHistory(1000),
 		contentProcessor: NewContentProcessor(),

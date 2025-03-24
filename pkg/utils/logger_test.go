@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,7 @@ func TestNewLogger(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("Level_%s", test.level), func(t *testing.T) {
-			logger := NewLogger(test.level, nil)
+			logger := NewLogger(LoggerOptions{Level: test.level})
 			if logger.level != test.expected {
 				t.Errorf("NewLogger(%s) level = %v, want %v", test.level, logger.level, test.expected)
 			}
@@ -35,7 +36,7 @@ func TestNewLogger(t *testing.T) {
 
 func TestLogLevels(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger := NewLogger("debug", buf)
+	logger := NewLogger(LoggerOptions{Level: "debug", Output: buf})
 
 	tests := []struct {
 		logFunc func(string, ...interface{})
@@ -67,7 +68,7 @@ func TestLogLevels(t *testing.T) {
 
 func TestLogLevelFiltering(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger := NewLogger("warn", buf)
+	logger := NewLogger(LoggerOptions{Level: "warn", Output: buf})
 
 	logger.Debug("debug message")
 	logger.Info("info message")
@@ -86,7 +87,7 @@ func TestLogLevelFiltering(t *testing.T) {
 func TestFatalLog(t *testing.T) {
 	t.Log("Starting TestFatalLog")
 	buf := new(bytes.Buffer)
-	logger := NewLogger("info", buf)
+	logger := NewLogger(LoggerOptions{Level: "info", Output: buf})
 
 	// Redefine os.Exit for this test
 	oldOsExit := osExit
@@ -136,7 +137,53 @@ func TestFatalLog(t *testing.T) {
 	t.Log("TestFatalLog completed")
 }
 
-
+func TestFileLogging(t *testing.T) {
+	// Create a temporary directory for log files
+	tempDir, err := os.MkdirTemp("", "logger_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	
+	// Create a logger with file logging enabled
+	logger := NewLogger(LoggerOptions{
+		Level:    "debug",
+		LogDir:   tempDir,
+		MaxSize:  1024, // Small size for testing rotation
+		MaxFiles: 3,
+	})
+	
+	// Write some log messages
+	for i := 0; i < 10; i++ {
+		logger.Info(fmt.Sprintf("Test log message %d", i), "count", i)
+	}
+	
+	// Close the logger
+	if err := logger.Close(); err != nil {
+		t.Errorf("Failed to close logger: %v", err)
+	}
+	
+	// Check if log file was created
+	files, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to read temp directory: %v", err)
+	}
+	
+	if len(files) == 0 {
+		t.Fatal("No log files were created")
+	}
+	
+	// Verify at least one file has log content
+	logFile := filepath.Join(tempDir, files[0].Name())
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	
+	if !strings.Contains(string(content), "Test log message") {
+		t.Errorf("Log file doesn't contain expected message. Content: %s", string(content))
+	}
+}
 
 func TestMain(m *testing.M) {
 	// This function will be called instead of the regular testing main function

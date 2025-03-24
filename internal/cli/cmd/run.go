@@ -3,6 +3,7 @@ package cmd
 import (
 	"time"
 
+	"github.com/berrythewa/clipman-daemon/internal/broker"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/spf13/cobra"
@@ -11,6 +12,7 @@ import (
 var (
 	duration time.Duration
 	maxSize  int64
+	noBroker bool
 )
 
 // runCmd represents the run command
@@ -33,12 +35,36 @@ until interrupted.`,
 		// Get all system paths
 		paths := cfg.GetPaths()
 		
+		// Initialize MQTT client if configured and not explicitly disabled
+		var mqttClient broker.MQTTClientInterface
+		if !noBroker && cfg.Broker.URL != "" {
+			logger.Info("Initializing broker connection", 
+				"url", cfg.Broker.URL,
+				"device_id", cfg.DeviceID)
+			
+			var err error
+			mqttClient, err = broker.NewMQTTClient(cfg, logger)
+			if err != nil {
+				logger.Warn("Failed to initialize MQTT client", "error", err)
+				logger.Info("Continuing without MQTT support")
+			} else {
+				logger.Info("MQTT client initialized successfully")
+			}
+		} else {
+			if noBroker {
+				logger.Info("MQTT broker disabled by command line flag")
+			} else if cfg.Broker.URL == "" {
+				logger.Info("No MQTT broker URL configured, running without broker connection")
+			}
+		}
+		
 		// Initialize storage
 		storageConfig := storage.StorageConfig{
-			DBPath:   paths.DBFile,
-			MaxSize:  cfg.Storage.MaxSize,
-			DeviceID: cfg.DeviceID,
-			Logger:   logger,
+			DBPath:     paths.DBFile,
+			MaxSize:    cfg.Storage.MaxSize,
+			DeviceID:   cfg.DeviceID,
+			Logger:     logger,
+			MQTTClient: mqttClient,
 		}
 		
 		logger.Info("Storage configuration", 
@@ -54,7 +80,7 @@ until interrupted.`,
 		defer store.Close()
 		
 		// Start the monitor
-		monitor := clipboard.NewMonitor(cfg, nil, logger, store)
+		monitor := clipboard.NewMonitor(cfg, mqttClient, logger, store)
 		if err := monitor.Start(); err != nil {
 			logger.Error("Failed to start monitor", "error", err)
 			return err
@@ -76,14 +102,29 @@ until interrupted.`,
 			logger.Info("Stopping monitor")
 			monitor.Stop()
 			
+			// Properly close all connections
+			if mqttClient != nil {
+				logger.Info("Disconnecting MQTT client")
+				mqttClient.Disconnect()
+			}
+			
+			// Flush logger to ensure all logs are written
+			logger.Flush()
+			
 			// Show recent items
 			recentHistory := monitor.GetHistory(10)
 			for _, item := range recentHistory {
+				dataPreview := "binary data"
+				if item.Content.Type == "text" || item.Content.Type == "url" {
+					previewLength := min(len(item.Content.Data), 50)
+					dataPreview = string(item.Content.Data[:previewLength])
+				}
+				
 				logger.Info("Recent clipboard item",
 					"type", item.Content.Type,
 					"time", item.Time.Format(time.RFC3339),
 					"data_length", len(item.Content.Data),
-					"preview", string(item.Content.Data[:min(len(item.Content.Data), 50)]))
+					"preview", dataPreview)
 			}
 		} else {
 			// Run indefinitely - block until interrupted
@@ -99,6 +140,7 @@ func init() {
 	// Set up flags for this command
 	runCmd.Flags().DurationVarP(&duration, "duration", "d", 0, "Run for a specific duration (for testing)")
 	runCmd.Flags().Int64Var(&maxSize, "max-size", 0, "Override max cache size in bytes (default 100MB)")
+	runCmd.Flags().BoolVar(&noBroker, "no-broker", false, "Disable MQTT broker connection even if configured")
 }
 
 // Helper function to get minimum of two values

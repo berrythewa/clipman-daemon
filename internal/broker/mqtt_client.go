@@ -14,6 +14,7 @@ import (
 // MQTTClientInterface defines the methods for the MQTTClient.
 type MQTTClientInterface interface {
 	PublishContent(content *types.ClipboardContent) error
+	PublishCache(cache *types.CacheMessage) error
 	SubscribeToCommands() error
 	RegisterCommandHandler(commandType string, handler func([]byte) error)
 	IsConnected() bool

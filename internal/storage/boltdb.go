@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/broker"
+	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/compression"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
-	"github.com/berrythewa/clipman-daemon/internal/config"
 
 	"go.etcd.io/bbolt"
 )
@@ -32,6 +32,7 @@ type BoltStorageInterface interface {
 	FlushCache() error
 	GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error)
 	LogCompleteHistory(options config.HistoryOptions) error
+	SetMQTTClient(client broker.MQTTClientInterface)
 }
 
 type BoltStorage struct {
@@ -40,7 +41,7 @@ type BoltStorage struct {
 	maxSize    int64
 	logger     *utils.Logger
 	deviceID   string
-	mqttClient *broker.MQTTClient
+	mqttClient broker.MQTTClientInterface
 }
 
 type StorageConfig struct {
@@ -48,48 +49,69 @@ type StorageConfig struct {
 	MaxSize    int64
 	DeviceID   string
 	Logger     *utils.Logger
-	MQTTClient *broker.MQTTClient
+	MQTTClient broker.MQTTClientInterface
 }
 
-
 func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
-	if config.MaxSize == 0 {
-		config.MaxSize = defaultMaxSize
+	// Validate and set default values
+	maxSize := config.MaxSize
+	if maxSize <= 0 {
+		maxSize = defaultMaxSize
 	}
 
+	logger := config.Logger
+	if logger == nil {
+		logger = utils.NewLogger(utils.LoggerOptions{Level: "info"})
+	}
+
+	// Open the database
 	db, err := bbolt.Open(config.DBPath, 0600, &bbolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %v", err)
+		return nil, fmt.Errorf("failed to open bolt database: %v", err)
 	}
 
-	storage := &BoltStorage{
-		db:       db,
-		maxSize:  config.MaxSize,
-		logger:   config.Logger,
-		deviceID: config.DeviceID,
-	}
-
-	// Initialize buckets and calculate initial cache size
+	// Create bucket if it doesn't exist
 	err = db.Update(func(tx *bbolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte(clipboardBucket))
+		_, err := tx.CreateBucketIfNotExists([]byte(clipboardBucket))
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to create bucket: %v", err)
 		}
-
-		// Calculate initial cache size
-		var size int64
-		b.ForEach(func(k, v []byte) error {
-			size += int64(len(v))
-			return nil
-		})
-		atomic.StoreInt64(&storage.cacheSize, size)
-
 		return nil
 	})
-
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize storage: %v", err)
+		db.Close()
+		return nil, fmt.Errorf("failed to create bucket: %v", err)
 	}
+
+	// Calculate current cache size
+	var cacheSize int64
+	err = db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(clipboardBucket))
+		return b.ForEach(func(k, v []byte) error {
+			atomic.AddInt64(&cacheSize, int64(len(k)+len(v)))
+			return nil
+		})
+	})
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to calculate cache size: %v", err)
+	}
+
+	// Create and return the storage implementation
+	storage := &BoltStorage{
+		db:         db,
+		cacheSize:  cacheSize,
+		maxSize:    maxSize,
+		logger:     logger,
+		deviceID:   config.DeviceID,
+		mqttClient: config.MQTTClient,
+	}
+
+	logger.Debug("BoltStorage initialized", 
+		"db_path", config.DBPath, 
+		"max_size", maxSize,
+		"current_size", cacheSize,
+		"has_mqtt", config.MQTTClient != nil)
 
 	return storage, nil
 }
@@ -464,4 +486,9 @@ func optionOrDefault(value interface{}, defaultText string) string {
 	default:
 		return fmt.Sprintf("%v", value)
 	}
+}
+
+// SetMQTTClient sets the MQTT client for the storage
+func (s *BoltStorage) SetMQTTClient(client broker.MQTTClientInterface) {
+	s.mqttClient = client
 }
