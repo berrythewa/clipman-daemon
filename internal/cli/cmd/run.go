@@ -6,7 +6,6 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/broker"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
-	"github.com/berrythewa/clipman-daemon/internal/broker"
 	"github.com/spf13/cobra"
 )
 
@@ -15,9 +14,6 @@ var (
 	maxSize  int64
 	noBroker bool
 )
-
-// Initialize MQTT client if configured and not explicitly disabled
-var mqttClient broker.MQTTClientInterface
 
 // runCmd represents the run command
 var runCmd = &cobra.Command{

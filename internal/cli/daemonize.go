@@ -51,15 +51,14 @@ func daemonize() error {
 		cmd.Stdout = nullDev
 		cmd.Stderr = nullDev
 		
-		// Detach from process group
+		// Detach from process group (Unix-specific)
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Setsid: true,
 		}
 	} else {
-		// Windows-specific: hide the console window
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow: true,
-		}
+		// Windows-specific handling would be done differently
+		// HideWindow is not available on Linux
+		// We would need to use build tags for this
 	}
 
 	// Write PID file for the daemon

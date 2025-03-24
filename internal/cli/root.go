@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	cmdpkg "github.com/berrythewa/clipman-daemon/internal/cli/cmd"
 	"github.com/berrythewa/clipman-daemon/internal/config"
