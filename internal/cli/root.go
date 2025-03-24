@@ -5,19 +5,26 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	cmdpkg "github.com/berrythewa/clipman-daemon/internal/cli/cmd"
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/clipboard"
+	"github.com/berrythewa/clipman-daemon/internal/storage"
+	"github.com/berrythewa/clipman-daemon/internal/broker"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
 	"github.com/spf13/cobra"
 )
 
 var (
 	// Flags that apply to all commands
-	logLevel    string
-	deviceID    string
-	cfgFile     string
-	noFileLog   bool
+	logLevel     string
+	deviceID     string
+	cfgFile      string
+	noFileLog    bool
+	detach       bool
+	noBroker     bool
+	maxSize      int64
 
 	// The loaded configuration
 	cfg *config.Config
@@ -33,13 +40,17 @@ var (
 
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
-	Use:   "clipmand",
-	Short: "Clipman is a clipboard manager daemon",
-	Long: `Clipman is a clipboard manager daemon that monitors your clipboard
+	Use:   "clipman",
+	Short: "Clipman is a clipboard manager",
+	Long: `Clipman is a clipboard manager that monitors your clipboard
 and provides history, searching, and synchronization capabilities.
 
-It can be run as a background service or interactively for management
-and inspection of clipboard history.`,
+Running clipman without any commands starts the daemon in the foreground.
+Use --detach to run it in the background.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// If no subcommand is provided, run in daemon mode by default
+		return runDaemon()
+	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		var err error
 
@@ -102,6 +113,86 @@ and inspection of clipboard history.`,
 	},
 }
 
+// runDaemon implements the daemon mode functionality (previously in run.go)
+func runDaemon() error {
+	logger.Info("Starting Clipman daemon")
+	
+	// If maxSize is specified, override config
+	if maxSize > 0 {
+		cfg.Storage.MaxSize = maxSize
+	}
+
+	// Get all system paths
+	paths := cfg.GetPaths()
+	
+	// If detach flag is set, detach from terminal
+	if detach {
+		logger.Info("Detaching from terminal and running in background")
+		if err := daemonize(); err != nil {
+			return fmt.Errorf("failed to daemonize: %v", err)
+		}
+		// Parent process exits here, child continues
+		return nil
+	}
+	
+	// Initialize MQTT client if configured and not explicitly disabled
+	var mqttClient broker.MQTTClientInterface
+	if !noBroker && cfg.Broker.URL != "" {
+		logger.Info("Initializing broker connection", 
+			"url", cfg.Broker.URL,
+			"device_id", cfg.DeviceID)
+		
+		var err error
+		mqttClient, err = broker.NewMQTTClient(cfg, logger)
+		if err != nil {
+			logger.Warn("Failed to initialize MQTT client", "error", err)
+			logger.Info("Continuing without MQTT support")
+		} else {
+			logger.Info("MQTT client initialized successfully")
+		}
+	} else {
+		if noBroker {
+			logger.Info("MQTT broker disabled by command line flag")
+		} else if cfg.Broker.URL == "" {
+			logger.Info("No MQTT broker URL configured, running without broker connection")
+		}
+	}
+	
+	// Initialize storage
+	storageConfig := storage.StorageConfig{
+		DBPath:     paths.DBFile,
+		MaxSize:    cfg.Storage.MaxSize,
+		DeviceID:   cfg.DeviceID,
+		Logger:     logger,
+		MQTTClient: mqttClient,
+	}
+	
+	logger.Info("Storage configuration", 
+		"db_path", paths.DBFile,
+		"max_size_bytes", storageConfig.MaxSize,
+		"device_id", cfg.DeviceID)
+		
+	store, err := storage.NewBoltStorage(storageConfig)
+	if err != nil {
+		logger.Error("Failed to initialize storage", "error", err)
+		return err
+	}
+	defer store.Close()
+	
+	// Start the monitor
+	monitor := clipboard.NewMonitor(cfg, mqttClient, logger, store)
+	if err := monitor.Start(); err != nil {
+		logger.Error("Failed to start monitor", "error", err)
+		return err
+	}
+	
+	logger.Info("Monitor started")
+	logger.Info("Running until interrupted, press Ctrl+C to stop")
+	
+	// Run indefinitely - block until interrupted
+	select {}
+}
+
 // setupSignalHandlers sets up handlers for OS signals to perform cleanup
 func setupSignalHandlers() {
 	c := make(chan os.Signal, 1)
@@ -118,6 +209,7 @@ func setupSignalHandlers() {
 // cleanup performs cleanup operations before exit
 func cleanup() {
 	if logger != nil {
+		logger.Info("Shutting down Clipman")
 		if err := logger.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error closing logger: %v\n", err)
 		}
@@ -153,4 +245,9 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&deviceID, "device-id", "", "Override device ID")
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.clipman/config.json)")
 	RootCmd.PersistentFlags().BoolVar(&noFileLog, "no-file-log", false, "Disable logging to file")
+	
+	// Flags for daemon mode (which is the default command now)
+	RootCmd.Flags().BoolVar(&detach, "detach", false, "Detach from terminal and run in background")
+	RootCmd.Flags().BoolVar(&noBroker, "no-broker", false, "Disable MQTT broker connection even if configured")
+	RootCmd.Flags().Int64Var(&maxSize, "max-size", 0, "Override max cache size in bytes (default 100MB)")
 } 
