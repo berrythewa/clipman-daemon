@@ -12,6 +12,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/broker"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
+	"github.com/berrythewa/clipman-daemon/internal/platform"
 	"github.com/spf13/cobra"
 )
 
@@ -127,9 +128,30 @@ func runDaemon() error {
 	// If detach flag is set, detach from terminal
 	if detach {
 		logger.Info("Detaching from terminal and running in background")
-		if err := daemonize(); err != nil {
+		
+		// Get the platform-specific daemonizer
+		daemonizer := platform.GetPlatformDaemonizer()
+		
+		// Get the executable path
+		executable, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("failed to get executable path: %v", err)
+		}
+		
+		// Get current working directory
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current working directory: %v", err)
+		}
+		
+		// Daemonize the process
+		pid, err := daemonizer.Daemonize(executable, os.Args, cwd, cfg.DataDir)
+		if err != nil {
 			return fmt.Errorf("failed to daemonize: %v", err)
 		}
+		
+		fmt.Printf("Clipman started in background (PID: %d)\n", pid)
+		
 		// Parent process exits here, child continues
 		return nil
 	}
@@ -236,6 +258,12 @@ func SetVersionInfo(version, buildTime, commit string) {
 // AddCommand adds a command to the root command
 func AddCommand(cmd *cobra.Command) {
 	RootCmd.AddCommand(cmd)
+}
+
+// IsRunningAsDaemon returns true if the current process is running as a daemon
+func IsRunningAsDaemon() bool {
+	daemonizer := platform.GetPlatformDaemonizer()
+	return daemonizer.IsRunningAsDaemon()
 }
 
 func init() {
