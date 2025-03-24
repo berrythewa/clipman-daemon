@@ -5,11 +5,31 @@ A cross-platform clipboard manager with history, cloud synchronization, and adva
 ## Features
 
 - **Clipboard History**: Keep track of your clipboard history and access past items
-- **Cross-Platform**: Works on Linux, macOS, and Windows
+- **Cross-Platform**: Works on Linux, macOS, and Windows with native implementations
 - **Cloud Sync**: Optionally sync clipboard across devices using MQTT
 - **Daemon Mode**: Runs in the background with minimal resource usage
 - **Secure**: Keeps your clipboard data private and local by default
-- **Extensible**: Plugin architecture for custom transformations
+- **Platform-Specific**: Optimized for each supported operating system
+- **Efficient Storage**: Uses BoltDB for efficient, persistent clipboard storage
+- **Extensible**: Modular architecture for easy enhancement
+
+## Architecture
+
+Clipman is built with a clean, modular architecture:
+
+- **Platform Package**: Contains platform-specific implementations for:
+  - Clipboard monitoring on Linux, Windows, and macOS
+  - Daemonization techniques appropriate for each OS
+- **Storage Layer**: Uses BoltDB for efficient, persistent storage with:
+  - Configurable cache size
+  - Automatic pruning of old entries
+  - Optional data compression
+- **CLI Interface**: Clean command structure using Cobra
+  - Global daemon command
+  - History viewing and filtering
+  - Cache management
+  - System service installation
+- **Sync Protocol**: MQTT-based synchronization for multi-device clipboard sharing
 
 ## Installation
 
@@ -64,8 +84,48 @@ clipman history
 # Display the last 5 items
 clipman history --limit 5
 
+# Show clipboard history in reverse order (newest first)
+clipman history --reverse
+
+# Filter clipboard history by type
+clipman history --type text
+
+# Show clipboard history from a specific time range
+clipman history --since "2023-06-01" --before "2023-06-30"
+
 # Flush old items from cache
 clipman flush
+```
+
+### Command-Line Options
+
+#### Global Options
+
+```
+--config string     Config file path (default is system-specific)
+--device-id string  Override device ID
+--log-level string  Log level (debug, info, warn, error)
+--no-file-log       Disable logging to file
+```
+
+#### Daemon Mode Options
+
+```
+--detach           Run in the background
+--no-broker        Disable MQTT broker even if configured
+--max-size int64   Override max cache size in bytes
+```
+
+#### History Options
+
+```
+--limit int        Maximum number of entries to display
+--since string     Display entries after this time
+--before string    Display entries before this time
+--type string      Filter by content type (text, image, etc.)
+--min-size int     Filter by minimum size in bytes
+--reverse          Show newest entries first
+--json             Output in JSON format
 ```
 
 ### Setting Up Auto-Start
@@ -122,9 +182,53 @@ The clipboard database is stored in:
     "max_log_size": 10485760,
     "max_log_files": 5,
     "format": "text"
+  },
+  "history": {
+    "limit": 0,
+    "reverse": false
   }
 }
 ```
+
+## Cloud Synchronization
+
+To enable clipboard synchronization across devices:
+
+1. Set up an MQTT broker (like Mosquitto, HiveMQ, or a cloud broker)
+2. Configure the broker details in your config.json:
+   ```json
+   "broker": {
+     "url": "mqtt://broker.example.com:1883",
+     "username": "your_username",
+     "password": "your_password"
+   }
+   ```
+3. Run Clipman on each device with the same broker configuration
+4. Clipman will automatically synchronize clipboard content across devices
+
+### Security Considerations
+
+- Use TLS for broker connections (mqtts://)
+- Set strong, unique passwords
+- Consider using a private MQTT broker
+- Enable ACLs on your MQTT broker to limit access
+
+## Platform-Specific Implementation Details
+
+### Linux
+- Uses polling for clipboard monitoring (X11 limitations)
+- Daemonization with SetsID for process group separation
+- Systemd service integration
+
+### macOS
+- Uses clipboard change count APIs for efficient monitoring
+- Launchd integration for service management
+- Handles both pasteboard and services API
+
+### Windows
+- Uses Windows Clipboard Listener for efficient event-based monitoring
+- Windows service integration
+- Hidden window technique for background operation
 
 ## Uninstalling
 
@@ -152,6 +256,14 @@ MIT License
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Development Workflow
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests: `make test`
+5. Submit a pull request
 
 
 
