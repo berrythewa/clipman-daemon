@@ -11,6 +11,7 @@ import (
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
+	"github.com/google/uuid"
 )
 
 // SystemPaths holds all the important file and directory paths used by the application
@@ -94,6 +95,45 @@ type BrokerConfig struct {
 	Password string `json:"password"`
 }
 
+// Constants for synchronization modes
+const (
+	SyncModeP2P         = "p2p"
+	SyncModeCentralized = "centralized"
+)
+
+// SyncConfig contains all synchronization settings
+type SyncConfig struct {
+	// Sync mode: p2p or centralized
+	Mode string `json:"mode"`
+	
+	// MQTT broker URL for centralized mode
+	URL string `json:"url"`
+	
+	// Optional credentials for MQTT broker
+	Username string `json:"username"`
+	Password string `json:"password"`
+	
+	// Group settings
+	DefaultGroup   string   `json:"default_group"`
+	AutoJoinGroups bool     `json:"auto_join_groups"`
+	
+	// Content filtering options
+	MaxSyncSize     int64    `json:"max_sync_size"`
+	AllowedTypes    []string `json:"allowed_types"`
+	ExcludedTypes   []string `json:"excluded_types"`
+	IncludePatterns []string `json:"include_patterns"`
+	ExcludePatterns []string `json:"exclude_patterns"`
+	
+	// Security settings
+	EnableEncryption bool   `json:"enable_encryption"`
+	EncryptionKey    string `json:"encryption_key,omitempty"`
+}
+
+// IsModeCentralized returns true if the sync mode is centralized
+func (s *SyncConfig) IsModeCentralized() bool {
+	return s.Mode == SyncModeCentralized
+}
+
 // Config is the main configuration struct
 type Config struct {
 	// General settings
@@ -105,6 +145,7 @@ type Config struct {
 	// Subsystem configurations
 	Storage         StorageConfig  `json:"storage"`
 	Broker          BrokerConfig   `json:"broker"`
+	Sync            SyncConfig     `json:"sync"`      // Using SyncConfig from sync_config.go
 	History         HistoryOptions `json:"history"`
 	Log             LogConfig      `json:"log"`
 }
@@ -117,6 +158,7 @@ var DefaultConfig = Config{
 		MaxSize:   100 * 1024 * 1024, // 100MB default
 		KeepItems: 10,                // Keep 10 items when flushing
 	},
+	Sync:    DefaultSyncConfig(),    // Default sync config
 	History: HistoryOptions{
 		Limit:   0,     // No limit by default
 		Reverse: false, // Oldest first by default
@@ -184,6 +226,13 @@ func Load() (*Config, error) {
 		if err := json.NewDecoder(file).Decode(&config); err != nil {
 			return nil, fmt.Errorf("failed to decode config file: %v", err)
 		}
+		
+		// Migrate broker config to sync config if sync is empty
+		if config.Sync.URL == "" && config.Broker.URL != "" {
+			config.Sync.URL = config.Broker.URL
+			config.Sync.Username = config.Broker.Username
+			config.Sync.Password = config.Broker.Password
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("error checking config file: %v", err)
 	}
@@ -245,59 +294,94 @@ func overrideFromEnv(config Config) Config {
 		config.DataDir = val
 	}
 	
-	// Broker settings
+	// Broker settings (legacy)
 	if val := os.Getenv("CLIPMAN_BROKER_URL"); val != "" {
 		config.Broker.URL = val
+		// Also set in sync config for compatibility
+		config.Sync.URL = val
 	}
 	if val := os.Getenv("CLIPMAN_BROKER_USERNAME"); val != "" {
 		config.Broker.Username = val
+		// Also set in sync config for compatibility
+		config.Sync.Username = val
 	}
 	if val := os.Getenv("CLIPMAN_BROKER_PASSWORD"); val != "" {
 		config.Broker.Password = val
+		// Also set in sync config for compatibility
+		config.Sync.Password = val
 	}
 	
-	// Storage settings
-	if val := os.Getenv("CLIPMAN_STORAGE_PATH"); val != "" {
-		config.Storage.DBPath = val
+	// Sync settings (new)
+	if val := os.Getenv("CLIPMAN_SYNC_URL"); val != "" {
+		config.Sync.URL = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_USERNAME"); val != "" {
+		config.Sync.Username = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_PASSWORD"); val != "" {
+		config.Sync.Password = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_DEFAULT_GROUP"); val != "" {
+		config.Sync.DefaultGroup = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_MODE"); val != "" {
+		config.Sync.Mode = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_AUTO_JOIN_GROUPS"); val == "true" || val == "1" || val == "yes" {
+		config.Sync.AutoJoinGroups = true
 	}
 	
-	// Logging settings
-	if val := os.Getenv("CLIPMAN_LOG_FILE_ENABLED"); val != "" {
-		config.Log.EnableFileLogging = val == "true" || val == "1" || val == "yes"
-	}
-	
+	// Other environment variables...
 	return config
 }
 
-// Save saves the current configuration to a file
+// Save saves the configuration to a file
 func (c *Config) Save() error {
 	configPath, err := getConfigPath()
 	if err != nil {
 		return fmt.Errorf("failed to get config path: %v", err)
 	}
-
-	// Ensure the directory exists
-	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	
+	// Create the directory if it doesn't exist
+	dir := filepath.Dir(configPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %v", err)
 	}
-
+	
+	// Create or truncate the file
 	file, err := os.Create(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to create config file: %v", err)
 	}
 	defer file.Close()
-
+	
+	// Write the config as JSON
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(c); err != nil {
 		return fmt.Errorf("failed to encode config: %v", err)
 	}
-
+	
 	return nil
 }
 
-// defaultGenerateDeviceID generates a new UUID for device identification
+// defaultGenerateDeviceID generates a random device ID
 func defaultGenerateDeviceID() string {
-	return utils.GenerateUUID()
+	return utils.GenerateRandomID(8)
+}
+
+// DefaultSyncConfig returns default synchronization settings
+func DefaultSyncConfig() SyncConfig {
+	return SyncConfig{
+		Mode:           SyncModeP2P,
+		URL:            "",
+		Username:       "",
+		Password:       "",
+		DefaultGroup:   "",
+		AutoJoinGroups: false,
+		MaxSyncSize:    1024 * 1024, // 1MB default max size
+		AllowedTypes:   []string{"text/plain", "text/uri-list"},
+		ExcludedTypes:  []string{},
+		EnableEncryption: false,
+	}
 }
