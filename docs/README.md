@@ -9,6 +9,7 @@ This directory contains detailed documentation for Clipman, a cross-platform cli
 - [**Configuration Guide**](CONFIGURATION.md) - Comprehensive overview of all configurable options in Clipman
 - [**Platform Implementations**](PLATFORM_IMPLEMENTATIONS.md) - Details on how Clipman implements functionality on Linux, macOS, and Windows
 - [**Caching System**](CACHING.md) - Deep dive into Clipman's multi-level caching architecture
+- [**MQTT Synchronization**](MQTT_SYNC.md) - How Clipman synchronizes clipboard content between devices
 
 ### For Developers
 
@@ -16,6 +17,10 @@ If you're interested in contributing to Clipman or understanding its internal ar
 
 - [**Platform Implementations**](PLATFORM_IMPLEMENTATIONS.md) - Details of platform-specific code
 - [**Caching System**](CACHING.md) - Explains the storage and caching architecture
+- [**MQTT Synchronization**](MQTT_SYNC.md) - Communication protocol between Clipman instances
+- [**Development Roadmap**](TODO.md) - Planned enhancements for the MQTT synchronization system
+- [**Sync Package Migration**](SYNC_PACKAGE_MIGRATION.md) - Plan for migrating from broker to sync package
+- [**Sync MQTT Client**](SYNC_MQTT_CLIENT.md) - Reference implementation for the new sync MQTT client
 
 ## Main Features
 
@@ -34,6 +39,10 @@ If you're interested in contributing to Clipman or understanding its internal ar
 - [Configuration Guide](CONFIGURATION.md)
 - [Caching System](CACHING.md)
 - [Platform Implementations](PLATFORM_IMPLEMENTATIONS.md)
+- [MQTT Synchronization](MQTT_SYNC.md)
+- [Development Roadmap](TODO.md)
+- [Sync Package Migration](SYNC_PACKAGE_MIGRATION.md)
+- [Sync MQTT Client](SYNC_MQTT_CLIENT.md)
 
 ## Configuration At a Glance
 
