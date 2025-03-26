@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/sync"
+	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -201,6 +203,52 @@ var syncFilterStatusCmd = &cobra.Command{
 	},
 }
 
+// syncResyncCmd resyncs the clipboard history with other devices
+var syncResyncCmd = &cobra.Command{
+	Use:   "resync",
+	Short: "Resynchronize clipboard history with other devices",
+	Long: `Resynchronize your clipboard history with other connected devices.
+	
+This will publish your entire clipboard history to all the groups you have joined.
+Use this when you want to ensure all devices have the same clipboard history.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// Create storage to access clipboard history
+		storageConfig := storage.StorageConfig{
+			DBPath:   cfg.Storage.DBPath,
+			MaxSize:  cfg.Storage.MaxSize,
+			DeviceID: cfg.DeviceID,
+			Logger:   logger,
+		}
+		
+		store, err := storage.NewBoltStorage(storageConfig)
+		if err != nil {
+			fmt.Printf("Error opening storage: %v\n", err)
+			os.Exit(1)
+		}
+		defer store.Close()
+		
+		// Create sync client
+		syncClient, err := sync.CreateClient(cfg, logger)
+		if err != nil {
+			fmt.Printf("Error creating sync client: %v\n", err)
+			os.Exit(1)
+		}
+		
+		// Set the sync client for the storage
+		store.SetSyncClient(syncClient)
+		
+		// Publish the entire clipboard history
+		timeZero := time.Time{} // Unix epoch 0
+		fmt.Println("Resyncing clipboard history...")
+		if err := store.PublishCacheHistory(timeZero); err != nil {
+			fmt.Printf("Error publishing cache history: %v\n", err)
+			os.Exit(1)
+		}
+		
+		fmt.Println("Successfully resynced clipboard history!")
+	},
+}
+
 // Helper function to show sync status
 func showSyncStatus() {
 	fmt.Println("Synchronization Status:")
@@ -276,6 +324,7 @@ func init() {
 	syncCmd.AddCommand(syncLeaveCmd)
 	syncCmd.AddCommand(syncGroupsCmd)
 	syncCmd.AddCommand(syncFilterCmd)
+	syncCmd.AddCommand(syncResyncCmd)
 	syncFilterCmd.AddCommand(syncFilterStatusCmd)
 
 	// Add flags
