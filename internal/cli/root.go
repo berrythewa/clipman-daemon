@@ -10,10 +10,11 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
-	"github.com/berrythewa/clipman-daemon/internal/broker"
+	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
 	"github.com/berrythewa/clipman-daemon/internal/platform"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 var (
@@ -145,7 +146,7 @@ func runDaemon() error {
 		}
 		
 		// Daemonize the process
-		pid, err := daemonizer.Daemonize(executable, os.Args, cwd, cfg.DataDir)
+		pid, err := daemonizer.Daemonize(executable, os.Args, cwd, paths.DataDir)
 		if err != nil {
 			return fmt.Errorf("failed to daemonize: %v", err)
 		}
@@ -156,26 +157,69 @@ func runDaemon() error {
 		return nil
 	}
 	
-	// Initialize MQTT client if configured and not explicitly disabled
-	var mqttClient broker.MQTTClientInterface
-	if !noBroker && cfg.Broker.URL != "" {
-		logger.Info("Initializing broker connection", 
-			"url", cfg.Broker.URL,
-			"device_id", cfg.DeviceID)
+	// Initialize sync client if configured and not explicitly disabled
+	var syncClient sync.SyncClient
+	if !noBroker && (cfg.Sync.URL != "" || cfg.Broker.URL != "") {
+		url := cfg.Sync.URL
+		if url == "" {
+			url = cfg.Broker.URL
+		}
+		
+		logger.Info("Initializing sync connection", 
+			"url", url,
+			"device_id", cfg.DeviceID,
+			"mode", cfg.Sync.Mode)
 		
 		var err error
-		mqttClient, err = broker.NewMQTTClient(cfg, logger)
+		syncClient, err = sync.CreateClient(cfg, logger)
 		if err != nil {
-			logger.Warn("Failed to initialize MQTT client", "error", err)
-			logger.Info("Continuing without MQTT support")
+			logger.Warn("Failed to initialize sync client", "error", err)
+			logger.Info("Continuing without sync support")
 		} else {
-			logger.Info("MQTT client initialized successfully")
+			logger.Info("Sync client initialized successfully")
+			
+			// If a default group is set, try to join it
+			if cfg.Sync.DefaultGroup != "" && cfg.Sync.AutoJoinGroups {
+				if err := syncClient.JoinGroup(cfg.Sync.DefaultGroup); err != nil {
+					logger.Error("Failed to join default group", 
+						"group", cfg.Sync.DefaultGroup, 
+						"error", err)
+				} else {
+					logger.Info("Joined default group", 
+						"group", cfg.Sync.DefaultGroup)
+				}
+			}
+			
+			// Set up content filtering based on config
+			if len(cfg.Sync.AllowedTypes) > 0 || len(cfg.Sync.ExcludedTypes) > 0 || cfg.Sync.MaxSyncSize > 0 {
+				contentTypes := make([]types.ContentType, 0, len(cfg.Sync.AllowedTypes))
+				for _, t := range cfg.Sync.AllowedTypes {
+					contentTypes = append(contentTypes, types.ContentType(t))
+				}
+				
+				excludedTypes := make([]types.ContentType, 0, len(cfg.Sync.ExcludedTypes))
+				for _, t := range cfg.Sync.ExcludedTypes {
+					excludedTypes = append(excludedTypes, types.ContentType(t))
+				}
+				
+				filter := &sync.ContentFilter{
+					AllowedTypes:    contentTypes,
+					ExcludedTypes:   excludedTypes,
+					MaxSize:         cfg.Sync.MaxSyncSize,
+					IncludePatterns: cfg.Sync.IncludePatterns,
+					ExcludePatterns: cfg.Sync.ExcludePatterns,
+				}
+				
+				if err := syncClient.SetContentFilter(filter); err != nil {
+					logger.Error("Failed to set content filter", "error", err)
+				}
+			}
 		}
 	} else {
 		if noBroker {
-			logger.Info("MQTT broker disabled by command line flag")
-		} else if cfg.Broker.URL == "" {
-			logger.Info("No MQTT broker URL configured, running without broker connection")
+			logger.Info("Sync client disabled by command line flag")
+		} else if cfg.Sync.URL == "" && cfg.Broker.URL == "" {
+			logger.Info("No sync URL configured, running without sync connection")
 		}
 	}
 	
@@ -185,7 +229,7 @@ func runDaemon() error {
 		MaxSize:    cfg.Storage.MaxSize,
 		DeviceID:   cfg.DeviceID,
 		Logger:     logger,
-		MQTTClient: mqttClient,
+		MQTTClient: syncClient,
 	}
 	
 	logger.Info("Storage configuration", 
@@ -201,7 +245,7 @@ func runDaemon() error {
 	defer store.Close()
 	
 	// Start the monitor
-	monitor := clipboard.NewMonitor(cfg, mqttClient, logger, store)
+	monitor := clipboard.NewMonitor(cfg, syncClient, logger, store)
 	if err := monitor.Start(); err != nil {
 		logger.Error("Failed to start monitor", "error", err)
 		return err

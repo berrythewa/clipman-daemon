@@ -7,13 +7,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/berrythewa/clipman-daemon/internal/broker"
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/compression"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
 
 	"go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 const (
@@ -32,24 +33,26 @@ type BoltStorageInterface interface {
 	FlushCache() error
 	GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error)
 	LogCompleteHistory(options config.HistoryOptions) error
-	SetMQTTClient(client broker.MQTTClientInterface)
+	SetSyncClient(client sync.SyncClient)
 }
 
 type BoltStorage struct {
 	db         *bbolt.DB
 	cacheSize  int64
 	maxSize    int64
-	logger     *utils.Logger
+	logger     *zap.Logger
 	deviceID   string
-	mqttClient broker.MQTTClientInterface
+	syncClient sync.SyncClient
+	keepItems  int
 }
 
 type StorageConfig struct {
 	DBPath     string
 	MaxSize    int64
 	DeviceID   string
-	Logger     *utils.Logger
-	MQTTClient broker.MQTTClientInterface
+	Logger     *zap.Logger
+	MQTTClient sync.SyncClient // Using MQTTClient field name for backward compatibility
+	KeepItems  int
 }
 
 func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
@@ -59,9 +62,9 @@ func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
 		maxSize = defaultMaxSize
 	}
 
-	logger := config.Logger
-	if logger == nil {
-		logger = utils.NewLogger(utils.LoggerOptions{Level: "info"})
+	keepItemsValue := config.KeepItems
+	if keepItemsValue <= 0 {
+		keepItemsValue = keepItems
 	}
 
 	// Open the database
@@ -102,16 +105,19 @@ func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
 		db:         db,
 		cacheSize:  cacheSize,
 		maxSize:    maxSize,
-		logger:     logger,
+		logger:     config.Logger,
 		deviceID:   config.DeviceID,
-		mqttClient: config.MQTTClient,
+		syncClient: config.MQTTClient,
+		keepItems:  keepItemsValue,
 	}
 
-	logger.Debug("BoltStorage initialized", 
-		"db_path", config.DBPath, 
-		"max_size", maxSize,
-		"current_size", cacheSize,
-		"has_mqtt", config.MQTTClient != nil)
+	if config.Logger != nil {
+		config.Logger.Debug("BoltStorage initialized", 
+			zap.String("db_path", config.DBPath), 
+			zap.Int64("max_size", maxSize),
+			zap.Int64("current_size", cacheSize),
+			zap.Bool("has_sync", config.MQTTClient != nil))
+	}
 
 	return storage, nil
 }
@@ -129,7 +135,7 @@ func (s *BoltStorage) SaveContent(content *types.ClipboardContent) error {
 		newSize := atomic.AddInt64(&s.cacheSize, int64(len(encoded)))
 		if newSize > s.maxSize {
 			if err := s.flushOldestContent(tx); err != nil {
-				s.logger.Error("Failed to flush cache", "error", err)
+				s.logger.Error("Failed to flush cache", zap.Error(err))
 			}
 		}
 
@@ -199,7 +205,7 @@ func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
 
 	// Collect the latest items to keep
 	var keepKeys [][]byte
-	for k, _ := c.Last(); k != nil && len(keepKeys) < keepItems; k, _ = c.Prev() {
+	for k, _ := c.Last(); k != nil && len(keepKeys) < s.keepItems; k, _ = c.Prev() {
 		keepKeys = append(keepKeys, k)
 	}
 
@@ -217,7 +223,7 @@ func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
 		if !shouldKeep {
 			var content types.ClipboardContent
 			if err := json.Unmarshal(v, &content); err != nil {
-				s.logger.Error("Failed to unmarshal content for MQTT", "error", err)
+				s.logger.Error("Failed to unmarshal content for MQTT", zap.Error(err))
 				continue
 			}
 			itemsToFlush = append(itemsToFlush, &content)
@@ -225,20 +231,21 @@ func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
 	}
 
 	// Publish to MQTT before deleting
-	if len(itemsToFlush) > 0 && s.mqttClient != nil {
+	if len(itemsToFlush) > 0 && s.syncClient != nil {
 		cacheMsg := &types.CacheMessage{
-			DeviceID:  s.deviceID,
-			Contents:  itemsToFlush,
-			Timestamp: time.Now(),
+			DeviceID:    s.deviceID,
+			ContentList: itemsToFlush,
+			TotalSize:   s.GetCacheSize(),
+			Timestamp:   time.Now(),
 		}
 
-		if err := s.mqttClient.PublishCache(cacheMsg); err != nil {
-			s.logger.Error("Failed to publish cache to MQTT", "error", err)
+		if err := s.syncClient.PublishCache(cacheMsg); err != nil {
+			s.logger.Error("Failed to publish cache to MQTT", zap.Error(err))
 			// Continue with deletion anyway
 		} else {
 			s.logger.Info("Published cache to MQTT",
-				"items_count", len(itemsToFlush),
-				"device_id", s.deviceID)
+				zap.Int("items_count", len(itemsToFlush)),
+				zap.String("device_id", s.deviceID))
 		}
 	}
 
@@ -254,34 +261,30 @@ func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
 
 	atomic.AddInt64(&s.cacheSize, -totalFreed)
 	s.logger.Info("Cache flushed",
-		"freed_bytes", totalFreed,
-		"remaining_items", len(keepKeys),
-		"published_items", len(itemsToFlush))
+		zap.Int64("freed_bytes", totalFreed),
+		zap.Int("remaining_items", len(keepKeys)),
+		zap.Int("published_items", len(itemsToFlush)))
 
 	return nil
 }
 
 func (s *BoltStorage) PublishCacheHistory(since time.Time) error {
-	if s.mqttClient == nil {
-		return fmt.Errorf("MQTT client not configured")
+	if s.syncClient == nil {
+		return nil // Skip if no sync client
 	}
 
 	contents, err := s.GetContentSince(since)
 	if err != nil {
-		return fmt.Errorf("failed to get contents: %v", err)
+		return fmt.Errorf("failed to get content since %v: %v", since, err)
 	}
 
-	if len(contents) == 0 {
-		return nil
+	cache := &types.CacheMessage{
+		DeviceID:    s.deviceID,
+		ContentList: contents,
+		TotalSize:   s.GetCacheSize(),
 	}
 
-	cacheMsg := &types.CacheMessage{
-		DeviceID:  s.deviceID,
-		Contents:  contents,
-		Timestamp: time.Now(),
-	}
-
-	return s.mqttClient.PublishCache(cacheMsg)
+	return s.syncClient.PublishCache(cache)
 }
 
 func (s *BoltStorage) GetCacheSize() int64 {
@@ -297,7 +300,7 @@ func (s *BoltStorage) FlushCache() error {
 func (s *BoltStorage) Close() error {
 	// Attempt to flush before closing
 	if err := s.FlushCache(); err != nil {
-		s.logger.Error("Failed to flush cache on close", "error", err)
+		s.logger.Error("Failed to flush cache on close", zap.Error(err))
 	}
 	return s.db.Close()
 }
@@ -348,7 +351,9 @@ func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.Clipbo
 			// Check time boundaries
 			timestamp, err := time.Parse(time.RFC3339Nano, string(k))
 			if err != nil {
-				s.logger.Error("Failed to parse timestamp", "key", string(k), "error", err)
+				s.logger.Error("Failed to parse timestamp", 
+					zap.String("key", string(k)), 
+					zap.Error(err))
 				continue
 			}
 			
@@ -363,7 +368,9 @@ func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.Clipbo
 			// Unmarshal the content
 			var content types.ClipboardContent
 			if err := json.Unmarshal(v, &content); err != nil {
-				s.logger.Error("Failed to unmarshal content", "key", string(k), "error", err)
+				s.logger.Error("Failed to unmarshal content", 
+					zap.String("key", string(k)), 
+					zap.Error(err))
 				continue
 			}
 			
@@ -386,7 +393,9 @@ func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.Clipbo
 			if content.Compressed {
 				decompressed, err := compression.DecompressContent(&content)
 				if err != nil {
-					s.logger.Error("Failed to decompress content", "key", string(k), "error", err)
+					s.logger.Error("Failed to decompress content", 
+						zap.String("key", string(k)), 
+						zap.Error(err))
 					continue
 				}
 				contents = append(contents, decompressed)
@@ -421,9 +430,9 @@ func (s *BoltStorage) LogCompleteHistory(options config.HistoryOptions) error {
 	}
 	
 	s.logger.Info("=== DUMPING CLIPBOARD HISTORY ===",
-		"limit", optionOrDefault(options.Limit, "no limit"),
-		"reverse", options.Reverse,
-		"content_type", optionOrDefault(string(options.ContentType), "all types"))
+		zap.Any("limit", optionOrDefault(options.Limit, "no limit")),
+		zap.Bool("reverse", options.Reverse),
+		zap.String("content_type", optionOrDefault(string(options.ContentType), "all types")))
 	
 	// Get filtered history
 	contents, err := s.GetHistory(options)
@@ -456,16 +465,16 @@ func (s *BoltStorage) LogCompleteHistory(options config.HistoryOptions) error {
 		}
 		
 		s.logger.Info(fmt.Sprintf("History item %d:", i+1),
-			"timestamp", content.Created.Format(time.RFC3339),
-			"type", content.Type,
-			"size", len(content.Data),
-			"compressed", content.Compressed,
-			"content", preview)
+			zap.String("timestamp", content.Created.Format(time.RFC3339)),
+			zap.String("type", string(content.Type)),
+			zap.Int("size", len(content.Data)),
+			zap.Bool("compressed", content.Compressed),
+			zap.String("content", preview))
 	}
 	
 	s.logger.Info("=== END OF CLIPBOARD HISTORY ===", 
-		"total_items", len(contents),
-		"total_size_bytes", s.GetCacheSize())
+		zap.Int("total_items", len(contents)),
+		zap.Int64("total_size_bytes", s.GetCacheSize()))
 		
 	return nil
 }
@@ -488,7 +497,7 @@ func optionOrDefault(value interface{}, defaultText string) string {
 	}
 }
 
-// SetMQTTClient sets the MQTT client for the storage
-func (s *BoltStorage) SetMQTTClient(client broker.MQTTClientInterface) {
-	s.mqttClient = client
+// SetSyncClient sets the sync client for this storage instance
+func (s *BoltStorage) SetSyncClient(client sync.SyncClient) {
+	s.syncClient = client
 }

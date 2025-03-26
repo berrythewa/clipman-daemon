@@ -7,16 +7,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/berrythewa/clipman-daemon/internal/broker"
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
+	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
 )
 
 type Monitor struct {
 	config           *config.Config
-	mqttClient       broker.MQTTClientInterface
+	syncClient       sync.SyncClient
 	logger           *utils.Logger
 	clipboard        Clipboard
 	storage          *storage.BoltStorage
@@ -28,11 +28,11 @@ type Monitor struct {
 	contentProcessor *ContentProcessor
 }
 
-func NewMonitor(cfg *config.Config, mqttClient broker.MQTTClientInterface, logger *utils.Logger, storage *storage.BoltStorage) *Monitor {
+func NewMonitor(cfg *config.Config, syncClient sync.SyncClient, logger *utils.Logger, storage *storage.BoltStorage) *Monitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Monitor{
 		config:           cfg,
-		mqttClient:       mqttClient,
+		syncClient:       syncClient,
 		logger:           logger,
 		clipboard:        NewClipboard(),
 		storage:          storage,
@@ -194,7 +194,10 @@ func (m *Monitor) saveContent(content *types.ClipboardContent) error {
 }
 
 func (m *Monitor) publishContent(content *types.ClipboardContent) error {
-	return m.mqttClient.PublishContent(content)
+	if m.syncClient == nil {
+		return nil // Skip publishing if no sync client
+	}
+	return m.syncClient.PublishContent(content)
 }
 
 func (m *Monitor) isContentEqual(content1, content2 *types.ClipboardContent) bool {

@@ -6,7 +6,8 @@ import (
 
 // CacheMessage represents a collection of clipboard contents to be published
 type CacheMessage struct {
-	DeviceID  string
-	Contents  []*ClipboardContent
-	Timestamp time.Time
+	DeviceID    string
+	ContentList []*ClipboardContent
+	TotalSize   int64
+	Timestamp   time.Time
 }

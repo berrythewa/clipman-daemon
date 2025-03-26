@@ -64,12 +64,15 @@ func initConfig() {
 	if verbose {
 		cfg.EnableLogging = true
 	}
+	
+	// Initialize root commands
+	// Child commands are added in their respective init() functions
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
-	err := RootCmd.Execute()
-	if err != nil {
+	if err := RootCmd.Execute(); err != nil {
+		fmt.Println(err)
 		os.Exit(1)
 	}
 } 

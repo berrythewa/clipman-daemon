@@ -79,10 +79,27 @@ type MQTTClientInterface interface {
 	IsConnected() bool
 }
 
+// Topic constants for MQTT messaging
+const (
+	// Root topic for all Clipman messages
+	TopicClipman = "clipman"
+	
+	// Group related topics
+	TopicGroups     = "groups"
+	TopicGroupJoin  = "join"
+	TopicGroupLeave = "leave"
+	
+	// Content related topics
+	TopicClipboard = "clipboard"
+	
+	// Command related topics
+	TopicCommand = "command"
+)
+
 // MQTTClient implements MQTTClientInterface
 type MQTTClient struct {
 	client          mqtt.Client
-	config          *config.Config
+	cfg             *config.Config
 	logger          *zap.Logger
 	deviceID        string
 	mu              sync.Mutex
@@ -115,7 +132,7 @@ func CreateClient(cfg *config.Config, logger *zap.Logger) (SyncClient, error) {
 // NewMQTTClient creates a new MQTT client with synchronization capabilities
 func NewMQTTClient(cfg *config.Config, logger *zap.Logger) (*MQTTClient, error) {
 	client := &MQTTClient{
-		config:          cfg,
+		cfg:             cfg,
 		logger:          logger,
 		deviceID:        cfg.DeviceID,
 		commandHandlers: make(map[string]func([]byte) error),
@@ -124,359 +141,574 @@ func NewMQTTClient(cfg *config.Config, logger *zap.Logger) (*MQTTClient, error) 
 		syncMode:        cfg.Sync.Mode,
 	}
 
-	// Use either Sync or Broker config, preferring Sync
-	brokerURL := cfg.Sync.URL
-	brokerUsername := cfg.Sync.Username
-	brokerPassword := cfg.Sync.Password
+	// Create MQTT client options
+	opts := mqtt.NewClientOptions()
 	
-	if brokerURL == "" {
-		brokerURL = cfg.Broker.URL
-		brokerUsername = cfg.Broker.Username
-		brokerPassword = cfg.Broker.Password
-	}
-
-	// If a default group is specified, add it
-	if cfg.Sync.DefaultGroup != "" {
-		client.groups[cfg.Sync.DefaultGroup] = &SyncGroup{
-			ID:       cfg.Sync.DefaultGroup,
-			Name:     "Default Group",
-			JoinedAt: time.Now(),
+	// Configure based on sync mode
+	if cfg.Sync.IsModeCentralized() {
+		// Centralized mode requires a broker URL
+		if cfg.Sync.URL == "" {
+			return nil, fmt.Errorf("MQTT broker URL is required for centralized mode")
 		}
+		
+		opts.AddBroker(cfg.Sync.URL)
+		
+		// Set credentials if provided
+		if cfg.Sync.Username != "" {
+			opts.SetUsername(cfg.Sync.Username)
+			opts.SetPassword(cfg.Sync.Password)
+		}
+	} else {
+		// P2P mode - for now, use a default local broker
+		// TODO: Implement P2P discovery mechanism
+		opts.AddBroker("tcp://localhost:1883")
 	}
-
-	// Setup MQTT client
-	opts := mqtt.NewClientOptions().
-		AddBroker(brokerURL).
-		SetClientID(cfg.DeviceID).
-		SetUsername(brokerUsername).
-		SetPassword(brokerPassword).
-		SetAutoReconnect(true).
-		SetOnConnectHandler(client.onConnect).
-		SetConnectionLostHandler(client.onConnectionLost).
-		SetReconnectingHandler(client.onReconnecting)
-
+	
+	// Common options
+	opts.SetClientID(fmt.Sprintf("%s-%s", TopicClipman, cfg.DeviceID))
+	opts.SetCleanSession(true)
+	opts.SetAutoReconnect(true)
+	opts.SetConnectionLostHandler(client.onConnectionLost)
+	opts.SetOnConnectHandler(client.onConnect)
+	
+	// Create client
 	client.client = mqtt.NewClient(opts)
-
-	if err := client.connect(); err != nil {
-		return nil, err
-	}
-
+	
 	return client, nil
 }
 
-// connect establishes a connection to the MQTT broker
-func (m *MQTTClient) connect() error {
-	token := m.client.Connect()
-	if token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to connect to MQTT broker: %v", token.Error())
+// Connect establishes a connection to the MQTT broker
+func (m *MQTTClient) Connect() error {
+	if token := m.client.Connect(); token.Wait() && token.Error() != nil {
+		return token.Error()
 	}
+	
 	m.setConnected(true)
-	return nil
-}
-
-// PublishContent publishes clipboard content
-func (m *MQTTClient) PublishContent(content *types.ClipboardContent) error {
-	if m == nil || m.client == nil {
-		return nil // Skip publishing if no MQTT client
-	}
-
-	if !m.connected {
-		return fmt.Errorf("not connected to MQTT broker")
-	}
-
-	// Check content against filters if filtering is enabled
-	if m.contentFilter != nil && !m.shouldPublishContent(content) {
-		m.logger.Debug("Content filtered out by sync filter", 
-			"type", content.Type, 
-			"size", len(content.Data))
-		return nil
-	}
-
-	// Determine if we should use group-based topics
-	useGroups := len(m.groups) > 0
-
-	if useGroups {
-		// Publish to all groups this client is a member of
-		for groupID := range m.groups {
-			topic := fmt.Sprintf("clipman/group/%s/content/%s", groupID, m.deviceID)
-			payload, err := json.Marshal(content)
-			if err != nil {
-				return fmt.Errorf("failed to marshal clipboard content: %v", err)
-			}
+	m.logger.Info("Connected to MQTT broker")
 	
-			token := m.client.Publish(topic, 1, false, payload)
-			if token.Wait() && token.Error() != nil {
-				return fmt.Errorf("failed to publish content to group %s: %v", groupID, token.Error())
-			}
-		}
-	} else {
-		// Fallback to original topic structure for backward compatibility
-		topic := fmt.Sprintf("clipman/%s/content", m.deviceID)
-		payload, err := json.Marshal(content)
-		if err != nil {
-			return fmt.Errorf("failed to marshal clipboard content: %v", err)
-		}
-	
-		token := m.client.Publish(topic, 1, false, payload)
-		if token.Wait() && token.Error() != nil {
-			return fmt.Errorf("failed to publish content: %v", token.Error())
+	// Auto-join default group if configured
+	if m.cfg.Sync.DefaultGroup != "" && m.cfg.Sync.AutoJoinGroups {
+		if err := m.JoinGroup(m.cfg.Sync.DefaultGroup); err != nil {
+			m.logger.Error("Failed to auto-join default group", zap.Error(err))
 		}
 	}
 	
 	return nil
 }
 
-// PublishCache publishes cache information
-func (m *MQTTClient) PublishCache(cache *types.CacheMessage) error {
-	if m == nil || m.client == nil {
-		return nil // Skip publishing if no MQTT client
+// Disconnect closes the connection to the MQTT broker
+func (m *MQTTClient) Disconnect() {
+	if m.client != nil && m.IsConnected() {
+		m.client.Disconnect(250)
+		m.setConnected(false)
 	}
-
-	if !m.connected {
-		return fmt.Errorf("not connected to MQTT broker")
-	}
-
-	// Determine if we should use group-based topics
-	useGroups := len(m.groups) > 0
-
-	if useGroups {
-		// Publish to all groups this client is a member of
-		for groupID := range m.groups {
-			topic := fmt.Sprintf("clipman/group/%s/cache/%s", groupID, cache.DeviceID)
-			payload, err := json.Marshal(cache)
-			if err != nil {
-				return fmt.Errorf("failed to marshal cache: %v", err)
-			}
-		
-			token := m.client.Publish(topic, 1, false, payload)
-			if token.Wait() && token.Error() != nil {
-				return fmt.Errorf("failed to publish cache to group %s: %v", groupID, token.Error())
-			}
-		}
-	} else {
-		// Fallback to original topic structure for backward compatibility
-		topic := fmt.Sprintf("clipman/cache/%s", cache.DeviceID)
-		payload, err := json.Marshal(cache)
-		if err != nil {
-			return fmt.Errorf("failed to marshal cache: %v", err)
-		}
-	
-		token := m.client.Publish(topic, 1, false, payload)
-		if token.Wait() && token.Error() != nil {
-			return fmt.Errorf("failed to publish cache: %v", token.Error())
-		}
-	}
-	
-	return nil
+	m.logger.Info("Disconnected from MQTT broker")
 }
 
-// SubscribeToCommands subscribes to command messages
-func (m *MQTTClient) SubscribeToCommands() error {
-	if !m.connected {
-		return fmt.Errorf("not connected to MQTT broker")
-	}
-
-	// Subscribe to device-specific commands (always do this for backward compatibility)
-	topic := fmt.Sprintf("clipman/%s/commands", m.deviceID)
-	token := m.client.Subscribe(topic, 1, m.handleCommand)
-	if token.Wait() && token.Error() != nil {
-		return fmt.Errorf("failed to subscribe to commands: %v", token.Error())
-	}
-
-	// If we have groups, also subscribe to group command topics
-	if len(m.groups) > 0 {
-		for groupID := range m.groups {
-			// Subscribe to direct group commands
-			groupTopic := fmt.Sprintf("clipman/group/%s/commands/%s", groupID, m.deviceID)
-			token := m.client.Subscribe(groupTopic, 1, m.handleCommand)
-			if token.Wait() && token.Error() != nil {
-				m.logger.Warn("Failed to subscribe to group commands", 
-					"group", groupID, "error", token.Error())
-				continue
-			}
-			
-			// Subscribe to broadcast group commands
-			broadcastTopic := fmt.Sprintf("clipman/group/%s/commands/broadcast", groupID)
-			token = m.client.Subscribe(broadcastTopic, 1, m.handleCommand)
-			if token.Wait() && token.Error() != nil {
-				m.logger.Warn("Failed to subscribe to broadcast commands", 
-					"group", groupID, "error", token.Error())
-			}
-		}
-	}
-	
-	return nil
-}
-
-// handleCommand processes incoming command messages
-func (m *MQTTClient) handleCommand(client mqtt.Client, msg mqtt.Message) {
-	var command struct {
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-	}
-
-	if err := json.Unmarshal(msg.Payload(), &command); err != nil {
-		m.logger.Error("Failed to unmarshal command", "error", err)
-		return
-	}
-
-	handler, ok := m.commandHandlers[command.Type]
-	if !ok {
-		m.logger.Warn("Unknown command type", "type", command.Type)
-		return
-	}
-
-	if err := handler(command.Data); err != nil {
-		m.logger.Error("Failed to handle command", "type", command.Type, "error", err)
-	}
-}
-
-// RegisterCommandHandler registers a handler for a specific command type
-func (m *MQTTClient) RegisterCommandHandler(commandType string, handler func([]byte) error) {
+// IsConnected returns true if connected to the broker
+func (m *MQTTClient) IsConnected() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.commandHandlers[commandType] = handler
-}
-
-// Event handlers for MQTT client
-
-func (m *MQTTClient) onConnect(client mqtt.Client) {
-	m.logger.Info("Connected to MQTT broker")
-	m.setConnected(true)
-	if err := m.SubscribeToCommands(); err != nil {
-		m.logger.Error("Failed to resubscribe to commands", "error", err)
+	
+	if m.client == nil {
+		return false
 	}
+	return m.connected && m.client.IsConnected()
 }
 
-func (m *MQTTClient) onConnectionLost(client mqtt.Client, err error) {
-	m.logger.Error("Connection lost", "error", err)
-	m.setConnected(false)
-}
-
-func (m *MQTTClient) onReconnecting(client mqtt.Client, opts *mqtt.ClientOptions) {
-	m.logger.Info("Attempting to reconnect to MQTT broker")
-}
-
-// Helper methods
-
+// setConnected safely updates the connection status
 func (m *MQTTClient) setConnected(status bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.connected = status
 }
 
-// IsConnected returns the connection status
-func (m *MQTTClient) IsConnected() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.connected
-}
-
-// Disconnect disconnects from the MQTT broker
-func (m *MQTTClient) Disconnect() error {
-	if m.client != nil {
-		m.client.Disconnect(250)
-		m.setConnected(false)
+// JoinGroup subscribes to a group's topics
+func (m *MQTTClient) JoinGroup(groupName string) error {
+	if !m.IsConnected() {
+		if err := m.Connect(); err != nil {
+			return fmt.Errorf("failed to connect: %w", err)
+		}
 	}
-	return nil
-}
-
-// Group-related methods
-
-// JoinGroup joins a synchronization group
-func (m *MQTTClient) JoinGroup(groupID string) error {
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	
-	// Check if already a member
-	if _, exists := m.groups[groupID]; exists {
-		return nil // Already a member
+	// Check if already joined
+	if _, exists := m.groups[groupName]; exists {
+		return nil // Already joined
 	}
 	
-	// Create new group entry
-	m.groups[groupID] = &SyncGroup{
-		ID:       groupID,
-		JoinedAt: time.Now(),
+	// Create new group
+	m.groups[groupName] = &SyncGroup{
+		Name:    groupName,
+		Members: make(map[string]string),
 	}
 	
-	// If we're connected, update subscriptions
-	if m.isConnected {
-		// Subscribe to group content
-		contentTopic := fmt.Sprintf("clipman/group/%s/content/+", groupID)
-		if token := m.client.Subscribe(contentTopic, 1, m.handleGroupContent); token.Wait() && token.Error() != nil {
-			delete(m.groups, groupID)
-			return fmt.Errorf("failed to subscribe to group content: %v", token.Error())
-		}
-		
-		// Subscribe to group commands
-		commandTopic := fmt.Sprintf("clipman/group/%s/commands/%s", groupID, m.deviceID)
-		if token := m.client.Subscribe(commandTopic, 1, m.handleCommand); token.Wait() && token.Error() != nil {
-			// Try to unsubscribe from the content topic
-			m.client.Unsubscribe(contentTopic)
-			delete(m.groups, groupID)
-			return fmt.Errorf("failed to subscribe to group commands: %v", token.Error())
-		}
-		
-		// Subscribe to broadcast commands
-		broadcastTopic := fmt.Sprintf("clipman/group/%s/commands/broadcast", groupID)
-		if token := m.client.Subscribe(broadcastTopic, 1, m.handleCommand); token.Wait() && token.Error() != nil {
-			m.logger.Warn("Failed to subscribe to broadcast commands", 
-				"group", groupID, "error", token.Error())
-			// Non-fatal error, continue
-		}
+	// Subscribe to group's clipboard topic
+	clipboardTopic := fmt.Sprintf("%s/%s/%s/#", TopicClipman, TopicGroups, groupName)
+	if err := m.subscribeUnsafe(clipboardTopic, m.handleClipboardMessage); err != nil {
+		delete(m.groups, groupName)
+		return fmt.Errorf("failed to subscribe to group clipboard: %w", err)
 	}
 	
-	m.logger.Info("Joined sync group", "group", groupID)
+	// Subscribe to group's command topic
+	commandTopic := fmt.Sprintf("%s/%s/%s/%s/#", TopicClipman, TopicGroups, groupName, TopicCommand)
+	if err := m.subscribeUnsafe(commandTopic, m.handleCommandMessage); err != nil {
+		delete(m.groups, groupName)
+		return fmt.Errorf("failed to subscribe to group commands: %w", err)
+	}
+	
+	// Send join message
+	joinTopic := fmt.Sprintf("%s/%s/%s/%s", TopicClipman, TopicGroups, groupName, TopicGroupJoin)
+	joinPayload := struct {
+		DeviceID   string    `json:"device_id"`
+		DeviceName string    `json:"device_name"`
+		Timestamp  time.Time `json:"timestamp"`
+	}{
+		DeviceID:   m.deviceID,
+		DeviceName: m.cfg.DeviceName,
+		Timestamp:  time.Now(),
+	}
+	
+	if err := m.publishUnsafe(joinTopic, joinPayload); err != nil {
+		return fmt.Errorf("failed to publish join message: %w", err)
+	}
+	
+	m.logger.Info("Joined sync group", zap.String("group", groupName))
 	return nil
 }
 
-// LeaveGroup leaves a synchronization group
-func (m *MQTTClient) LeaveGroup(groupID string) error {
+// LeaveGroup unsubscribes from a group's topics
+func (m *MQTTClient) LeaveGroup(groupName string) error {
+	if !m.IsConnected() {
+		return fmt.Errorf("not connected to MQTT broker")
+	}
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	
-	// Check if a member
-	if _, exists := m.groups[groupID]; !exists {
-		return nil // Not a member
+	// Check if joined
+	if _, exists := m.groups[groupName]; !exists {
+		return nil // Not joined
 	}
 	
-	// If connected, unsubscribe from group topics
-	if m.isConnected {
-		contentTopic := fmt.Sprintf("clipman/group/%s/content/+", groupID)
-		commandTopic := fmt.Sprintf("clipman/group/%s/commands/%s", groupID, m.deviceID)
-		broadcastTopic := fmt.Sprintf("clipman/group/%s/commands/broadcast", groupID)
-		
-		// Unsubscribe from all topics
-		if token := m.client.Unsubscribe(contentTopic, commandTopic, broadcastTopic); token.Wait() && token.Error() != nil {
-			m.logger.Warn("Failed to unsubscribe from some group topics", 
-				"group", groupID, "error", token.Error())
-			// Continue anyway
-		}
+	// Send leave message
+	leaveTopic := fmt.Sprintf("%s/%s/%s/%s", TopicClipman, TopicGroups, groupName, TopicGroupLeave)
+	leavePayload := struct {
+		DeviceID   string    `json:"device_id"`
+		DeviceName string    `json:"device_name"`
+		Timestamp  time.Time `json:"timestamp"`
+	}{
+		DeviceID:   m.deviceID,
+		DeviceName: m.cfg.DeviceName,
+		Timestamp:  time.Now(),
 	}
 	
-	// Remove from groups map
-	delete(m.groups, groupID)
+	_ = m.publishUnsafe(leaveTopic, leavePayload) // Best effort
 	
-	m.logger.Info("Left sync group", "group", groupID)
+	// Unsubscribe from group's clipboard topic
+	clipboardTopic := fmt.Sprintf("%s/%s/%s/#", TopicClipman, TopicGroups, groupName)
+	_ = m.unsubscribeUnsafe(clipboardTopic) // Best effort
+	
+	// Unsubscribe from group's command topic
+	commandTopic := fmt.Sprintf("%s/%s/%s/%s/#", TopicClipman, TopicGroups, groupName, TopicCommand)
+	_ = m.unsubscribeUnsafe(commandTopic) // Best effort
+	
+	// Remove group
+	delete(m.groups, groupName)
+	
+	m.logger.Info("Left sync group", zap.String("group", groupName))
 	return nil
 }
 
-// ListGroups returns all groups this client is a member of
+// ListGroups returns a list of groups the client has joined
 func (m *MQTTClient) ListGroups() ([]string, error) {
+	if !m.IsConnected() {
+		return nil, fmt.Errorf("not connected to MQTT broker")
+	}
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	
 	groups := make([]string, 0, len(m.groups))
-	for groupID := range m.groups {
-		groups = append(groups, groupID)
+	for name := range m.groups {
+		groups = append(groups, name)
 	}
 	
 	return groups, nil
 }
 
-// Content filtering methods
+// Publish publishes a message to the specified topic
+func (m *MQTTClient) Publish(topic string, payload interface{}) error {
+	if !m.IsConnected() {
+		if err := m.Connect(); err != nil {
+			return fmt.Errorf("failed to connect: %w", err)
+		}
+	}
+	
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	return m.publishUnsafe(topic, payload)
+}
 
-// SetContentFilter sets filtering criteria for content synchronization
+// publishUnsafe publishes a message without checking connection state or locking
+// Caller must hold the mutex
+func (m *MQTTClient) publishUnsafe(topic string, payload interface{}) error {
+	// Convert payload to JSON
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	
+	// Publish message
+	token := m.client.Publish(topic, 0, false, jsonPayload)
+	token.Wait()
+	
+	if err := token.Error(); err != nil {
+		m.logger.Error("Failed to publish message", 
+			zap.String("topic", topic), 
+			zap.Error(err))
+		return err
+	}
+	
+	m.logger.Debug("Published message", 
+		zap.String("topic", topic), 
+		zap.Int("payload_size", len(jsonPayload)))
+	
+	return nil
+}
+
+// Subscribe subscribes to the specified topic
+func (m *MQTTClient) Subscribe(topic string, callback types.MessageCallback) error {
+	if !m.IsConnected() {
+		if err := m.Connect(); err != nil {
+			return fmt.Errorf("failed to connect: %w", err)
+		}
+	}
+	
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	return m.subscribeUnsafe(topic, callback)
+}
+
+// subscribeUnsafe subscribes to a topic without checking connection state or locking
+// Caller must hold the mutex
+func (m *MQTTClient) subscribeUnsafe(topic string, callback types.MessageCallback) error {
+	// Create wrapper function to convert MQTT message to our message type
+	wrapper := func(client mqtt.Client, msg mqtt.Message) {
+		message := types.Message{
+			Topic:   msg.Topic(),
+			Payload: msg.Payload(),
+		}
+		callback(message)
+	}
+	
+	// Subscribe to topic
+	token := m.client.Subscribe(topic, 0, wrapper)
+	token.Wait()
+	
+	if err := token.Error(); err != nil {
+		m.logger.Error("Failed to subscribe", 
+			zap.String("topic", topic), 
+			zap.Error(err))
+		return err
+	}
+	
+	m.logger.Debug("Subscribed to topic", zap.String("topic", topic))
+	return nil
+}
+
+// Unsubscribe unsubscribes from the specified topic
+func (m *MQTTClient) Unsubscribe(topic string) error {
+	if !m.IsConnected() {
+		return fmt.Errorf("not connected to MQTT broker")
+	}
+	
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	return m.unsubscribeUnsafe(topic)
+}
+
+// unsubscribeUnsafe unsubscribes from a topic without checking connection state or locking
+// Caller must hold the mutex
+func (m *MQTTClient) unsubscribeUnsafe(topic string) error {
+	// Unsubscribe from topic
+	token := m.client.Unsubscribe(topic)
+	token.Wait()
+	
+	if err := token.Error(); err != nil {
+		m.logger.Error("Failed to unsubscribe", 
+			zap.String("topic", topic), 
+			zap.Error(err))
+		return err
+	}
+	
+	m.logger.Debug("Unsubscribed from topic", zap.String("topic", topic))
+	return nil
+}
+
+// RegisterCommandHandler registers a handler for a specific command
+func (m *MQTTClient) RegisterCommandHandler(command string, handler func([]byte) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	m.commandHandlers[command] = handler
+	m.logger.Debug("Registered command handler", zap.String("command", command))
+}
+
+// SendCommand sends a command to a specific group
+func (m *MQTTClient) SendCommand(groupName, command string, payload interface{}) error {
+	if !m.IsConnected() {
+		if err := m.Connect(); err != nil {
+			return fmt.Errorf("failed to connect: %w", err)
+		}
+	}
+	
+	commandTopic := fmt.Sprintf("%s/%s/%s/%s/%s", 
+		TopicClipman, TopicGroups, groupName, TopicCommand, command)
+	
+	return m.Publish(commandTopic, payload)
+}
+
+// onConnect is called when the client connects to the broker
+func (m *MQTTClient) onConnect(client mqtt.Client) {
+	m.setConnected(true)
+	m.logger.Info("Connected to MQTT broker")
+	
+	// Restore subscriptions
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	for groupName := range m.groups {
+		// Resubscribe to group topics
+		clipboardTopic := fmt.Sprintf("%s/%s/%s/#", TopicClipman, TopicGroups, groupName)
+		if err := m.subscribeUnsafe(clipboardTopic, m.handleClipboardMessage); err != nil {
+			m.logger.Error("Failed to resubscribe to group clipboard", 
+				zap.String("group", groupName),
+				zap.Error(err))
+		}
+		
+		commandTopic := fmt.Sprintf("%s/%s/%s/%s/#", TopicClipman, TopicGroups, groupName, TopicCommand)
+		if err := m.subscribeUnsafe(commandTopic, m.handleCommandMessage); err != nil {
+			m.logger.Error("Failed to resubscribe to group commands", 
+				zap.String("group", groupName),
+				zap.Error(err))
+		}
+	}
+}
+
+// onConnectionLost is called when the client loses connection to the broker
+func (m *MQTTClient) onConnectionLost(client mqtt.Client, err error) {
+	m.setConnected(false)
+	m.logger.Error("Lost connection to MQTT broker", zap.Error(err))
+}
+
+// handleClipboardMessage processes incoming clipboard messages
+func (m *MQTTClient) handleClipboardMessage(msg types.Message) {
+	m.logger.Debug("Received clipboard message", zap.String("topic", msg.Topic))
+	
+	// TODO: Process clipboard content
+	// - Parse the JSON payload
+	// - Apply content filtering rules
+	// - Update local clipboard if appropriate
+}
+
+// handleCommandMessage processes incoming command messages
+func (m *MQTTClient) handleCommandMessage(msg types.Message) {
+	m.logger.Debug("Received command message", zap.String("topic", msg.Topic))
+	
+	// Extract command from topic
+	// Expected format: clipman/groups/{group}/command/{command}
+	parts := splitTopic(msg.Topic)
+	if len(parts) < 5 {
+		m.logger.Error("Invalid command topic format", zap.String("topic", msg.Topic))
+		return
+	}
+	
+	command := parts[4]
+	
+	// Find handler for this command
+	m.mu.Lock()
+	handler, exists := m.commandHandlers[command]
+	m.mu.Unlock()
+	
+	if !exists {
+		m.logger.Error("No handler for command", zap.String("command", command))
+		return
+	}
+	
+	// Execute handler
+	if err := handler(msg.Payload); err != nil {
+		m.logger.Error("Command handler failed", 
+			zap.String("command", command),
+			zap.Error(err))
+	}
+}
+
+// Helper function to split a topic string into parts
+func splitTopic(topic string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(topic); i++ {
+		if topic[i] == '/' {
+			if i > start {
+				parts = append(parts, topic[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(topic) {
+		parts = append(parts, topic[start:])
+	}
+	return parts
+}
+
+// PublishContent publishes clipboard content to subscribed devices
+func (m *MQTTClient) PublishContent(content *types.ClipboardContent) error {
+	if !m.shouldPublishContent(content) {
+		m.logger.Debug("Content filtered, not publishing", 
+			zap.String("content_type", string(content.Type)),
+			zap.Int("content_size", len(content.Data)))
+		return nil
+	}
+
+	// Build the content message
+	payload := struct {
+		DeviceID   string                  `json:"device_id"`
+		DeviceName string                  `json:"device_name"`
+		Timestamp  time.Time               `json:"timestamp"`
+		Content    *types.ClipboardContent `json:"content"`
+	}{
+		DeviceID:   m.deviceID,
+		DeviceName: m.cfg.DeviceName,
+		Timestamp:  time.Now(),
+		Content:    content,
+	}
+
+	// For each group, publish to the clipboard topic
+	m.mu.Lock()
+	activeGroups := make([]string, 0, len(m.groups))
+	for groupName := range m.groups {
+		activeGroups = append(activeGroups, groupName)
+	}
+	m.mu.Unlock()
+
+	if len(activeGroups) == 0 {
+		// If not in any groups, simply return without error
+		return nil
+	}
+
+	// Publish to each group
+	var lastErr error
+	for _, groupName := range activeGroups {
+		topic := fmt.Sprintf("%s/%s/%s/%s/%s", 
+			TopicClipman, TopicGroups, groupName, TopicClipboard, m.deviceID)
+		
+		if err := m.Publish(topic, payload); err != nil {
+			m.logger.Error("Failed to publish clipboard content", 
+				zap.String("group", groupName),
+				zap.Error(err))
+			lastErr = err
+		}
+	}
+
+	return lastErr
+}
+
+// PublishCache broadcasts a cache update message to synced devices
+func (m *MQTTClient) PublishCache(cache *types.CacheMessage) error {
+	// Build the cache message
+	payload := struct {
+		DeviceID   string             `json:"device_id"`
+		DeviceName string             `json:"device_name"`
+		Timestamp  time.Time          `json:"timestamp"`
+		Cache      *types.CacheMessage `json:"cache"`
+	}{
+		DeviceID:   m.deviceID,
+		DeviceName: m.cfg.DeviceName,
+		Timestamp:  time.Now(),
+		Cache:      cache,
+	}
+
+	// For each group, publish to the cache topic
+	m.mu.Lock()
+	activeGroups := make([]string, 0, len(m.groups))
+	for groupName := range m.groups {
+		activeGroups = append(activeGroups, groupName)
+	}
+	m.mu.Unlock()
+
+	if len(activeGroups) == 0 {
+		// If not in any groups, simply return without error
+		return nil
+	}
+
+	// Publish to each group
+	var lastErr error
+	for _, groupName := range activeGroups {
+		topic := fmt.Sprintf("%s/%s/%s/cache/%s", 
+			TopicClipman, TopicGroups, groupName, m.deviceID)
+		
+		if err := m.Publish(topic, payload); err != nil {
+			m.logger.Error("Failed to publish cache update", 
+				zap.String("group", groupName),
+				zap.Error(err))
+			lastErr = err
+		}
+	}
+
+	return lastErr
+}
+
+// shouldPublishContent checks if content should be published based on filters
+func (m *MQTTClient) shouldPublishContent(content *types.ClipboardContent) bool {
+	m.mu.Lock()
+	filter := m.contentFilter
+	m.mu.Unlock()
+
+	// If no filter set, allow all
+	if filter == nil {
+		return true
+	}
+
+	// Check content type
+	if len(filter.AllowedTypes) > 0 {
+		allowed := false
+		for _, allowedType := range filter.AllowedTypes {
+			if string(allowedType) == string(content.Type) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+
+	// Check excluded types
+	if len(filter.ExcludedTypes) > 0 {
+		for _, excludedType := range filter.ExcludedTypes {
+			if string(excludedType) == string(content.Type) {
+				return false
+			}
+		}
+	}
+
+	// Check maximum size
+	if filter.MaxSize > 0 && int64(len(content.Data)) > filter.MaxSize {
+		return false
+	}
+
+	// Add pattern matching here if needed
+
+	return true
+}
+
+// SetContentFilter sets the filtering criteria for content synchronization
 func (m *MQTTClient) SetContentFilter(filter *ContentFilter) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -493,52 +725,68 @@ func (m *MQTTClient) GetContentFilter() *ContentFilter {
 	return m.contentFilter
 }
 
-// shouldPublishContent checks if content passes the filter criteria
-func (m *MQTTClient) shouldPublishContent(content *types.ClipboardContent) bool {
-	if m.contentFilter == nil {
-		return true // No filter, publish everything
+// SubscribeToCommands subscribes to command messages
+func (m *MQTTClient) SubscribeToCommands() error {
+	if !m.IsConnected() {
+		return fmt.Errorf("not connected to MQTT broker")
 	}
-	
-	// Check content type filters
-	if len(m.contentFilter.AllowedTypes) > 0 {
-		allowed := false
-		for _, t := range m.contentFilter.AllowedTypes {
-			if content.Type == t {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			return false
-		}
-	}
-	
-	// Check excluded types
-	for _, t := range m.contentFilter.ExcludedTypes {
-		if content.Type == t {
-			return false
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// For each group, subscribe to command topics
+	for groupName := range m.groups {
+		// Subscribe to group commands
+		commandTopic := fmt.Sprintf("%s/%s/%s/%s/#", TopicClipman, TopicGroups, groupName, TopicCommand)
+		if err := m.subscribeUnsafe(commandTopic, m.handleCommandMessage); err != nil {
+			m.logger.Error("Failed to subscribe to group commands", 
+				zap.String("group", groupName),
+				zap.Error(err))
 		}
 	}
-	
-	// Check size
-	if m.contentFilter.MaxSize > 0 && int64(len(content.Data)) > m.contentFilter.MaxSize {
-		return false
+
+	// For backward compatibility, also subscribe to legacy command topics
+	legacyTopic := fmt.Sprintf("clipman/%s/commands", m.deviceID)
+	wrapper := func(msg types.Message) {
+		if msg.Topic == legacyTopic {
+			m.handleLegacyCommand(msg.Payload)
+		}
 	}
 	
-	// Future: Implement pattern-based filtering
-	// For now, just allow the content
+	if err := m.subscribeUnsafe(legacyTopic, wrapper); err != nil {
+		m.logger.Warn("Failed to subscribe to legacy commands", zap.Error(err))
+	}
 	
-	return true
+	return nil
 }
 
-// handleGroupContent processes content received from a group
-func (m *MQTTClient) handleGroupContent(client mqtt.Client, msg mqtt.Message) {
-	// Implementation will decode and process content from groups
-	// This stub is here for subscriptions to work
+// handleLegacyCommand handles commands received in the legacy format
+func (m *MQTTClient) handleLegacyCommand(payload []byte) {
+	// Try to determine the command type from the payload
+	var cmd struct {
+		Type string `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
 	
-	// Topic format is clipman/group/{groupID}/content/{deviceID}
-	// Extract the sender device ID from the topic
+	if err := json.Unmarshal(payload, &cmd); err != nil {
+		m.logger.Error("Failed to unmarshal legacy command", zap.Error(err))
+		return
+	}
 	
-	// Future: Process and possibly store/display the content
-	m.logger.Debug("Received group content", "topic", msg.Topic())
+	// Find the handler for this command type
+	m.mu.Lock()
+	handler, exists := m.commandHandlers[cmd.Type]
+	m.mu.Unlock()
+	
+	if !exists {
+		m.logger.Error("No handler for legacy command type", zap.String("type", cmd.Type))
+		return
+	}
+	
+	// Execute the handler with the command data
+	if err := handler([]byte(cmd.Data)); err != nil {
+		m.logger.Error("Legacy command handler failed", 
+			zap.String("type", cmd.Type), 
+			zap.Error(err))
+	}
 }

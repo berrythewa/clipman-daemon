@@ -14,84 +14,45 @@ import (
 	"github.com/google/uuid"
 )
 
-// SystemPaths holds all the important file and directory paths used by the application
+// SystemPaths holds paths for various configuration and data files
 type SystemPaths struct {
-	// Config file location
-	ConfigFile string
-	
-	// Base directory for all application data
-	DataDir string
-	
-	// Database file location
-	DBFile string
-	
-	// Directory for temporary files
-	TempDir string
-	
-	// Directory for log files
-	LogDir string
+	ConfigFile string `json:"config_file"`
+	DataDir    string `json:"data_dir"`
+	DBFile     string `json:"db_file"`
+	TempDir    string `json:"temp_dir"`
+	LogDir     string `json:"log_dir"`
 }
 
-// LogConfig defines logging-related configuration
+// LogConfig holds logging-related configuration
 type LogConfig struct {
-	// Enable logging to file
-	EnableFileLogging bool `json:"enable_file_logging"`
-	
-	// Maximum size of log files in bytes before rotation (default 10MB)
-	MaxLogSize int64 `json:"max_log_size"`
-	
-	// Maximum number of log files to keep (default 5)
-	MaxLogFiles int `json:"max_log_files"`
-	
-	// Log format (text or json)
-	Format string `json:"format"`
+	EnableFileLogging bool   `json:"enable_file_logging"`
+	MaxLogSize        int    `json:"max_log_size"`
+	MaxLogFiles       int    `json:"max_log_files"`
+	Format            string `json:"format"` // "json" or "text"
 }
 
-// HistoryOptions defines options for retrieving and displaying clipboard history
-type HistoryOptions struct {
-	// Maximum number of entries to return (0 means no limit)
-	Limit int `json:"limit"`
-	
-	// Return entries starting from this time (zero value means no time filter)
-	Since time.Time `json:"since"`
-	
-	// Return entries before this time (zero value means no time filter)
-	Before time.Time `json:"before"`
-	
-	// Filter by content type (empty means all types)
-	ContentType types.ContentType `json:"content_type"`
-	
-	// Reverse order (newest first when true, oldest first when false)
-	Reverse bool `json:"reverse"`
-	
-	// Minimum size in bytes (0 means no minimum)
-	MinSize int `json:"min_size"`
-	
-	// Maximum size in bytes (0 means no maximum)
-	MaxSize int `json:"max_size"`
-}
-
-// StorageConfig defines storage-related configuration
+// StorageConfig holds storage-related configuration
 type StorageConfig struct {
-	// Path to the database file (if empty, default path will be used)
-	DBPath string `json:"db_path"`
-	
-	// Maximum size of the clipboard history cache in bytes
-	MaxSize int64 `json:"max_size"`
-	
-	// Number of items to keep when flushing the cache
-	KeepItems int `json:"keep_items"`
+	DBPath    string `json:"db_path"`
+	MaxSize   int64  `json:"max_size"`
+	KeepItems int    `json:"keep_items"`
 }
 
-// BrokerConfig defines message broker configuration
+// HistoryOptions defines options for retrieving clipboard history
+type HistoryOptions struct {
+	Limit       int       `json:"limit"`
+	Since       time.Time `json:"since"`
+	Before      time.Time `json:"before"`
+	ContentType string    `json:"content_type"`
+	Reverse     bool      `json:"reverse"`
+	MinSize     int64     `json:"min_size"`
+	MaxSize     int64     `json:"max_size"`
+}
+
+// BrokerConfig holds configuration for message brokers (legacy)
 type BrokerConfig struct {
-	// URL of the message broker
-	URL string `json:"url"`
-	
-	// Username for broker authentication
+	URL      string `json:"url"`
 	Username string `json:"username"`
-	
-	// Password for broker authentication
 	Password string `json:"password"`
 }
 
@@ -129,233 +90,230 @@ type SyncConfig struct {
 	EncryptionKey    string `json:"encryption_key,omitempty"`
 }
 
-// IsModeCentralized returns true if the sync mode is centralized
-func (s *SyncConfig) IsModeCentralized() bool {
-	return s.Mode == SyncModeCentralized
-}
-
-// Config is the main configuration struct
+// Config holds all application configuration
 type Config struct {
 	// General settings
-	LogLevel        string        `json:"log_level"`
-	DeviceID        string        `json:"device_id"`
-	PollingInterval time.Duration `json:"polling_interval"`
-	DataDir         string        `json:"data_dir"`
+	DeviceID      string `json:"device_id"`
+	DeviceName    string `json:"device_name"`
+	EnableLogging bool   `json:"enable_logging"`
 	
-	// Subsystem configurations
-	Storage         StorageConfig  `json:"storage"`
-	Broker          BrokerConfig   `json:"broker"`
-	Sync            SyncConfig     `json:"sync"`      // Using SyncConfig from sync_config.go
-	History         HistoryOptions `json:"history"`
-	Log             LogConfig      `json:"log"`
+	// System paths configuration
+	SystemPaths SystemPaths `json:"system_paths"`
+	
+	// Logging configuration
+	Log LogConfig `json:"log"`
+	
+	// History retrieval options
+	History HistoryOptions `json:"history"`
+	
+	// Storage configuration
+	Storage StorageConfig `json:"storage"`
+	
+	// Legacy broker configuration, kept for compatibility
+	Broker BrokerConfig `json:"broker"`
+	
+	// Synchronization configuration
+	Sync SyncConfig `json:"sync"`
 }
 
-// DefaultConfig provides sensible defaults for the application
-var DefaultConfig = Config{
-	LogLevel:        "info",
-	PollingInterval: 1 * time.Second,
-	Storage: StorageConfig{
-		MaxSize:   100 * 1024 * 1024, // 100MB default
-		KeepItems: 10,                // Keep 10 items when flushing
-	},
-	Sync:    DefaultSyncConfig(),    // Default sync config
-	History: HistoryOptions{
-		Limit:   0,     // No limit by default
-		Reverse: false, // Oldest first by default
-	},
-	Log: LogConfig{
+// DefaultSystemPaths returns default system paths
+func DefaultSystemPaths() SystemPaths {
+	// Get default data directory
+	dataDir, err := getDefaultDataDir()
+	if err != nil {
+		dataDir = filepath.Join(os.TempDir(), "clipman")
+	}
+	
+	// Config file is in $HOME/.clipman/config.json
+	configFile := filepath.Join(dataDir, "config.json")
+	
+	// Database file is in $HOME/.clipman/clipman.db
+	dbFile := filepath.Join(dataDir, "clipman.db")
+	
+	// Log directory is in $HOME/.clipman/logs
+	logDir := filepath.Join(dataDir, "logs")
+	
+	// Temp directory is in $HOME/.clipman/temp
+	tempDir := filepath.Join(dataDir, "temp")
+	
+	return SystemPaths{
+		ConfigFile: configFile,
+		DataDir:    dataDir,
+		DBFile:     dbFile,
+		LogDir:     logDir,
+		TempDir:    tempDir,
+	}
+}
+
+// DefaultLogConfig returns default logging configuration
+func DefaultLogConfig() LogConfig {
+	return LogConfig{
 		EnableFileLogging: true,
 		MaxLogSize:        10 * 1024 * 1024, // 10MB
 		MaxLogFiles:       5,                // Keep 5 log files
 		Format:            "text",           // Default to plain text format
-	},
+	}
 }
 
-// These variables will be set by the init() functions in the platform-specific files
-var getConfigPath func() (string, error)
-var getDefaultDataDir func() (string, error)
+// DefaultStorageConfig returns default storage configuration
+func DefaultStorageConfig() StorageConfig {
+	return StorageConfig{
+		DBPath:    "",                   // Will be computed from SystemPaths
+		MaxSize:   100 * 1024 * 1024,    // 100MB default
+		KeepItems: 10,                   // Keep 10 items when flushing
+	}
+}
 
-// This can be overridden in tests
-var generateDeviceID = defaultGenerateDeviceID
+// DefaultHistoryOptions returns default history options
+func DefaultHistoryOptions() HistoryOptions {
+	return HistoryOptions{
+		Limit:       50,    // Default to showing 50 items
+		Reverse:     true,  // Newest first by default
+		ContentType: "",    // Any content type
+		MinSize:     0,     // No minimum size
+		MaxSize:     0,     // No maximum size
+	}
+}
 
-// GetPaths returns all important file system paths used by the application
-func (c *Config) GetPaths() SystemPaths {
-	// Get the database path
-	dbPath := c.Storage.DBPath
-	if dbPath == "" {
-		dbPath = filepath.Join(c.DataDir, "clipboard.db")
+// DefaultBrokerConfig returns default broker configuration (legacy)
+func DefaultBrokerConfig() BrokerConfig {
+	return BrokerConfig{
+		URL:      "",
+		Username: "",
+		Password: "",
+	}
+}
+
+// DefaultConfig returns a configuration with sensible defaults
+func DefaultConfig() *Config {
+	config := &Config{
+		DeviceID:      uuid.New().String(),
+		DeviceName:    getDefaultDeviceName(),
+		EnableLogging: true,
+		SystemPaths:   DefaultSystemPaths(),
+		Log:           DefaultLogConfig(),
+		History:       DefaultHistoryOptions(),
+		Storage:       DefaultStorageConfig(),
+		Broker:        DefaultBrokerConfig(),
+		Sync:          DefaultSyncConfig(),
+	}
+	return config
+}
+
+// GetSystemPaths returns computed system paths for the configuration
+func (c *Config) GetSystemPaths() SystemPaths {
+	// If a config file was specified, use its directory as the base for other paths
+	configPath := c.SystemPaths.ConfigFile
+	
+	// Set up data directory if not specified
+	dataDir := c.SystemPaths.DataDir
+	if dataDir == "" {
+		var err error
+		dataDir, err = getDefaultDataDir()
+		if err != nil {
+			dataDir = filepath.Join(os.TempDir(), "clipman")
+		}
 	}
 	
-	// Get config path
-	configPath, _ := getConfigPath()
+	// Set up DB path if not specified
+	dbPath := c.Storage.DBPath
+	if dbPath == "" {
+		dbPath = filepath.Join(dataDir, "clipman.db")
+	}
 	
 	// Set up log directory
-	logDir := filepath.Join(c.DataDir, "logs")
+	logDir := filepath.Join(dataDir, "logs")
 	
 	// Set up temp directory
-	tempDir := filepath.Join(c.DataDir, "temp")
+	tempDir := filepath.Join(dataDir, "temp")
 	
 	return SystemPaths{
 		ConfigFile: configPath,
-		DataDir:    c.DataDir,
+		DataDir:    dataDir,
 		DBFile:     dbPath,
 		LogDir:     logDir,
 		TempDir:    tempDir,
 	}
 }
 
-// Load loads the configuration from the file system or environment
-func Load() (*Config, error) {
-	configPath, err := getConfigPath()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config path: %v", err)
-	}
-
-	config := DefaultConfig
+// Load loads the configuration from the specified file
+func Load(filePath string) (*Config, error) {
+	var err error
+	
+	// Start with default configuration
+	config := DefaultConfig()
 	configExists := false
-
+	
+	// If no config file is specified, use the default location
+	if filePath == "" {
+		filePath = config.SystemPaths.ConfigFile
+	}
+	
 	// Check if config file exists
-	if _, err := os.Stat(configPath); err == nil {
+	if _, err := os.Stat(filePath); err == nil {
 		configExists = true
-		file, err := os.Open(configPath)
+		
+		// Read config from file
+		file, err := os.Open(filePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open config file: %v", err)
 		}
 		defer file.Close()
-
-		if err := json.NewDecoder(file).Decode(&config); err != nil {
+		
+		if err := json.NewDecoder(file).Decode(config); err != nil {
 			return nil, fmt.Errorf("failed to decode config file: %v", err)
 		}
 		
-		// Migrate broker config to sync config if sync is empty
-		if config.Sync.URL == "" && config.Broker.URL != "" {
-			config.Sync.URL = config.Broker.URL
-			config.Sync.Username = config.Broker.Username
-			config.Sync.Password = config.Broker.Password
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("error checking config file: %v", err)
+		// Update config file path
+		config.SystemPaths.ConfigFile = filePath
 	}
-
+	
 	// Override from environment variables
-	config = overrideFromEnv(config)
-
+	overrideFromEnv(config)
+	
 	// Set computed values
 	if config.DeviceID == "" {
-		config.DeviceID = generateDeviceID()
+		config.DeviceID = uuid.New().String()
 	}
-	if config.DataDir == "" {
-		config.DataDir, err = getDefaultDataDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get default data directory: %v", err)
-		}
+	
+	if config.DeviceName == "" {
+		config.DeviceName = getDefaultDeviceName()
 	}
-
+	
+	// Update system paths
+	config.SystemPaths = config.GetSystemPaths()
+	
 	// Ensure the data directory exists
-	if err := os.MkdirAll(config.DataDir, 0755); err != nil {
+	if err := os.MkdirAll(config.SystemPaths.DataDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %v", err)
 	}
-
-	// Save default config if it doesn't exist
+	
+	// If config didn't exist, create it
 	if !configExists {
-		// Create log directories
-		paths := config.GetPaths()
-		if err := os.MkdirAll(paths.LogDir, 0755); err != nil {
-			// Just log this error, don't fail
-			fmt.Printf("Warning: failed to create log directory: %v\n", err)
-		}
-		
-		// Create temp directory
-		if err := os.MkdirAll(paths.TempDir, 0755); err != nil {
-			// Just log this error, don't fail
-			fmt.Printf("Warning: failed to create temp directory: %v\n", err)
-		}
-
-		// Save the config
 		if err := config.Save(); err != nil {
-			// Just log this error, don't fail
-			fmt.Printf("Warning: failed to save default config: %v\n", err)
+			return nil, fmt.Errorf("failed to save default config: %v", err)
 		}
 	}
-
-	return &config, nil
-}
-
-// overrideFromEnv checks for environment variables and overrides config values
-func overrideFromEnv(config Config) Config {
-	// General settings
-	if val := os.Getenv("CLIPMAN_LOG_LEVEL"); val != "" {
-		config.LogLevel = val
-	}
-	if val := os.Getenv("CLIPMAN_DEVICE_ID"); val != "" {
-		config.DeviceID = val
-	}
-	if val := os.Getenv("CLIPMAN_DATA_DIR"); val != "" {
-		config.DataDir = val
-	}
 	
-	// Broker settings (legacy)
-	if val := os.Getenv("CLIPMAN_BROKER_URL"); val != "" {
-		config.Broker.URL = val
-		// Also set in sync config for compatibility
-		config.Sync.URL = val
-	}
-	if val := os.Getenv("CLIPMAN_BROKER_USERNAME"); val != "" {
-		config.Broker.Username = val
-		// Also set in sync config for compatibility
-		config.Sync.Username = val
-	}
-	if val := os.Getenv("CLIPMAN_BROKER_PASSWORD"); val != "" {
-		config.Broker.Password = val
-		// Also set in sync config for compatibility
-		config.Sync.Password = val
-	}
-	
-	// Sync settings (new)
-	if val := os.Getenv("CLIPMAN_SYNC_URL"); val != "" {
-		config.Sync.URL = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_USERNAME"); val != "" {
-		config.Sync.Username = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_PASSWORD"); val != "" {
-		config.Sync.Password = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_DEFAULT_GROUP"); val != "" {
-		config.Sync.DefaultGroup = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_MODE"); val != "" {
-		config.Sync.Mode = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_AUTO_JOIN_GROUPS"); val == "true" || val == "1" || val == "yes" {
-		config.Sync.AutoJoinGroups = true
-	}
-	
-	// Other environment variables...
-	return config
+	return config, nil
 }
 
 // Save saves the configuration to a file
 func (c *Config) Save() error {
-	configPath, err := getConfigPath()
-	if err != nil {
-		return fmt.Errorf("failed to get config path: %v", err)
-	}
-	
-	// Create the directory if it doesn't exist
-	dir := filepath.Dir(configPath)
+	// Ensure the directory exists
+	dir := filepath.Dir(c.SystemPaths.ConfigFile)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %v", err)
 	}
 	
 	// Create or truncate the file
-	file, err := os.Create(configPath)
+	file, err := os.Create(c.SystemPaths.ConfigFile)
 	if err != nil {
 		return fmt.Errorf("failed to create config file: %v", err)
 	}
 	defer file.Close()
 	
-	// Write the config as JSON
+	// Write the config
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(c); err != nil {
@@ -365,23 +323,51 @@ func (c *Config) Save() error {
 	return nil
 }
 
-// defaultGenerateDeviceID generates a random device ID
-func defaultGenerateDeviceID() string {
-	return utils.GenerateRandomID(8)
+// overrideFromEnv overrides configuration values from environment variables
+func overrideFromEnv(config *Config) {
+	// General settings
+	if val := os.Getenv("CLIPMAN_DEVICE_ID"); val != "" {
+		config.DeviceID = val
+	}
+	if val := os.Getenv("CLIPMAN_DEVICE_NAME"); val != "" {
+		config.DeviceName = val
+	}
+	if val := os.Getenv("CLIPMAN_DATA_DIR"); val != "" {
+		config.SystemPaths.DataDir = val
+	}
+	
+	// Sync settings
+	if val := os.Getenv("CLIPMAN_SYNC_URL"); val != "" {
+		config.Sync.URL = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_USERNAME"); val != "" {
+		config.Sync.Username = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_PASSWORD"); val != "" {
+		config.Sync.Password = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_MODE"); val != "" {
+		config.Sync.Mode = val
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_GROUP"); val != "" {
+		config.Sync.DefaultGroup = val
+	}
 }
 
-// DefaultSyncConfig returns default synchronization settings
-func DefaultSyncConfig() SyncConfig {
-	return SyncConfig{
-		Mode:           SyncModeP2P,
-		URL:            "",
-		Username:       "",
-		Password:       "",
-		DefaultGroup:   "",
-		AutoJoinGroups: false,
-		MaxSyncSize:    1024 * 1024, // 1MB default max size
-		AllowedTypes:   []string{"text/plain", "text/uri-list"},
-		ExcludedTypes:  []string{},
-		EnableEncryption: false,
+// getDefaultDataDir returns the default data directory for the application
+func getDefaultDataDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
+	return filepath.Join(homeDir, ".clipman"), nil
+}
+
+// getDefaultDeviceName returns a default device name
+func getDefaultDeviceName() string {
+	hostname, err := os.Hostname()
+	if err == nil && hostname != "" {
+		return hostname
+	}
+	return utils.GenerateRandomID(8)
 }
