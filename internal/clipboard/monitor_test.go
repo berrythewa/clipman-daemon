@@ -10,7 +10,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	// "github.com/berrythewa/clipman-daemon/internal/broker"
+	// "github.com/berrythewa/clipman-daemon/internal/sync"
 	// "github.com/berrythewa/clipman-daemon/internal/storage"
 
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
@@ -26,18 +26,18 @@ func TestMonitor_Start(t *testing.T) {
 
 	mockClip := NewMockClipboard(ctrl)
 	mockStore := mocks.NewMockStorage(ctrl)
-	mockMQ := mocks.NewMockMQTTClient(ctrl)
+	mockSync := mocks.NewMockSyncClient(ctrl)
 
 	// Updated to use []byte instead of string
 	initialContent := &types.ClipboardContent{Data: []byte("initial content"), Type: types.TypeText}
 	mockClip.EXPECT().Read().Return(initialContent, nil)
 	mockStore.EXPECT().GetLatestContent().Return(nil, nil)
 	mockStore.EXPECT().SaveContent(initialContent).Return(nil)
-	mockMQ.EXPECT().PublishContent(initialContent).Return(nil)
+	mockSync.EXPECT().PublishContent(initialContent).Return(nil)
 
 	m := &Monitor{
 		config:     &config.Config{PollingInterval: time.Millisecond * 10},
-		mqttClient: mockMQ,
+		syncClient: mockSync,
 		logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 		clipboard:  mockClip,
 		storage:    mockStore,
@@ -89,11 +89,11 @@ func TestMonitor_ProcessNewContent(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStorage(ctrl)
-			mockMQ := mocks.NewMockMQTTClient(ctrl)
+			mockSync := mocks.NewMockSyncClient(ctrl)
 
 			m := &Monitor{
 				config:     &config.Config{},
-				mqttClient: mockMQ,
+				syncClient: mockSync,
 				logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 				storage:    mockStore,
 				history:    NewClipboardHistory(10),
@@ -119,7 +119,7 @@ func TestMonitor_ProcessNewContent(t *testing.T) {
 				if tt.expectTransform {
 					expectedContent = tt.transformResult
 				}
-				mockMQ.EXPECT().PublishContent(expectedContent).Return(nil)
+				mockSync.EXPECT().PublishContent(expectedContent).Return(nil)
 			}
 
 			m.processNewContent(tt.content)
@@ -143,7 +143,7 @@ func TestMonitor_MonitorClipboard(t *testing.T) {
 
 	mockClip := NewMockClipboard(ctrl)
 	mockStore := mocks.NewMockStorage(ctrl)
-	mockMQ := mocks.NewMockMQTTClient(ctrl)
+	mockSync := mocks.NewMockSyncClient(ctrl)
 
 	// Updated to use []byte instead of string
 	initialContent := &types.ClipboardContent{Data: []byte("initial content"), Type: types.TypeText}
@@ -154,12 +154,12 @@ func TestMonitor_MonitorClipboard(t *testing.T) {
 	mockClip.EXPECT().Read().Return(newContent, nil).Times(1)
 	mockStore.EXPECT().SaveContent(initialContent).Return(nil)
 	mockStore.EXPECT().SaveContent(newContent).Return(nil)
-	mockMQ.EXPECT().PublishContent(initialContent).Return(nil)
-	mockMQ.EXPECT().PublishContent(newContent).Return(nil)
+	mockSync.EXPECT().PublishContent(initialContent).Return(nil)
+	mockSync.EXPECT().PublishContent(newContent).Return(nil)
 
 	m := &Monitor{
 		config:     &config.Config{PollingInterval: time.Millisecond * 10},
-		mqttClient: mockMQ,
+		syncClient: mockSync,
 		logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 		clipboard:  mockClip,
 		storage:    mockStore,
@@ -188,20 +188,20 @@ func TestMonitor_ErrorHandling(t *testing.T) {
 
 	mockClip := NewMockClipboard(ctrl)
 	mockStore := mocks.NewMockStorage(ctrl)
-	mockMQ := mocks.NewMockMQTTClient(ctrl)
+	mockSync := mocks.NewMockSyncClient(ctrl)
 
 	clipboardErr := errors.New("clipboard error")
 	storageErr := errors.New("storage error")
-	mqttErr := errors.New("MQTT error")
+	syncErr := errors.New("sync error")
 
 	mockClip.EXPECT().Read().Return(nil, clipboardErr).Times(1)
 	mockClip.EXPECT().Read().Return(&types.ClipboardContent{Data: []byte("test"), Type: types.TypeText}, nil).Times(1)
 	mockStore.EXPECT().SaveContent(gomock.Any()).Return(storageErr)
-	mockMQ.EXPECT().PublishContent(gomock.Any()).Return(mqttErr)
+	mockSync.EXPECT().PublishContent(gomock.Any()).Return(syncErr)
 
 	m := &Monitor{
 		config:     &config.Config{PollingInterval: time.Millisecond * 10},
-		mqttClient: mockMQ,
+		syncClient: mockSync,
 		logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 		clipboard:  mockClip,
 		storage:    mockStore,
@@ -230,14 +230,14 @@ func BenchmarkMonitor_ProcessNewContent(b *testing.B) {
 	defer ctrl.Finish()
 
 	mockStore := mocks.NewMockStorage(ctrl)
-	mockMQ := mocks.NewMockMQTTClient(ctrl)
+	mockSync := mocks.NewMockSyncClient(ctrl)
 
 	mockStore.EXPECT().SaveContent(gomock.Any()).Return(nil).AnyTimes()
-	mockMQ.EXPECT().PublishContent(gomock.Any()).Return(nil).AnyTimes()
+	mockSync.EXPECT().PublishContent(gomock.Any()).Return(nil).AnyTimes()
 
 	m := &Monitor{
 		config:     &config.Config{},
-		mqttClient: mockMQ,
+		syncClient: mockSync,
 		logger:     utils.NewLogger(utils.LoggerOptions{Level: "debug"}),
 		storage:    mockStore,
 		history:    NewClipboardHistory(1000),

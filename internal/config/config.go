@@ -56,40 +56,6 @@ type BrokerConfig struct {
 	Password string `json:"password"`
 }
 
-// Constants for synchronization modes
-const (
-	SyncModeP2P         = "p2p"
-	SyncModeCentralized = "centralized"
-)
-
-// SyncConfig contains all synchronization settings
-type SyncConfig struct {
-	// Sync mode: p2p or centralized
-	Mode string `json:"mode"`
-	
-	// MQTT broker URL for centralized mode
-	URL string `json:"url"`
-	
-	// Optional credentials for MQTT broker
-	Username string `json:"username"`
-	Password string `json:"password"`
-	
-	// Group settings
-	DefaultGroup   string   `json:"default_group"`
-	AutoJoinGroups bool     `json:"auto_join_groups"`
-	
-	// Content filtering options
-	MaxSyncSize     int64    `json:"max_sync_size"`
-	AllowedTypes    []string `json:"allowed_types"`
-	ExcludedTypes   []string `json:"excluded_types"`
-	IncludePatterns []string `json:"include_patterns"`
-	ExcludePatterns []string `json:"exclude_patterns"`
-	
-	// Security settings
-	EnableEncryption bool   `json:"enable_encryption"`
-	EncryptionKey    string `json:"encryption_key,omitempty"`
-}
-
 // Config holds all application configuration
 type Config struct {
 	// General settings
@@ -181,6 +147,40 @@ func DefaultBrokerConfig() BrokerConfig {
 		URL:      "",
 		Username: "",
 		Password: "",
+	}
+}
+
+// DefaultSyncConfig returns default synchronization configuration
+func DefaultSyncConfig() SyncConfig {
+	return SyncConfig{
+		// Default to empty broker settings - must be configured by user
+		URL:      "",
+		Username: "",
+		Password: "", 
+
+		// Default to P2P mode
+		Mode:      SyncModeP2P,
+
+		// Group settings
+		DefaultGroup:   "", // Empty means no default group
+		AutoJoinGroups: false,
+
+		// Content filtering defaults
+		AllowedTypes:    []string{}, // Empty means all types allowed
+		ExcludedTypes:   []string{}, // Empty means no types excluded
+		MaxSyncSize:     1024 * 1024, // 1MB default max size
+		IncludePatterns: []string{},
+		ExcludePatterns: []string{},
+
+		// Security defaults
+		EnableEncryption: false,
+		EncryptionKey:    "",
+		EncryptionAlgo:   "AES-GCM",
+		KeyRotationDays:  7,
+
+		// Discovery defaults
+		AnnounceInterval: 60,  // Announce presence every minute
+		PeerTimeout:      300, // Consider peers offline after 5 minutes
 	}
 }
 

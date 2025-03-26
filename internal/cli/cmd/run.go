@@ -3,7 +3,7 @@ package cmd
 import (
 	"time"
 
-	"github.com/berrythewa/clipman-daemon/internal/broker"
+	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/spf13/cobra"
@@ -12,7 +12,7 @@ import (
 var (
 	duration time.Duration
 	maxSize  int64
-	noBroker bool
+	noSync   bool
 )
 
 // runCmd represents the run command
@@ -35,26 +35,26 @@ until interrupted.`,
 		// Get all system paths
 		paths := cfg.GetPaths()
 		
-		// Initialize MQTT client if configured and not explicitly disabled
-		var mqttClient broker.MQTTClientInterface
-		if !noBroker && cfg.Broker.URL != "" {
-			logger.Info("Initializing broker connection", 
-				"url", cfg.Broker.URL,
+		// Initialize sync client if configured and not explicitly disabled
+		var syncClient sync.SyncClient
+		if !noSync && (cfg.Sync.URL != "" || cfg.Broker.URL != "") {
+			logger.Info("Initializing sync connection", 
+				"url", cfg.Sync.URL,
 				"device_id", cfg.DeviceID)
 			
 			var err error
-			mqttClient, err = broker.NewMQTTClient(cfg, logger)
+			syncClient, err = sync.CreateClient(cfg, logger)
 			if err != nil {
-				logger.Warn("Failed to initialize MQTT client", "error", err)
-				logger.Info("Continuing without MQTT support")
+				logger.Warn("Failed to initialize sync client", "error", err)
+				logger.Info("Continuing without sync support")
 			} else {
-				logger.Info("MQTT client initialized successfully")
+				logger.Info("Sync client initialized successfully")
 			}
 		} else {
-			if noBroker {
-				logger.Info("MQTT broker disabled by command line flag")
-			} else if cfg.Broker.URL == "" {
-				logger.Info("No MQTT broker URL configured, running without broker connection")
+			if noSync {
+				logger.Info("Sync client disabled by command line flag")
+			} else if cfg.Sync.URL == "" && cfg.Broker.URL == "" {
+				logger.Info("No sync URL configured, running without sync connection")
 			}
 		}
 		
@@ -64,7 +64,7 @@ until interrupted.`,
 			MaxSize:    cfg.Storage.MaxSize,
 			DeviceID:   cfg.DeviceID,
 			Logger:     logger,
-			MQTTClient: mqttClient,
+			MQTTClient: syncClient,
 		}
 		
 		logger.Info("Storage configuration", 
@@ -80,7 +80,7 @@ until interrupted.`,
 		defer store.Close()
 		
 		// Start the monitor
-		monitor := clipboard.NewMonitor(cfg, mqttClient, logger, store)
+		monitor := clipboard.NewMonitor(cfg, syncClient, logger, store)
 		if err := monitor.Start(); err != nil {
 			logger.Error("Failed to start monitor", "error", err)
 			return err
@@ -103,9 +103,9 @@ until interrupted.`,
 			monitor.Stop()
 			
 			// Properly close all connections
-			if mqttClient != nil {
-				logger.Info("Disconnecting MQTT client")
-				mqttClient.Disconnect()
+			if syncClient != nil {
+				logger.Info("Disconnecting sync client")
+				syncClient.Disconnect()
 			}
 			
 			// Flush logger to ensure all logs are written
@@ -140,7 +140,10 @@ func init() {
 	// Set up flags for this command
 	runCmd.Flags().DurationVarP(&duration, "duration", "d", 0, "Run for a specific duration (for testing)")
 	runCmd.Flags().Int64Var(&maxSize, "max-size", 0, "Override max cache size in bytes (default 100MB)")
-	runCmd.Flags().BoolVar(&noBroker, "no-broker", false, "Disable MQTT broker connection even if configured")
+	runCmd.Flags().BoolVar(&noSync, "no-sync", false, "Disable sync connection even if configured")
+	
+	// For backward compatibility, keep the old flag but refer to the new one
+	runCmd.Flags().BoolVar(&noSync, "no-broker", false, "Disable sync connection even if configured (deprecated, use --no-sync)")
 }
 
 // Helper function to get minimum of two values

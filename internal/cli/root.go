@@ -24,7 +24,7 @@ var (
 	cfgFile      string
 	noFileLog    bool
 	detach       bool
-	noBroker     bool
+	noSync       bool
 	maxSize      int64
 
 	// The loaded configuration
@@ -159,7 +159,7 @@ func runDaemon() error {
 	
 	// Initialize sync client if configured and not explicitly disabled
 	var syncClient sync.SyncClient
-	if !noBroker && (cfg.Sync.URL != "" || cfg.Broker.URL != "") {
+	if !noSync && (cfg.Sync.URL != "" || cfg.Broker.URL != "") {
 		url := cfg.Sync.URL
 		if url == "" {
 			url = cfg.Broker.URL
@@ -216,7 +216,7 @@ func runDaemon() error {
 			}
 		}
 	} else {
-		if noBroker {
+		if noSync {
 			logger.Info("Sync client disabled by command line flag")
 		} else if cfg.Sync.URL == "" && cfg.Broker.URL == "" {
 			logger.Info("No sync URL configured, running without sync connection")
@@ -319,6 +319,9 @@ func init() {
 	
 	// Flags for daemon mode (which is the default command now)
 	RootCmd.Flags().BoolVar(&detach, "detach", false, "Detach from terminal and run in background")
-	RootCmd.Flags().BoolVar(&noBroker, "no-broker", false, "Disable MQTT broker connection even if configured")
+	RootCmd.Flags().BoolVar(&noSync, "no-sync", false, "Disable sync connection even if configured")
 	RootCmd.Flags().Int64Var(&maxSize, "max-size", 0, "Override max cache size in bytes (default 100MB)")
+	
+	// For backward compatibility, keep the old flag but refer to the new one
+	RootCmd.PersistentFlags().BoolVar(&noSync, "no-broker", false, "Disable sync connection even if configured (deprecated, use --no-sync)")
 } 
