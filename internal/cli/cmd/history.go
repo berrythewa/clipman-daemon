@@ -10,19 +10,20 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 var (
 	// History filtering flags
-	limit      int
-	since      string
-	before     string
-	itemType   string
-	reverse    bool
-	minSize    int
-	contentMaxSize  int
-	jsonOutput bool
-	dumpAll    bool
+	limit      		int64
+	since      		string
+	before     		string
+	itemType   		string
+	reverse    		bool
+	minSize    		int64
+	contentMaxSize  int64
+	jsonOutput 		bool
+	dumpAll    		bool
 )
 
 // historyCmd represents the history command
@@ -47,13 +48,12 @@ Examples:
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Get all system paths
-		paths := cfg.GetPaths()
-		
+		paths := GetConfig().GetPaths()
 		// Initialize storage
 		storageConfig := storage.StorageConfig{
 			DBPath:   paths.DBFile,
-			DeviceID: cfg.DeviceID,
-			Logger:   logger,
+			DeviceID: GetConfig().DeviceID,
+			Logger:   GetZapLogger(),
 		}
 		
 		store, err := storage.NewBoltStorage(storageConfig)
@@ -102,6 +102,8 @@ Examples:
 			switch itemType {
 			case "text":
 				historyOptions.ContentType = types.TypeText
+			case "string":
+				historyOptions.ContentType = types.TypeString
 			case "image":
 				historyOptions.ContentType = types.TypeImage
 			case "url":
@@ -133,13 +135,13 @@ Examples:
 
 func init() {
 	// Set up flags for this command
-	historyCmd.Flags().IntVar(&limit, "limit", 0, "Maximum number of history entries to retrieve (0 for all)")
+	historyCmd.Flags().Int64Var(&limit, "limit", 0, "Maximum number of history entries to retrieve (0 for all)")
 	historyCmd.Flags().StringVar(&since, "since", "", "Retrieve history since this time (RFC3339 format)")
 	historyCmd.Flags().StringVar(&before, "before", "", "Retrieve history before this time (RFC3339 format)")
 	historyCmd.Flags().StringVar(&itemType, "type", "", "Filter by content type (text, image, url, file, filepath)")
 	historyCmd.Flags().BoolVar(&reverse, "reverse", false, "Reverse history order (newest first)")
-	historyCmd.Flags().IntVar(&minSize, "min-size", 0, "Minimum content size in bytes")
-	historyCmd.Flags().IntVar(&contentMaxSize, "max-size", 0, "Maximum content size in bytes")
+	historyCmd.Flags().Int64Var(&minSize, "min-size", 0, "Minimum content size in bytes")
+	historyCmd.Flags().Int64Var(&contentMaxSize, "max-size", 0, "Maximum content size in bytes")
 	historyCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	historyCmd.Flags().BoolVar(&dumpAll, "dump-all", false, "Dump complete history without filters")
 }
@@ -155,7 +157,7 @@ func displayHistoryJSON(store *storage.BoltStorage, options config.HistoryOption
 	type historyItem struct {
 		Type      types.ContentType `json:"type"`
 		Timestamp string            `json:"timestamp"`
-		Size      int               `json:"size"`
+		Size      int64               `json:"size"`
 		Content   string            `json:"content"`
 	}
 	
@@ -178,7 +180,7 @@ func displayHistoryJSON(store *storage.BoltStorage, options config.HistoryOption
 		items = append(items, historyItem{
 			Type:      content.Type,
 			Timestamp: content.Created.Format(time.RFC3339),
-			Size:      len(content.Data),
+			Size:      int64(len(content.Data)),
 			Content:   preview,
 		})
 	}
@@ -192,7 +194,7 @@ func displayHistoryJSON(store *storage.BoltStorage, options config.HistoryOption
 // Helper function to display option values or defaults
 func optionOrDefault(value interface{}, defaultText string) string {
 	switch v := value.(type) {
-	case int:
+	case int64:
 		if v == 0 {
 			return defaultText
 		}

@@ -41,9 +41,13 @@ type SyncConfig struct {
 	// Discovery options
 	AnnounceInterval int `json:"announce_interval"` // Seconds between presence announcements
 	PeerTimeout      int `json:"peer_timeout"`      // Seconds until a peer is considered offline
+
+	// enable sync
+	Enabled bool `json:"enabled"`
+	// enable discovery
+	Discoverable bool `json:"discoverable"`
 }
 
-// DefaultSyncConfig returns a SyncConfig with sensible defaults
 func DefaultSyncConfig() SyncConfig {
 	return SyncConfig{
 		// Default to empty broker settings - must be configured by user
@@ -73,6 +77,11 @@ func DefaultSyncConfig() SyncConfig {
 		// Discovery defaults
 		AnnounceInterval: 60,  // Announce presence every minute
 		PeerTimeout:      300, // Consider peers offline after 5 minutes
+
+		// enable sync
+		Enabled: true,
+		// enable discovery
+		Discoverable: true,
 	}
 }
 

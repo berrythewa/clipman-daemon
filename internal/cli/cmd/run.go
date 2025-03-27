@@ -6,7 +6,9 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
+	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 var (
@@ -25,7 +27,15 @@ and stores them in the history database.
 You can specify a duration for testing purposes, otherwise it will run
 until interrupted.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		logger.Info("Starting Clipman daemon", "mode", "run")
+		zapLogger.Info("Starting Clipman daemon",
+			zap.String("mode", cfg.Sync.Mode),
+			zap.String("device_id", cfg.DeviceID),
+			zap.Bool("sync_enabled", cfg.Sync.Enabled),
+			zap.Bool("discoverable", cfg.Sync.Discoverable),
+			zap.Int64("port", cfg.Server.Port),
+			zap.String("host", cfg.Server.Host),
+			zap.String("path", cfg.Server.Path),
+			zap.String("username", cfg.Server.Username))
 		
 		// If maxSize is specified, override config
 		if maxSize > 0 {
@@ -37,24 +47,24 @@ until interrupted.`,
 		
 		// Initialize sync client if configured and not explicitly disabled
 		var syncClient sync.SyncClient
-		if !noSync && (cfg.Sync.URL != "" || cfg.Broker.URL != "") {
-			logger.Info("Initializing sync connection", 
-				"url", cfg.Sync.URL,
-				"device_id", cfg.DeviceID)
+		if !noSync && (cfg.Sync.URL != "") {
+			zapLogger.Info("Initializing sync connection", 
+				zap.String("url", cfg.Sync.URL),
+				zap.String("device_id", cfg.DeviceID))
 			
 			var err error
-			syncClient, err = sync.CreateClient(cfg, logger)
+			syncClient, err = sync.CreateClient(cfg, zapLogger)
 			if err != nil {
-				logger.Warn("Failed to initialize sync client", "error", err)
-				logger.Info("Continuing without sync support")
+				zapLogger.Warn("Failed to initialize sync client", zap.Error(err))
+				zapLogger.Info("Continuing without sync support")
 			} else {
-				logger.Info("Sync client initialized successfully")
+				zapLogger.Info("Sync client initialized successfully")
 			}
 		} else {
 			if noSync {
-				logger.Info("Sync client disabled by command line flag")
-			} else if cfg.Sync.URL == "" && cfg.Broker.URL == "" {
-				logger.Info("No sync URL configured, running without sync connection")
+				zapLogger.Info("Sync client disabled by command line flag")
+			} else if cfg.Sync.URL == "" {
+				zapLogger.Info("No sync URL configured, running without sync connection")
 			}
 		}
 		
@@ -63,72 +73,72 @@ until interrupted.`,
 			DBPath:     paths.DBFile,
 			MaxSize:    cfg.Storage.MaxSize,
 			DeviceID:   cfg.DeviceID,
-			Logger:     logger,
+			Logger:     zapLogger,
 			MQTTClient: syncClient,
 		}
 		
-		logger.Info("Storage configuration", 
-			"db_path", paths.DBFile,
-			"max_size_bytes", storageConfig.MaxSize,
-			"device_id", cfg.DeviceID)
+		zapLogger.Info("Storage configuration", 
+			zap.String("db_path", paths.DBFile),
+			zap.Int64("max_size_bytes", storageConfig.MaxSize),
+			zap.String("device_id", cfg.DeviceID))
 			
 		store, err := storage.NewBoltStorage(storageConfig)
 		if err != nil {
-			logger.Error("Failed to initialize storage", "error", err)
+			zapLogger.Error("Failed to initialize storage", zap.Error(err))
 			return err
 		}
 		defer store.Close()
 		
 		// Start the monitor
-		monitor := clipboard.NewMonitor(cfg, syncClient, logger, store)
+		monitor := clipboard.NewMonitor(cfg, syncClient, zapLogger, store)
 		if err := monitor.Start(); err != nil {
-			logger.Error("Failed to start monitor", "error", err)
+			zapLogger.Error("Failed to start monitor", zap.Error(err))
 			return err
 		}
 		
-		logger.Info("Monitor started")
+		zapLogger.Info("Monitor started")
 		
 		if duration > 0 {
 			// Run for specified duration
-			logger.Info("Running for test duration", "duration", duration)
+			zapLogger.Info("Running for test duration", zap.Duration("duration", duration))
 			time.Sleep(duration)
 			
 			// Log the complete history after the test duration
-			logger.Info("Test complete, logging clipboard history")
+			zapLogger.Info("Test complete, logging clipboard history")
 			if err := store.LogCompleteHistory(cfg.History); err != nil {
-				logger.Error("Failed to log history", "error", err)
+				zapLogger.Error("Failed to log history", zap.Error(err))
 			}
 			
-			logger.Info("Stopping monitor")
+			zapLogger.Info("Stopping monitor")
 			monitor.Stop()
 			
 			// Properly close all connections
 			if syncClient != nil {
-				logger.Info("Disconnecting sync client")
+				zapLogger.Info("Disconnecting sync client")
 				syncClient.Disconnect()
 			}
 			
 			// Flush logger to ensure all logs are written
-			logger.Flush()
+			zapLogger.Sync()
 			
 			// Show recent items
 			recentHistory := monitor.GetHistory(10)
 			for _, item := range recentHistory {
 				dataPreview := "binary data"
-				if item.Content.Type == "text" || item.Content.Type == "url" {
+				if item.Content.Type == types.ContentTypeText || item.Content.Type == types.ContentTypeURL {
 					previewLength := min(len(item.Content.Data), 50)
 					dataPreview = string(item.Content.Data[:previewLength])
 				}
 				
-				logger.Info("Recent clipboard item",
-					"type", item.Content.Type,
-					"time", item.Time.Format(time.RFC3339),
-					"data_length", len(item.Content.Data),
-					"preview", dataPreview)
+				zapLogger.Info("Recent clipboard item",
+					zap.String("type", string(item.Content.Type)),
+					zap.Time("time", item.Time),
+					zap.Int("data_length", len(item.Content.Data)),
+					zap.String("preview", dataPreview))
 			}
 		} else {
 			// Run indefinitely - block until interrupted
-			logger.Info("Running until interrupted, press Ctrl+C to stop")
+			zapLogger.Info("Running until interrupted, press Ctrl+C to stop")
 			select {}
 		}
 		
@@ -141,9 +151,6 @@ func init() {
 	runCmd.Flags().DurationVarP(&duration, "duration", "d", 0, "Run for a specific duration (for testing)")
 	runCmd.Flags().Int64Var(&maxSize, "max-size", 0, "Override max cache size in bytes (default 100MB)")
 	runCmd.Flags().BoolVar(&noSync, "no-sync", false, "Disable sync connection even if configured")
-	
-	// For backward compatibility, keep the old flag but refer to the new one
-	runCmd.Flags().BoolVar(&noSync, "no-broker", false, "Disable sync connection even if configured (deprecated, use --no-sync)")
 }
 
 // Helper function to get minimum of two values

@@ -11,7 +11,6 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/compression"
-	"github.com/berrythewa/clipman-daemon/pkg/utils"
 
 	"go.etcd.io/bbolt"
 	"go.uber.org/zap"
@@ -346,7 +345,7 @@ func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.Clipbo
 		}
 		
 		// Iterate through entries
-		count := 0
+		count := int64(0)
 		for ; k != nil; k, v = iterateNext() {
 			// Check time boundaries
 			timestamp, err := time.Parse(time.RFC3339Nano, string(k))
@@ -375,12 +374,12 @@ func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.Clipbo
 			}
 			
 			// Apply content type filter
-			if options.ContentType != "" && content.Type != options.ContentType {
+			if options.ContentType != "" && content.Type != types.ContentType(options.ContentType) {
 				continue
 			}
 			
 			// Apply size filters
-			contentSize := len(content.Data)
+			contentSize := int64(len(content.Data))
 			if options.MinSize > 0 && contentSize < options.MinSize {
 				continue
 			}
@@ -432,7 +431,7 @@ func (s *BoltStorage) LogCompleteHistory(options config.HistoryOptions) error {
 	s.logger.Info("=== DUMPING CLIPBOARD HISTORY ===",
 		zap.Any("limit", optionOrDefault(options.Limit, "no limit")),
 		zap.Bool("reverse", options.Reverse),
-		zap.String("content_type", optionOrDefault(string(options.ContentType), "all types")))
+		zap.String("content_type", optionOrDefault(options.ContentType, "all types")))
 	
 	// Get filtered history
 	contents, err := s.GetHistory(options)

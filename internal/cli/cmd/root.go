@@ -17,17 +17,6 @@ var RootCmd = &cobra.Command{
 that runs in the background and syncs clipboard contents between devices.`,
 }
 
-var (
-	cfgFile string
-	verbose bool
-	
-	// Config holds the application configuration
-	cfg *config.Config
-	
-	// Logger for the application
-	logger *zap.Logger
-)
-
 func init() {
 	cobra.OnInitialize(initConfig)
 
@@ -42,10 +31,11 @@ func initConfig() {
 
 	// Initialize logger
 	if verbose {
-		logger, err = zap.NewDevelopment()
+		zapLogger, err = zap.NewDevelopment()
 	} else {
-		logger, err = zap.NewProduction()
+		zapLogger, err = zap.NewProduction()
 	}
+	defer zapLogger.Sync() // Will flush before main exits
 	
 	if err != nil {
 		fmt.Println("Error initializing logger:", err)
@@ -55,7 +45,8 @@ func initConfig() {
 	// Load configuration
 	cfg, err = config.Load(cfgFile)
 	if err != nil {
-		logger.Error("Failed to load configuration", zap.Error(err))
+		
+		zapLogger.Error("Failed to load configuration", zap.Error(err))
 		fmt.Println("Error loading configuration:", err)
 		os.Exit(1)
 	}

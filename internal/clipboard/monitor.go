@@ -9,15 +9,15 @@ import (
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
-	"github.com/berrythewa/clipman-daemon/internal/sync"
+	xsync "github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/types"
-	"github.com/berrythewa/clipman-daemon/pkg/utils"
+	"go.uber.org/zap"
 )
 
 type Monitor struct {
 	config           *config.Config
-	syncClient       sync.SyncClient
-	logger           *utils.Logger
+	mqttClient       xsync.SyncClient
+	logger           *zap.Logger
 	clipboard        Clipboard
 	storage          *storage.BoltStorage
 	lastContent      *types.ClipboardContent
@@ -28,11 +28,11 @@ type Monitor struct {
 	contentProcessor *ContentProcessor
 }
 
-func NewMonitor(cfg *config.Config, syncClient sync.SyncClient, logger *utils.Logger, storage *storage.BoltStorage) *Monitor {
+func NewMonitor(cfg *config.Config, mqttClient xsync.SyncClient, logger *zap.Logger, storage *storage.BoltStorage) *Monitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Monitor{
 		config:           cfg,
-		syncClient:       syncClient,
+		mqttClient:       mqttClient,
 		logger:           logger,
 		clipboard:        NewClipboard(),
 		storage:          storage,
@@ -54,7 +54,7 @@ func (m *Monitor) Start() error {
 	// Try to load the last content from storage
 	lastContent, err := m.storage.GetLatestContent()
 	if err != nil {
-		m.logger.Error("Failed to get latest content from storage", "error", err)
+		m.logger.Error("Failed to get latest content from storage", zap.Error(err))
 	} else if lastContent != nil {
 		m.lastContent = lastContent
 	}
@@ -92,9 +92,9 @@ func (m *Monitor) monitorClipboard() {
 			}
 			
 			m.logger.Debug("Received clipboard content from platform monitor",
-				"type", content.Type,
-				"size", len(content.Data),
-				"data_preview", string(content.Data[:min(len(content.Data), 50)]))
+				zap.String("type", string(content.Type)),
+				zap.Int("size", len(content.Data)),
+				zap.String("data_preview", string(content.Data[:min(len(content.Data), 50)])))
 			
 			m.mu.Lock()
 			if !m.isContentEqual(content, m.lastContent) {
@@ -124,11 +124,11 @@ func checksumData(data []byte) []byte {
 }
 
 func (m *Monitor) processNewContent(content *types.ClipboardContent) {
-	m.logger.Info("New clipboard content detected", "type", content.Type)
+	m.logger.Info("New clipboard content detected", zap.String("type", string(content.Type)))
 	m.logger.Debug("Raw content received",
-		"type", content.Type,
-		"data_length", len(content.Data),
-		"raw_data", string(content.Data[:min(len(content.Data), 50)]))
+		zap.String("type", string(content.Type)),
+		zap.Int("data_length", len(content.Data)),
+		zap.String("raw_data", string(content.Data[:min(len(content.Data), 50)])))
 
 	content = m.contentProcessor.Process(content)
 	if content == nil {
@@ -139,11 +139,11 @@ func (m *Monitor) processNewContent(content *types.ClipboardContent) {
 	content = m.prepareContent(content)
 
 	if err := m.saveContent(content); err != nil {
-		m.logger.Error("Failed to save content", "error", err)
+		m.logger.Error("Failed to save content", zap.Error(err))
 	}
 
 	if err := m.publishContent(content); err != nil {
-		m.logger.Error("Failed to publish content", "error", err)
+		m.logger.Error("Failed to publish content", zap.Error(err))
 	}
 
 	m.history.Add(content)
@@ -171,9 +171,9 @@ func (m *Monitor) processNewContent(content *types.ClipboardContent) {
 		}
 
 		m.logger.Info(fmt.Sprintf("History item %d:", i+1),
-			"type", item.Content.Type,
-			"time", item.Time.Format("15:04:05"),
-			"content", displayContent)
+			zap.String("type", string(item.Content.Type)),
+			zap.Time("time", item.Time),
+			zap.String("content", displayContent))
 	}
 	m.logger.Info("----------------------------")
 }
@@ -194,10 +194,7 @@ func (m *Monitor) saveContent(content *types.ClipboardContent) error {
 }
 
 func (m *Monitor) publishContent(content *types.ClipboardContent) error {
-	if m.syncClient == nil {
-		return nil // Skip publishing if no sync client
-	}
-	return m.syncClient.PublishContent(content)
+	return m.mqttClient.PublishContent(content)
 }
 
 func (m *Monitor) isContentEqual(content1, content2 *types.ClipboardContent) bool {
@@ -212,10 +209,10 @@ func (m *Monitor) isContentEqual(content1, content2 *types.ClipboardContent) boo
 		// Only log at debug level to avoid spamming
 		if len(content2.Data) > 0 && len(content1.Data) > 0 {
 			m.logger.Debug("Content changed",
-				"old_type", content2.Type,
-				"new_type", content1.Type,
-				"old_length", len(content2.Data),
-				"new_length", len(content1.Data))
+				zap.String("old_type", string(content2.Type)),
+				zap.String("new_type", string(content1.Type)),
+				zap.Int("old_length", len(content2.Data)),
+				zap.Int("new_length", len(content1.Data)))
 		}
 		return false
 	}
@@ -224,7 +221,7 @@ func (m *Monitor) isContentEqual(content1, content2 *types.ClipboardContent) boo
 	// But with a higher threshold to avoid false positives
 	if content1.Created.Sub(content2.Created) > 5*time.Second {
 		m.logger.Debug("Same content copied again after timeout",
-			"time_diff", content1.Created.Sub(content2.Created))
+			zap.Duration("time_diff", content1.Created.Sub(content2.Created)))
 		return false
 	}
 

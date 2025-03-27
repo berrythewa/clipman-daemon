@@ -40,20 +40,21 @@ type StorageConfig struct {
 
 // HistoryOptions defines options for retrieving clipboard history
 type HistoryOptions struct {
-	Limit       int       `json:"limit"`
+	Limit       int64     `json:"limit"`
 	Since       time.Time `json:"since"`
 	Before      time.Time `json:"before"`
-	ContentType string    `json:"content_type"`
+	ContentType types.ContentType `json:"content_type"`
 	Reverse     bool      `json:"reverse"`
 	MinSize     int64     `json:"min_size"`
 	MaxSize     int64     `json:"max_size"`
 }
 
-// BrokerConfig holds configuration for message brokers (legacy)
-type BrokerConfig struct {
-	URL      string `json:"url"`
+// ServerConfig holds configuration for the server
+type ServerConfig struct {
+	Port int64 `json:"port"`
+	Host string `json:"host"`
+	Path string `json:"path"`
 	Username string `json:"username"`
-	Password string `json:"password"`
 }
 
 // Config holds all application configuration
@@ -75,11 +76,20 @@ type Config struct {
 	// Storage configuration
 	Storage StorageConfig `json:"storage"`
 	
-	// Legacy broker configuration, kept for compatibility
-	Broker BrokerConfig `json:"broker"`
+	// Server configuration
+	Server ServerConfig `json:"server"`
 	
 	// Synchronization configuration
 	Sync SyncConfig `json:"sync"`
+}
+
+// DefaultServerConfig returns default server configuration
+// TODO: this will be needed for p2p maybe ?
+func DefaultServerConfig() ServerConfig {
+	return ServerConfig{
+		Port: 8080,
+		Host: "localhost",
+	}
 }
 
 // DefaultSystemPaths returns default system paths
@@ -141,49 +151,6 @@ func DefaultHistoryOptions() HistoryOptions {
 	}
 }
 
-// DefaultBrokerConfig returns default broker configuration (legacy)
-func DefaultBrokerConfig() BrokerConfig {
-	return BrokerConfig{
-		URL:      "",
-		Username: "",
-		Password: "",
-	}
-}
-
-// DefaultSyncConfig returns default synchronization configuration
-func DefaultSyncConfig() SyncConfig {
-	return SyncConfig{
-		// Default to empty broker settings - must be configured by user
-		URL:      "",
-		Username: "",
-		Password: "", 
-
-		// Default to P2P mode
-		Mode:      SyncModeP2P,
-
-		// Group settings
-		DefaultGroup:   "", // Empty means no default group
-		AutoJoinGroups: false,
-
-		// Content filtering defaults
-		AllowedTypes:    []string{}, // Empty means all types allowed
-		ExcludedTypes:   []string{}, // Empty means no types excluded
-		MaxSyncSize:     1024 * 1024, // 1MB default max size
-		IncludePatterns: []string{},
-		ExcludePatterns: []string{},
-
-		// Security defaults
-		EnableEncryption: false,
-		EncryptionKey:    "",
-		EncryptionAlgo:   "AES-GCM",
-		KeyRotationDays:  7,
-
-		// Discovery defaults
-		AnnounceInterval: 60,  // Announce presence every minute
-		PeerTimeout:      300, // Consider peers offline after 5 minutes
-	}
-}
-
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	config := &Config{
@@ -194,8 +161,8 @@ func DefaultConfig() *Config {
 		Log:           DefaultLogConfig(),
 		History:       DefaultHistoryOptions(),
 		Storage:       DefaultStorageConfig(),
-		Broker:        DefaultBrokerConfig(),
 		Sync:          DefaultSyncConfig(),
+		Server:        DefaultServerConfig(),
 	}
 	return config
 }
@@ -238,8 +205,6 @@ func (c *Config) GetSystemPaths() SystemPaths {
 
 // Load loads the configuration from the specified file
 func Load(filePath string) (*Config, error) {
-	var err error
-	
 	// Start with default configuration
 	config := DefaultConfig()
 	configExists := false
@@ -352,6 +317,12 @@ func overrideFromEnv(config *Config) {
 	if val := os.Getenv("CLIPMAN_SYNC_GROUP"); val != "" {
 		config.Sync.DefaultGroup = val
 	}
+	if val := os.Getenv("CLIPMAN_SYNC_ENABLED"); val != "" {
+		config.Sync.Enabled = val == "true"
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_DISCOVERABLE"); val != "" {
+		config.Sync.Discoverable = val == "true"
+	}
 }
 
 // getDefaultDataDir returns the default data directory for the application
@@ -369,5 +340,9 @@ func getDefaultDeviceName() string {
 	if err == nil && hostname != "" {
 		return hostname
 	}
-	return utils.GenerateRandomID(8)
+	return utils.GenerateUUID()
+}
+
+func (c *Config) GetPaths() SystemPaths {
+	return c.GetSystemPaths()
 }

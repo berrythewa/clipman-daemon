@@ -4,10 +4,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/spf13/cobra"
-)
-
-var (
-	quiet bool
+	"go.uber.org/zap"
 )
 
 // flushCmd represents the flush command
@@ -23,13 +20,12 @@ operation, unless the --quiet flag is used.`,
 		logger.Info("Forcing clipboard cache flush")
 		
 		// Get all system paths
-		paths := cfg.GetPaths()
-		
+		paths := cfg.GetSystemPaths()
 		// Initialize storage
 		storageConfig := storage.StorageConfig{
 			DBPath:   paths.DBFile,
 			DeviceID: cfg.DeviceID,
-			Logger:   logger,
+			Logger:   zapLogger,
 			MaxSize:  cfg.Storage.MaxSize,
 		}
 		

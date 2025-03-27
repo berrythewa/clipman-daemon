@@ -8,6 +8,8 @@ import (
 type ContentType string
 
 const (
+	TypeUnknown  ContentType = "unknown"
+	TypeString   ContentType = "string"
 	TypeText     ContentType = "text"
 	TypeImage    ContentType = "image"
 	TypeFile     ContentType = "file"

@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+//TODO: use device info/metrics to generate a more unique UUID
+//TODO: use uuid from config if set or use user specified name to generate a UUID (hashed)
 func GenerateUUID() string {
 	uuid := make([]byte, 16)
 	_, err := rand.Read(uuid)

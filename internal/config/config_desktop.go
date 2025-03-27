@@ -10,11 +10,6 @@ import (
 	"runtime"
 )
 
-func init() {
-	getConfigPath = getDesktopConfigPath
-	getDefaultDataDir = getDesktopDataDir
-}
-
 // getDesktopConfigPath returns the path to the config file on desktop platforms
 func getDesktopConfigPath() (string, error) {
 	// First check environment variable
