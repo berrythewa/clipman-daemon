@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
 )
@@ -187,6 +189,8 @@ func (d *SyncDaemon) handleConnection(conn net.Conn) {
 		response = d.handleListCommand(cmd)
 	case "status":
 		response = d.handleStatusCommand(cmd)
+	case "resync":
+		response = d.handleResyncCommand(cmd)
 	default:
 		response = Response{
 			Success: false,
@@ -336,6 +340,59 @@ func (d *SyncDaemon) handleStatusCommand(cmd Command) Response {
 		Message: "Sync status retrieved",
 		Data:    status,
 		Groups:  groups,
+	}
+}
+
+// handleResyncCommand processes a resync command
+func (d *SyncDaemon) handleResyncCommand(cmd Command) Response {
+	// Create a storage instance to access clipboard history
+	storageConfig := storage.StorageConfig{
+		DBPath:     d.cfg.Storage.DBPath,
+		MaxSize:    d.cfg.Storage.MaxSize,
+		DeviceID:   d.cfg.DeviceID,
+		Logger:     d.logger,
+		// No sync client is needed - we're separating concerns
+	}
+	
+	// Create the storage
+	store, err := storage.NewBoltStorage(storageConfig)
+	if err != nil {
+		return Response{
+			Success: false,
+			Message: fmt.Sprintf("Failed to open storage: %v", err),
+		}
+	}
+	defer store.Close()
+	
+	// Get the clipboard history from storage
+	timeZero := time.Time{} // Unix epoch 0
+	contents, err := store.GetContentSinceForSync(timeZero)
+	if err != nil {
+		return Response{
+			Success: false,
+			Message: fmt.Sprintf("Failed to get content history: %v", err),
+		}
+	}
+	
+	// Create cache message
+	cache := &types.CacheMessage{
+		DeviceID:    d.cfg.DeviceID,
+		ContentList: contents,
+		TotalSize:   store.GetCacheSize(),
+		Timestamp:   time.Now(),
+	}
+	
+	// Publish directly using the daemon's client
+	if err := d.client.PublishCache(cache); err != nil {
+		return Response{
+			Success: false,
+			Message: fmt.Sprintf("Failed to publish cache history: %v", err),
+		}
+	}
+	
+	return Response{
+		Success: true,
+		Message: fmt.Sprintf("Successfully resynced clipboard history (%d items)", len(contents)),
 	}
 }
 

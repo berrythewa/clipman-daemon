@@ -108,4 +108,13 @@ func (c *DaemonClient) GetStatus() (*Response, error) {
 	}
 	
 	return c.sendCommand(cmd)
+}
+
+// Resync resynchronizes the clipboard history with other devices
+func (c *DaemonClient) Resync() (*Response, error) {
+	cmd := Command{
+		Action: "resync",
+	}
+	
+	return c.sendCommand(cmd)
 } 

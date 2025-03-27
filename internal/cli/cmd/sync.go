@@ -11,6 +11,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
+	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -54,7 +55,7 @@ var syncStatusCmd = &cobra.Command{
 			}
 			
 			if !resp.Success {
-				fmt.Printf("Error getting sync status: %v\n", resp.Error)
+				fmt.Printf("Error getting sync status: %v\n", resp.Message)
 				os.Exit(1)
 			}
 			
@@ -476,7 +477,7 @@ Use this when you want to ensure all devices have the same clipboard history.`,
 			}
 			
 			if !resp.Success {
-				fmt.Printf("Error resyncing clipboard history: %v\n", resp.Error)
+				fmt.Printf("Error resyncing clipboard history: %v\n", resp.Message)
 				os.Exit(1)
 			}
 			
@@ -486,8 +487,8 @@ Use this when you want to ensure all devices have the same clipboard history.`,
 		
 		// Fallback to direct connection
 		fmt.Println("No sync daemon running, using direct connection...")
-	
-		// Create storage to access clipboard history
+		
+		// Storage configuration
 		storageConfig := storage.StorageConfig{
 			DBPath:   cfg.Storage.DBPath,
 			MaxSize:  cfg.Storage.MaxSize,
@@ -495,6 +496,7 @@ Use this when you want to ensure all devices have the same clipboard history.`,
 			Logger:   zapLogger,
 		}
 		
+		// Create storage without a sync client initially
 		store, err := storage.NewBoltStorage(storageConfig)
 		if err != nil {
 			fmt.Printf("Error opening storage: %v\n", err)
@@ -508,19 +510,31 @@ Use this when you want to ensure all devices have the same clipboard history.`,
 			fmt.Printf("Error creating sync client: %v\n", err)
 			os.Exit(1)
 		}
+		defer syncClient.Disconnect()
 		
-		// Set the sync client for the storage
-		store.SetSyncClient(syncClient)
-		
-		// Publish the entire clipboard history
+		// Get content since the beginning of time
 		timeZero := time.Time{} // Unix epoch 0
+		contents, err := store.GetContentSinceForSync(timeZero)
+		if err != nil {
+			fmt.Printf("Error retrieving content: %v\n", err)
+			os.Exit(1)
+		}
+		
+		// Create and publish cache message directly
+		cache := &types.CacheMessage{
+			DeviceID:    cfg.DeviceID,
+			ContentList: contents,
+			TotalSize:   store.GetCacheSize(),
+			Timestamp:   time.Now(),
+		}
+		
 		fmt.Println("Resyncing clipboard history...")
-		if err := store.PublishCacheHistory(timeZero); err != nil {
+		if err := syncClient.PublishCache(cache); err != nil {
 			fmt.Printf("Error publishing cache history: %v\n", err)
 			os.Exit(1)
 		}
 		
-		fmt.Println("Successfully resynced clipboard history!")
+		fmt.Printf("Successfully resynced clipboard history (%d items)!\n", len(contents))
 	},
 }
 

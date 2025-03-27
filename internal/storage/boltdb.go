@@ -198,16 +198,48 @@ func (s *BoltStorage) GetContentSince(since time.Time) ([]*types.ClipboardConten
 	return contents, err
 }
 
-func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
+// FlushCacheWithCallback flushes the oldest content from the cache and calls the provided callback
+// with the flushed content before actually deleting it
+func (s *BoltStorage) FlushCacheWithCallback(callback func([]*types.ClipboardContent) error) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		// Collect items to be flushed
+		itemsToFlush, err := s.collectItemsToFlush(tx)
+		if err != nil {
+			return err
+		}
+		
+		if len(itemsToFlush) == 0 {
+			return nil // Nothing to flush
+		}
+		
+		// Call the callback with the items to be flushed
+		if callback != nil {
+			if err := callback(itemsToFlush); err != nil {
+				s.logger.Error("Flush callback failed", zap.Error(err))
+				// Continue with deletion anyway
+			}
+		}
+		
+		// Now delete the items
+		if err := s.deleteItemsFromBucket(tx, itemsToFlush); err != nil {
+			return err
+		}
+		
+		return nil
+	})
+}
+
+// collectItemsToFlush finds content that should be flushed from the database
+func (s *BoltStorage) collectItemsToFlush(tx *bbolt.Tx) ([]*types.ClipboardContent, error) {
 	b := tx.Bucket([]byte(clipboardBucket))
 	c := b.Cursor()
-
+	
 	// Collect the latest items to keep
 	var keepKeys [][]byte
 	for k, _ := c.Last(); k != nil && len(keepKeys) < s.keepItems; k, _ = c.Prev() {
 		keepKeys = append(keepKeys, k)
 	}
-
+	
 	// Collect items to be flushed for MQTT publishing
 	var itemsToFlush []*types.ClipboardContent
 	for k, v := c.First(); k != nil; k, v = c.Next() {
@@ -218,58 +250,101 @@ func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
 				break
 			}
 		}
-
+		
 		if !shouldKeep {
 			var content types.ClipboardContent
 			if err := json.Unmarshal(v, &content); err != nil {
-				s.logger.Error("Failed to unmarshal content for MQTT", zap.Error(err))
+				s.logger.Error("Failed to unmarshal content", zap.Error(err))
 				continue
 			}
 			itemsToFlush = append(itemsToFlush, &content)
 		}
 	}
+	
+	return itemsToFlush, nil
+}
 
-	// Publish to MQTT before deleting
-	if len(itemsToFlush) > 0 && s.syncClient != nil {
-		cacheMsg := &types.CacheMessage{
-			DeviceID:    s.deviceID,
-			ContentList: itemsToFlush,
-			TotalSize:   s.GetCacheSize(),
-			Timestamp:   time.Now(),
-		}
-
-		if err := s.syncClient.PublishCache(cacheMsg); err != nil {
-			s.logger.Error("Failed to publish cache to MQTT", zap.Error(err))
-			// Continue with deletion anyway
-		} else {
-			s.logger.Info("Published cache to MQTT",
-				zap.Int("items_count", len(itemsToFlush)),
-				zap.String("device_id", s.deviceID))
-		}
-	}
-
-	// Now delete the items
+// deleteItemsFromBucket removes the specified items from the database
+func (s *BoltStorage) deleteItemsFromBucket(tx *bbolt.Tx, itemsToDelete []*types.ClipboardContent) error {
+	b := tx.Bucket([]byte(clipboardBucket))
+	
+	// Delete the items
 	var totalFreed int64
-	for _, content := range itemsToFlush {
+	for _, content := range itemsToDelete {
 		key := []byte(content.Created.Format(time.RFC3339Nano))
 		if err := b.Delete(key); err != nil {
 			return err
 		}
 		totalFreed += int64(len(content.Data))
 	}
-
+	
+	// Update cache size
 	atomic.AddInt64(&s.cacheSize, -totalFreed)
-	s.logger.Info("Cache flushed",
+	s.logger.Info("Cache items deleted",
 		zap.Int64("freed_bytes", totalFreed),
-		zap.Int("remaining_items", len(keepKeys)),
-		zap.Int("published_items", len(itemsToFlush)))
-
+		zap.Int("deleted_items", len(itemsToDelete)))
+	
 	return nil
 }
 
+// flushOldestContent flushes the oldest content from the cache
+// Kept for backward compatibility, uses the new method internally with a sync callback
+func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
+	// For backward compatibility - still handle sync publishing if a client is provided
+	if s.syncClient != nil {
+		// Use the collect items function directly
+		itemsToFlush, err := s.collectItemsToFlush(tx)
+		if err != nil {
+			return err
+		}
+		
+		// Publish to MQTT before deleting
+		if len(itemsToFlush) > 0 {
+			cacheMsg := &types.CacheMessage{
+				DeviceID:    s.deviceID,
+				ContentList: itemsToFlush,
+				TotalSize:   s.GetCacheSize(),
+				Timestamp:   time.Now(),
+			}
+			
+			if err := s.syncClient.PublishCache(cacheMsg); err != nil {
+				s.logger.Error("Failed to publish cache to MQTT", zap.Error(err))
+				// Continue with deletion anyway
+			} else {
+				s.logger.Info("Published cache to MQTT",
+					zap.Int("items_count", len(itemsToFlush)),
+					zap.String("device_id", s.deviceID))
+			}
+		}
+		
+		// Delete the items
+		if err := s.deleteItemsFromBucket(tx, itemsToFlush); err != nil {
+			return err
+		}
+		
+		return nil
+	}
+	
+	// If no sync client, just delete without publishing
+	itemsToFlush, err := s.collectItemsToFlush(tx)
+	if err != nil {
+		return err
+	}
+	
+	return s.deleteItemsFromBucket(tx, itemsToFlush)
+}
+
+// GetContentSinceForSync retrieves content since a specific time without publishing it
+// This is used by the sync daemon to get content for synchronization
+func (s *BoltStorage) GetContentSinceForSync(since time.Time) ([]*types.ClipboardContent, error) {
+	return s.GetContentSince(since)
+}
+
+// PublishCacheHistory publishes clipboard history to sync - for backward compatibility
+// In the new architecture, this should be avoided in favor of using the daemon
 func (s *BoltStorage) PublishCacheHistory(since time.Time) error {
 	if s.syncClient == nil {
-		return nil // Skip if no sync client
+		return fmt.Errorf("no sync client available")
 	}
 
 	contents, err := s.GetContentSince(since)
@@ -281,6 +356,7 @@ func (s *BoltStorage) PublishCacheHistory(since time.Time) error {
 		DeviceID:    s.deviceID,
 		ContentList: contents,
 		TotalSize:   s.GetCacheSize(),
+		Timestamp:   time.Now(),
 	}
 
 	return s.syncClient.PublishCache(cache)
@@ -290,10 +366,17 @@ func (s *BoltStorage) GetCacheSize() int64 {
 	return atomic.LoadInt64(&s.cacheSize)
 }
 
+// FlushCache flushes the oldest content from the cache
 func (s *BoltStorage) FlushCache() error {
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		return s.flushOldestContent(tx)
-	})
+	if s.syncClient != nil {
+		// For backward compatibility, use the old method if a sync client is provided
+		return s.db.Update(func(tx *bbolt.Tx) error {
+			return s.flushOldestContent(tx)
+		})
+	}
+	
+	// Use the new method with no callback if no sync client
+	return s.FlushCacheWithCallback(nil)
 }
 
 func (s *BoltStorage) Close() error {
