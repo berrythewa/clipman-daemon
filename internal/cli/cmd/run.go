@@ -125,7 +125,7 @@ until interrupted.`,
 			recentHistory := monitor.GetHistory(10)
 			for _, item := range recentHistory {
 				dataPreview := "binary data"
-				if item.Content.Type == types.ContentTypeText || item.Content.Type == types.ContentTypeURL {
+				if item.Content.Type == types.TypeText || item.Content.Type == types.TypeURL {
 					previewLength := min(len(item.Content.Data), 50)
 					dataPreview = string(item.Content.Data[:previewLength])
 				}
