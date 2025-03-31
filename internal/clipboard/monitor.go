@@ -194,6 +194,11 @@ func (m *Monitor) saveContent(content *types.ClipboardContent) error {
 }
 
 func (m *Monitor) publishContent(content *types.ClipboardContent) error {
+	// Skip publishing if there's no MQTT client (sync disabled)
+	if m.mqttClient == nil {
+		m.logger.Debug("Sync client not available, skipping content publish")
+		return nil
+	}
 	return m.mqttClient.PublishContent(content)
 }
 
