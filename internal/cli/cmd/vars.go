@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	"github.com/berrythewa/clipman-daemon/pkg/utils"
 	"go.uber.org/zap"
 )
 
@@ -11,7 +10,6 @@ var (
 	cfg *config.Config
 	zapLogger *zap.Logger
 
-	logger *utils.Logger
 	cfgFile string
 	verbose bool
 	quiet bool
@@ -24,22 +22,14 @@ func SetConfig(config *config.Config) {
 }
 
 func GetConfig() *config.Config {
-	return cfg.load()
+	return cfg
 }
 
-// SetLogger sets the logger for commands
-func SetLogger(log *utils.Logger) {
-	logger = log
-} 
-
+// SetZapLogger sets the logger for commands
 func SetZapLogger(log *zap.Logger) {
 	zapLogger = log
 }
 
 func GetZapLogger() *zap.Logger {
 	return zapLogger
-}
-
-func GetLogger() *utils.Logger {
-	return logger
 }

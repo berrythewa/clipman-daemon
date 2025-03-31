@@ -10,8 +10,8 @@ import (
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/sync"
-	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/types"
+	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -490,13 +490,13 @@ Use this when you want to ensure all devices have the same clipboard history.`,
 		
 		// Storage configuration
 		storageConfig := storage.StorageConfig{
-			DBPath:   cfg.Storage.DBPath,
+			DBPath:   cfg.SystemPaths.DBFile,
 			MaxSize:  cfg.Storage.MaxSize,
 			DeviceID: cfg.DeviceID,
 			Logger:   zapLogger,
 		}
 		
-		// Create storage without a sync client initially
+		// Create storage
 		store, err := storage.NewBoltStorage(storageConfig)
 		if err != nil {
 			fmt.Printf("Error opening storage: %v\n", err)
@@ -512,9 +512,9 @@ Use this when you want to ensure all devices have the same clipboard history.`,
 		}
 		defer syncClient.Disconnect()
 		
-		// Get content since the beginning of time
+		// Get all content
 		timeZero := time.Time{} // Unix epoch 0
-		contents, err := store.GetContentSinceForSync(timeZero)
+		contents, err := store.GetContentSince(timeZero)
 		if err != nil {
 			fmt.Printf("Error retrieving content: %v\n", err)
 			os.Exit(1)
@@ -699,7 +699,7 @@ func showSyncStatus() {
 	
 	// Check connection status if possible
 	if cfg.Sync.URL != "" {
-		syncClient, err := sync.CreateClient(cfg, logger)
+		syncClient, err := sync.CreateClient(cfg, zapLogger)
 		if err != nil {
 			fmt.Printf("  Connection:    Error (%v)\n", err)
 		} else {

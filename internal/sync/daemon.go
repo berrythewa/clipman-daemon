@@ -347,11 +347,10 @@ func (d *SyncDaemon) handleStatusCommand(cmd Command) Response {
 func (d *SyncDaemon) handleResyncCommand(cmd Command) Response {
 	// Create a storage instance to access clipboard history
 	storageConfig := storage.StorageConfig{
-		DBPath:     d.cfg.Storage.DBPath,
-		MaxSize:    d.cfg.Storage.MaxSize,
-		DeviceID:   d.cfg.DeviceID,
-		Logger:     d.logger,
-		// No sync client is needed - we're separating concerns
+		DBPath:   d.cfg.Storage.DBPath,
+		MaxSize:  d.cfg.Storage.MaxSize,
+		DeviceID: d.cfg.DeviceID,
+		Logger:   d.logger,
 	}
 	
 	// Create the storage
@@ -364,9 +363,9 @@ func (d *SyncDaemon) handleResyncCommand(cmd Command) Response {
 	}
 	defer store.Close()
 	
-	// Get the clipboard history from storage
+	// Get all clipboard content
 	timeZero := time.Time{} // Unix epoch 0
-	contents, err := store.GetContentSinceForSync(timeZero)
+	contents, err := store.GetContentSince(timeZero)
 	if err != nil {
 		return Response{
 			Success: false,

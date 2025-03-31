@@ -74,7 +74,6 @@ until interrupted.`,
 			MaxSize:    cfg.Storage.MaxSize,
 			DeviceID:   cfg.DeviceID,
 			Logger:     zapLogger,
-			MQTTClient: syncClient,
 		}
 		
 		zapLogger.Info("Storage configuration", 

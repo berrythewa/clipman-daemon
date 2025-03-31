@@ -58,7 +58,7 @@ Examples:
 		
 		store, err := storage.NewBoltStorage(storageConfig)
 		if err != nil {
-			logger.Error("Failed to initialize storage", "error", err)
+			zapLogger.Error("Failed to initialize storage", zap.Error(err))
 			return err
 		}
 		defer store.Close()
@@ -76,7 +76,7 @@ Examples:
 		
 		// Check if --dump-all flag is set
 		if dumpAll {
-			logger.Info("Dumping complete clipboard history")
+			zapLogger.Info("Dumping complete clipboard history")
 			return store.LogCompleteHistory(config.HistoryOptions{})
 		}
 		
@@ -118,11 +118,11 @@ Examples:
 		}
 		
 		// Log the filter options
-		logger.Info("Retrieving clipboard history with filters",
-			"limit", optionOrDefault(historyOptions.Limit, "none"),
-			"type", optionOrDefault(string(historyOptions.ContentType), "all"),
-			"reverse", historyOptions.Reverse,
-			"min_size", historyOptions.MinSize)
+		zapLogger.Info("Retrieving clipboard history with filters",
+			zap.Int64("limit", historyOptions.Limit),
+			zap.String("type", string(historyOptions.ContentType)),
+			zap.Bool("reverse", historyOptions.Reverse),
+			zap.Int64("min_size", historyOptions.MinSize))
 		
 		// Display the history in the requested format
 		if jsonOutput {

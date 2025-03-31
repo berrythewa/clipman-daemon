@@ -17,7 +17,7 @@ This will keep the most recent items based on the keep-items setting.
 The command will display the clipboard history before and after the flush
 operation, unless the --quiet flag is used.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		logger.Info("Forcing clipboard cache flush")
+		zapLogger.Info("Forcing clipboard cache flush")
 		
 		// Get all system paths
 		paths := cfg.GetSystemPaths()
@@ -31,16 +31,16 @@ operation, unless the --quiet flag is used.`,
 		
 		store, err := storage.NewBoltStorage(storageConfig)
 		if err != nil {
-			logger.Error("Failed to initialize storage", "error", err)
+			zapLogger.Error("Failed to initialize storage", zap.Error(err))
 			return err
 		}
 		defer store.Close()
 		
 		// First log the history before flush, unless quiet mode is on
 		if !quiet {
-			logger.Info("History before flush:")
+			zapLogger.Info("History before flush:")
 			if err := store.LogCompleteHistory(config.HistoryOptions{}); err != nil {
-				logger.Error("Failed to dump history before flush", "error", err)
+				zapLogger.Error("Failed to dump history before flush", zap.Error(err))
 			}
 		}
 		
@@ -49,7 +49,7 @@ operation, unless the --quiet flag is used.`,
 		
 		// Now flush the cache
 		if err := store.FlushCache(); err != nil {
-			logger.Error("Failed to flush cache", "error", err)
+			zapLogger.Error("Failed to flush cache", zap.Error(err))
 			return err
 		}
 		
@@ -57,16 +57,16 @@ operation, unless the --quiet flag is used.`,
 		cacheSizeAfter := store.GetCacheSize()
 		
 		// Log flushing results
-		logger.Info("Cache flushed successfully", 
-			"freed_bytes", cacheSizeBefore - cacheSizeAfter,
-			"cache_size_before", cacheSizeBefore,
-			"cache_size_after", cacheSizeAfter)
+		zapLogger.Info("Cache flushed successfully", 
+			zap.Int64("freed_bytes", cacheSizeBefore - cacheSizeAfter),
+			zap.Int64("cache_size_before", cacheSizeBefore),
+			zap.Int64("cache_size_after", cacheSizeAfter))
 		
 		// Log the history after flush, unless quiet mode is on
 		if !quiet {
-			logger.Info("History after flush:")
+			zapLogger.Info("History after flush:")
 			if err := store.LogCompleteHistory(config.HistoryOptions{}); err != nil {
-				logger.Error("Failed to dump history after flush", "error", err)
+				zapLogger.Error("Failed to dump history after flush", zap.Error(err))
 			}
 		}
 		

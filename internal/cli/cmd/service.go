@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 var (
@@ -65,7 +66,7 @@ func init() {
 
 // installService installs Clipman as a system or user service
 func installService() error {
-	logger.Info("Installing Clipman service", "system", systemService)
+	zapLogger.Info("Installing Clipman service", zap.Bool("system", systemService))
 	
 	// Get the service file path and content for the current OS
 	servicePath, serviceContent, err := getServiceFile()
@@ -89,21 +90,21 @@ func installService() error {
 		return fmt.Errorf("failed to write service file: %v", err)
 	}
 	
-	logger.Info("Service file created", "path", servicePath)
+	zapLogger.Info("Service file created", zap.String("path", servicePath))
 	
 	// Reload and enable the service based on OS
 	if err := enableService(); err != nil {
-		logger.Error("Failed to enable service", "error", err)
+		zapLogger.Error("Failed to enable service", zap.Error(err))
 		return err
 	}
 	
-	logger.Info("Clipman service installed and enabled", "path", servicePath)
+	zapLogger.Info("Clipman service installed and enabled", zap.String("path", servicePath))
 	return nil
 }
 
 // uninstallService removes the Clipman service
 func uninstallService() error {
-	logger.Info("Uninstalling Clipman service")
+	zapLogger.Info("Uninstalling Clipman service")
 	
 	// Get the service file path for the current OS
 	servicePath, _, err := getServiceFile()
@@ -113,19 +114,19 @@ func uninstallService() error {
 	
 	// Check if service exists
 	if !fileExists(servicePath) {
-		logger.Info("Service does not exist", "path", servicePath)
+		zapLogger.Info("Service does not exist", zap.String("path", servicePath))
 		return nil
 	}
 	
 	// Stop the service first
 	if err := stopService(); err != nil {
-		logger.Warn("Failed to stop service before uninstall", "error", err)
+		zapLogger.Warn("Failed to stop service before uninstall", zap.Error(err))
 		// Continue with uninstall even if stop fails
 	}
 	
 	// Disable the service based on OS
 	if err := disableService(); err != nil {
-		logger.Warn("Failed to disable service", "error", err)
+		zapLogger.Warn("Failed to disable service", zap.Error(err))
 		// Continue with uninstall even if disable fails
 	}
 	
@@ -134,13 +135,13 @@ func uninstallService() error {
 		return fmt.Errorf("failed to remove service file: %v", err)
 	}
 	
-	logger.Info("Clipman service has been uninstalled")
+	zapLogger.Info("Clipman service has been uninstalled")
 	return nil
 }
 
 // startService starts the Clipman service
 func startService() error {
-	logger.Info("Starting Clipman service")
+	zapLogger.Info("Starting Clipman service")
 	
 	var cmd *exec.Cmd
 	
@@ -166,13 +167,13 @@ func startService() error {
 		return fmt.Errorf("failed to start service: %v\n%s", err, output)
 	}
 	
-	logger.Info("Clipman service started")
+	zapLogger.Info("Clipman service started")
 	return nil
 }
 
 // stopService stops the Clipman service
 func stopService() error {
-	logger.Info("Stopping Clipman service")
+	zapLogger.Info("Stopping Clipman service")
 	
 	var cmd *exec.Cmd
 	
@@ -198,13 +199,13 @@ func stopService() error {
 		return fmt.Errorf("failed to stop service: %v\n%s", err, output)
 	}
 	
-	logger.Info("Clipman service stopped")
+	zapLogger.Info("Clipman service stopped")
 	return nil
 }
 
 // checkServiceStatus checks the status of the Clipman service
 func checkServiceStatus() error {
-	logger.Info("Checking Clipman service status")
+	zapLogger.Info("Checking Clipman service status")
 	
 	var cmd *exec.Cmd
 	
@@ -230,7 +231,7 @@ func checkServiceStatus() error {
 	
 	// Don't return an error if the command returns non-zero (service might not be running)
 	if err != nil {
-		logger.Info("Service status check returned non-zero", "error", err)
+		zapLogger.Info("Service status check returned non-zero", zap.Error(err))
 	}
 	
 	return nil

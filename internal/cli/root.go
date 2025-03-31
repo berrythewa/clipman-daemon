@@ -11,10 +11,12 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/sync"
-	"github.com/berrythewa/clipman-daemon/pkg/utils"
 	"github.com/berrythewa/clipman-daemon/internal/platform"
+	"github.com/berrythewa/clipman-daemon/internal/types"
+
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var (
@@ -31,7 +33,7 @@ var (
 	cfg *config.Config
 
 	// Logger instance
-	logger *utils.Logger
+	zapLogger *zap.Logger
 	
 	// Version information - set by main
 	Version   = "dev"
@@ -56,67 +58,105 @@ Use --detach to run it in the background.`,
 		var err error
 
 		// Load config first
-		cfg, err = config.Load()
+		cfg, err = config.Load(cfgFile)
 		if err != nil {
 			return fmt.Errorf("failed to load config: %v", err)
 		}
 
 		// Override config with flags
 		if logLevel != "" {
-			cfg.LogLevel = logLevel
+			// Set log level in config
+			cfg.Log.Format = logLevel
 		}
 
 		if deviceID != "" {
 			cfg.DeviceID = deviceID
 		}
 
-		// Get system paths
-		paths := cfg.GetPaths()
-
-		// Initialize the logger with file logging
-		loggerOptions := utils.LoggerOptions{
-			Level:  cfg.LogLevel,
-			Output: os.Stdout,
+		// Initialize the logger
+		zapConfig := zap.NewProductionConfig()
+		
+		// Set log level based on config or flags
+		level := getZapLogLevel(cfg.Log.Format)
+		zapConfig.Level = zap.NewAtomicLevelAt(level)
+		
+		// Enable development mode for better console output if in debug mode
+		if level == zapcore.DebugLevel {
+			zapConfig.Development = true
+			zapConfig.Encoding = "console"
 		}
 		
-		// Enable file logging unless explicitly disabled by flag or config
-		enableFileLogging := cfg.Log.EnableFileLogging && !noFileLog
-		if enableFileLogging {
-			loggerOptions.LogDir = paths.LogDir
-			loggerOptions.MaxSize = cfg.Log.MaxLogSize
-			loggerOptions.MaxFiles = cfg.Log.MaxLogFiles
+		// Configure file logging
+		if cfg.Log.EnableFileLogging && !noFileLog {
+			// Get system paths
+			paths := cfg.GetPaths()
+			
+			// Set up file logging
+			zapConfig.OutputPaths = append(zapConfig.OutputPaths, fmt.Sprintf("%s/clipman.log", paths.LogDir))
+			zapConfig.ErrorOutputPaths = append(zapConfig.ErrorOutputPaths, fmt.Sprintf("%s/clipman_error.log", paths.LogDir))
+			
+			// Use MB value from config
+			maxLogSizeMB := int(cfg.Log.MaxLogSize / (1024 * 1024))
+			if maxLogSizeMB <= 0 {
+				maxLogSizeMB = 10 // Default to 10MB
+			}
+			
+			// Configure rotation
+			zapConfig.DisableStacktrace = false
+			zapConfig.DisableCaller = false
 		}
 		
-		logger = utils.NewLogger(loggerOptions)
+		// Create the logger
+		zapLogger, err = zapConfig.Build()
+		if err != nil {
+			return fmt.Errorf("failed to initialize logger: %v", err)
+		}
 		
 		// Set up signal handlers for graceful shutdown
 		setupSignalHandlers()
 		
-		logger.Debug("Configuration loaded", 
-			"log_level", cfg.LogLevel,
-			"device_id", cfg.DeviceID,
-			"data_dir", cfg.DataDir)
+		// Log startup information
+		zapLogger.Debug("Configuration loaded", 
+			zap.String("log_level", cfg.Log.Format),
+			zap.String("device_id", cfg.DeviceID),
+			zap.String("data_dir", cfg.SystemPaths.DataDir))
 		
-		if enableFileLogging {
-			logger.Info("File logging enabled", 
-				"log_dir", paths.LogDir,
-				"max_size", cfg.Log.MaxLogSize,
-				"max_files", cfg.Log.MaxLogFiles)
+		if cfg.Log.EnableFileLogging && !noFileLog {
+			zapLogger.Info("File logging enabled", 
+				zap.String("log_dir", cfg.SystemPaths.LogDir),
+				zap.Int("max_size_mb", int(cfg.Log.MaxLogSize / (1024 * 1024))),
+				zap.Int("max_files", cfg.Log.MaxLogFiles))
 		} else {
-			logger.Info("File logging disabled")
+			zapLogger.Info("File logging disabled")
 		}
 			
 		// Share cfg and logger with cmd package
 		cmdpkg.SetConfig(cfg)
-		cmdpkg.SetLogger(logger)
+		cmdpkg.SetZapLogger(zapLogger)
 
 		return nil
 	},
 }
 
+// getZapLogLevel converts string log level to zap.Level
+func getZapLogLevel(level string) zapcore.Level {
+	switch level {
+	case "debug":
+		return zapcore.DebugLevel
+	case "info":
+		return zapcore.InfoLevel
+	case "warn", "warning":
+		return zapcore.WarnLevel
+	case "error":
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel // Default to info level
+	}
+}
+
 // runDaemon implements the daemon mode functionality (previously in run.go)
 func runDaemon() error {
-	logger.Info("Starting Clipman daemon")
+	zapLogger.Info("Starting Clipman daemon")
 	
 	// If maxSize is specified, override config
 	if maxSize > 0 {
@@ -128,7 +168,7 @@ func runDaemon() error {
 	
 	// If detach flag is set, detach from terminal
 	if detach {
-		logger.Info("Detaching from terminal and running in background")
+		zapLogger.Info("Detaching from terminal and running in background")
 		
 		// Get the platform-specific daemonizer
 		daemonizer := platform.GetPlatformDaemonizer()
@@ -151,7 +191,7 @@ func runDaemon() error {
 			return fmt.Errorf("failed to daemonize: %v", err)
 		}
 		
-		fmt.Printf("Clipman started in background (PID: %d)\n", pid)
+	fmt.Printf("Clipman started in background (PID: %d)\n", pid)
 		
 		// Parent process exits here, child continues
 		return nil
@@ -159,34 +199,29 @@ func runDaemon() error {
 	
 	// Initialize sync client if configured and not explicitly disabled
 	var syncClient sync.SyncClient
-	if !noSync && (cfg.Sync.URL != "" || cfg.Broker.URL != "") {
-		url := cfg.Sync.URL
-		if url == "" {
-			url = cfg.Broker.URL
-		}
-		
-		logger.Info("Initializing sync connection", 
-			"url", url,
-			"device_id", cfg.DeviceID,
-			"mode", cfg.Sync.Mode)
+	if !noSync && cfg.Sync.URL != "" {
+		zapLogger.Info("Initializing sync connection", 
+			zap.String("url", cfg.Sync.URL),
+			zap.String("device_id", cfg.DeviceID),
+			zap.String("mode", cfg.Sync.Mode))
 		
 		var err error
-		syncClient, err = sync.CreateClient(cfg, logger)
+		syncClient, err = sync.CreateClient(cfg, zapLogger)
 		if err != nil {
-			logger.Warn("Failed to initialize sync client", "error", err)
-			logger.Info("Continuing without sync support")
+			zapLogger.Warn("Failed to initialize sync client", zap.Error(err))
+			zapLogger.Info("Continuing without sync support")
 		} else {
-			logger.Info("Sync client initialized successfully")
+			zapLogger.Info("Sync client initialized successfully")
 			
 			// If a default group is set, try to join it
 			if cfg.Sync.DefaultGroup != "" && cfg.Sync.AutoJoinGroups {
 				if err := syncClient.JoinGroup(cfg.Sync.DefaultGroup); err != nil {
-					logger.Error("Failed to join default group", 
-						"group", cfg.Sync.DefaultGroup, 
-						"error", err)
+					zapLogger.Error("Failed to join default group", 
+						zap.String("group", cfg.Sync.DefaultGroup), 
+						zap.Error(err))
 				} else {
-					logger.Info("Joined default group", 
-						"group", cfg.Sync.DefaultGroup)
+					zapLogger.Info("Joined default group", 
+						zap.String("group", cfg.Sync.DefaultGroup))
 				}
 			}
 			
@@ -211,48 +246,47 @@ func runDaemon() error {
 				}
 				
 				if err := syncClient.SetContentFilter(filter); err != nil {
-					logger.Error("Failed to set content filter", "error", err)
+					zapLogger.Error("Failed to set content filter", zap.Error(err))
 				}
 			}
 		}
 	} else {
 		if noSync {
-			logger.Info("Sync client disabled by command line flag")
-		} else if cfg.Sync.URL == "" && cfg.Broker.URL == "" {
-			logger.Info("No sync URL configured, running without sync connection")
+			zapLogger.Info("Sync client disabled by command line flag")
+		} else if cfg.Sync.URL == "" {
+			zapLogger.Info("No sync URL configured, running without sync connection")
 		}
 	}
 	
 	// Initialize storage
 	storageConfig := storage.StorageConfig{
-		DBPath:     paths.DBFile,
-		MaxSize:    cfg.Storage.MaxSize,
-		DeviceID:   cfg.DeviceID,
-		Logger:     logger,
-		MQTTClient: syncClient,
+		DBPath:   paths.DBFile,
+		MaxSize:  cfg.Storage.MaxSize,
+		DeviceID: cfg.DeviceID,
+		Logger:   zapLogger,
 	}
 	
-	logger.Info("Storage configuration", 
-		"db_path", paths.DBFile,
-		"max_size_bytes", storageConfig.MaxSize,
-		"device_id", cfg.DeviceID)
+	zapLogger.Info("Storage configuration", 
+		zap.String("db_path", paths.DBFile),
+		zap.Int64("max_size_bytes", storageConfig.MaxSize),
+		zap.String("device_id", cfg.DeviceID))
 		
 	store, err := storage.NewBoltStorage(storageConfig)
 	if err != nil {
-		logger.Error("Failed to initialize storage", "error", err)
+		zapLogger.Error("Failed to initialize storage", zap.Error(err))
 		return err
 	}
 	defer store.Close()
 	
 	// Start the monitor
-	monitor := clipboard.NewMonitor(cfg, syncClient, logger, store)
+	monitor := clipboard.NewMonitor(cfg, syncClient, zapLogger, store)
 	if err := monitor.Start(); err != nil {
-		logger.Error("Failed to start monitor", "error", err)
+		zapLogger.Error("Failed to start monitor", zap.Error(err))
 		return err
 	}
 	
-	logger.Info("Monitor started")
-	logger.Info("Running until interrupted, press Ctrl+C to stop")
+	zapLogger.Info("Monitor started")
+	zapLogger.Info("Running until interrupted, press Ctrl+C to stop")
 	
 	// Run indefinitely - block until interrupted
 	select {}
@@ -273,11 +307,9 @@ func setupSignalHandlers() {
 
 // cleanup performs cleanup operations before exit
 func cleanup() {
-	if logger != nil {
-		logger.Info("Shutting down Clipman")
-		if err := logger.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error closing logger: %v\n", err)
-		}
+	if zapLogger != nil {
+		zapLogger.Info("Shutting down Clipman")
+		zapLogger.Sync() // Flush any buffered log entries
 	}
 }
 

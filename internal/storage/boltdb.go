@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/compression"
 
@@ -27,33 +26,36 @@ type BoltStorageInterface interface {
 	SaveContent(content *types.ClipboardContent) error
 	GetLatestContent() (*types.ClipboardContent, error)
 	GetContentSince(since time.Time) ([]*types.ClipboardContent, error)
+	GetAllContents() ([]*types.ClipboardContent, error)
+	GetContentToFlush() ([]*types.ClipboardContent, error)
+	DeleteContents(contents []*types.ClipboardContent) error
 	Close() error
 	GetCacheSize() int64
 	FlushCache() error
 	GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error)
 	LogCompleteHistory(options config.HistoryOptions) error
-	SetSyncClient(client sync.SyncClient)
 }
 
+// BoltStorage implements persistent storage for clipboard contents using BoltDB
 type BoltStorage struct {
-	db         *bbolt.DB
-	cacheSize  int64
-	maxSize    int64
-	logger     *zap.Logger
-	deviceID   string
-	syncClient sync.SyncClient
-	keepItems  int
+	db        *bbolt.DB
+	cacheSize int64
+	maxSize   int64
+	logger    *zap.Logger
+	deviceID  string
+	keepItems int
 }
 
+// StorageConfig holds configuration for BoltStorage initialization
 type StorageConfig struct {
-	DBPath     string
-	MaxSize    int64
-	DeviceID   string
-	Logger     *zap.Logger
-	MQTTClient sync.SyncClient // Using MQTTClient field name for backward compatibility
-	KeepItems  int
+	DBPath    string
+	MaxSize   int64
+	DeviceID  string
+	Logger    *zap.Logger
+	KeepItems int
 }
 
+// NewBoltStorage creates a new BoltStorage instance
 func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
 	// Validate and set default values
 	maxSize := config.MaxSize
@@ -69,20 +71,20 @@ func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
 	// Open the database
 	db, err := bbolt.Open(config.DBPath, 0600, &bbolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
-		return nil, fmt.Errorf("failed to open bolt database: %v", err)
+		return nil, fmt.Errorf("failed to open bolt database: %w", err)
 	}
 
 	// Create bucket if it doesn't exist
 	err = db.Update(func(tx *bbolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists([]byte(clipboardBucket))
 		if err != nil {
-			return fmt.Errorf("failed to create bucket: %v", err)
+			return fmt.Errorf("failed to create bucket: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to create bucket: %v", err)
+		return nil, fmt.Errorf("failed to create bucket: %w", err)
 	}
 
 	// Calculate current cache size
@@ -96,38 +98,37 @@ func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
 	})
 	if err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to calculate cache size: %v", err)
+		return nil, fmt.Errorf("failed to calculate cache size: %w", err)
 	}
 
 	// Create and return the storage implementation
 	storage := &BoltStorage{
-		db:         db,
-		cacheSize:  cacheSize,
-		maxSize:    maxSize,
-		logger:     config.Logger,
-		deviceID:   config.DeviceID,
-		syncClient: config.MQTTClient,
-		keepItems:  keepItemsValue,
+		db:        db,
+		cacheSize: cacheSize,
+		maxSize:   maxSize,
+		logger:    config.Logger,
+		deviceID:  config.DeviceID,
+		keepItems: keepItemsValue,
 	}
 
 	if config.Logger != nil {
 		config.Logger.Debug("BoltStorage initialized", 
 			zap.String("db_path", config.DBPath), 
 			zap.Int64("max_size", maxSize),
-			zap.Int64("current_size", cacheSize),
-			zap.Bool("has_sync", config.MQTTClient != nil))
+			zap.Int64("current_size", cacheSize))
 	}
 
 	return storage, nil
 }
 
+// SaveContent saves a clipboard content item to the database
 func (s *BoltStorage) SaveContent(content *types.ClipboardContent) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
 
 		encoded, err := json.Marshal(content)
 		if err != nil {
-			return fmt.Errorf("failed to encode content: %v", err)
+			return fmt.Errorf("failed to encode content: %w", err)
 		}
 
 		// Check cache size before adding
@@ -142,6 +143,7 @@ func (s *BoltStorage) SaveContent(content *types.ClipboardContent) error {
 	})
 }
 
+// GetLatestContent retrieves the most recent clipboard content
 func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 	var content *types.ClipboardContent
 	err := s.db.View(func(tx *bbolt.Tx) error {
@@ -151,7 +153,8 @@ func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 		if v == nil {
 			return nil
 		}
-		return json.Unmarshal(v, &content)
+		content = &types.ClipboardContent{}
+		return json.Unmarshal(v, content)
 	})
 
 	if err != nil {
@@ -161,7 +164,7 @@ func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 	if content != nil && content.Compressed {
 		decompressed, err := compression.DecompressContent(content)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decompress content: %v", err)
+			return nil, fmt.Errorf("failed to decompress content: %w", err)
 		}
 		content = decompressed
 	}
@@ -169,6 +172,7 @@ func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 	return content, nil
 }
 
+// GetContentSince retrieves all clipboard content since the specified time
 func (s *BoltStorage) GetContentSince(since time.Time) ([]*types.ClipboardContent, error) {
 	var contents []*types.ClipboardContent
 	err := s.db.View(func(tx *bbolt.Tx) error {
@@ -179,13 +183,13 @@ func (s *BoltStorage) GetContentSince(since time.Time) ([]*types.ClipboardConten
 		for k, v := c.Seek(min); k != nil; k, v = c.Next() {
 			var content types.ClipboardContent
 			if err := json.Unmarshal(v, &content); err != nil {
-				return fmt.Errorf("failed to decode content: %v", err)
+				return fmt.Errorf("failed to decode content: %w", err)
 			}
 
 			if content.Compressed {
 				decompressed, err := compression.DecompressContent(&content)
 				if err != nil {
-					return fmt.Errorf("failed to decompress content: %v", err)
+					return fmt.Errorf("failed to decompress content: %w", err)
 				}
 				contents = append(contents, decompressed)
 			} else {
@@ -198,35 +202,23 @@ func (s *BoltStorage) GetContentSince(since time.Time) ([]*types.ClipboardConten
 	return contents, err
 }
 
-// FlushCacheWithCallback flushes the oldest content from the cache and calls the provided callback
-// with the flushed content before actually deleting it
-func (s *BoltStorage) FlushCacheWithCallback(callback func([]*types.ClipboardContent) error) error {
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		// Collect items to be flushed
-		itemsToFlush, err := s.collectItemsToFlush(tx)
-		if err != nil {
-			return err
-		}
-		
-		if len(itemsToFlush) == 0 {
-			return nil // Nothing to flush
-		}
-		
-		// Call the callback with the items to be flushed
-		if callback != nil {
-			if err := callback(itemsToFlush); err != nil {
-				s.logger.Error("Flush callback failed", zap.Error(err))
-				// Continue with deletion anyway
-			}
-		}
-		
-		// Now delete the items
-		if err := s.deleteItemsFromBucket(tx, itemsToFlush); err != nil {
-			return err
-		}
-		
-		return nil
+// GetAllContents retrieves all clipboard content in the database
+func (s *BoltStorage) GetAllContents() ([]*types.ClipboardContent, error) {
+	return s.GetContentSince(time.Time{}) // Empty time means get everything
+}
+
+// GetContentToFlush identifies content that should be flushed from storage
+// based on the configured keepItems limit
+func (s *BoltStorage) GetContentToFlush() ([]*types.ClipboardContent, error) {
+	var itemsToFlush []*types.ClipboardContent
+
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		var err error
+		itemsToFlush, err = s.collectItemsToFlush(tx)
+		return err
 	})
+
+	return itemsToFlush, err
 }
 
 // collectItemsToFlush finds content that should be flushed from the database
@@ -240,7 +232,7 @@ func (s *BoltStorage) collectItemsToFlush(tx *bbolt.Tx) ([]*types.ClipboardConte
 		keepKeys = append(keepKeys, k)
 	}
 	
-	// Collect items to be flushed for MQTT publishing
+	// Collect items to be flushed
 	var itemsToFlush []*types.ClipboardContent
 	for k, v := c.First(); k != nil; k, v = c.Next() {
 		shouldKeep := false
@@ -264,8 +256,19 @@ func (s *BoltStorage) collectItemsToFlush(tx *bbolt.Tx) ([]*types.ClipboardConte
 	return itemsToFlush, nil
 }
 
+// DeleteContents removes specified content items from storage
+func (s *BoltStorage) DeleteContents(contents []*types.ClipboardContent) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		return s.deleteItemsFromBucket(tx, contents)
+	})
+}
+
 // deleteItemsFromBucket removes the specified items from the database
 func (s *BoltStorage) deleteItemsFromBucket(tx *bbolt.Tx, itemsToDelete []*types.ClipboardContent) error {
+	if len(itemsToDelete) == 0 {
+		return nil
+	}
+
 	b := tx.Bucket([]byte(clipboardBucket))
 	
 	// Delete the items
@@ -288,44 +291,7 @@ func (s *BoltStorage) deleteItemsFromBucket(tx *bbolt.Tx, itemsToDelete []*types
 }
 
 // flushOldestContent flushes the oldest content from the cache
-// Kept for backward compatibility, uses the new method internally with a sync callback
 func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
-	// For backward compatibility - still handle sync publishing if a client is provided
-	if s.syncClient != nil {
-		// Use the collect items function directly
-		itemsToFlush, err := s.collectItemsToFlush(tx)
-		if err != nil {
-			return err
-		}
-		
-		// Publish to MQTT before deleting
-		if len(itemsToFlush) > 0 {
-			cacheMsg := &types.CacheMessage{
-				DeviceID:    s.deviceID,
-				ContentList: itemsToFlush,
-				TotalSize:   s.GetCacheSize(),
-				Timestamp:   time.Now(),
-			}
-			
-			if err := s.syncClient.PublishCache(cacheMsg); err != nil {
-				s.logger.Error("Failed to publish cache to MQTT", zap.Error(err))
-				// Continue with deletion anyway
-			} else {
-				s.logger.Info("Published cache to MQTT",
-					zap.Int("items_count", len(itemsToFlush)),
-					zap.String("device_id", s.deviceID))
-			}
-		}
-		
-		// Delete the items
-		if err := s.deleteItemsFromBucket(tx, itemsToFlush); err != nil {
-			return err
-		}
-		
-		return nil
-	}
-	
-	// If no sync client, just delete without publishing
 	itemsToFlush, err := s.collectItemsToFlush(tx)
 	if err != nil {
 		return err
@@ -334,51 +300,19 @@ func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
 	return s.deleteItemsFromBucket(tx, itemsToFlush)
 }
 
-// GetContentSinceForSync retrieves content since a specific time without publishing it
-// This is used by the sync daemon to get content for synchronization
-func (s *BoltStorage) GetContentSinceForSync(since time.Time) ([]*types.ClipboardContent, error) {
-	return s.GetContentSince(since)
+// FlushCache flushes the oldest content from the cache to stay under size limits
+func (s *BoltStorage) FlushCache() error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		return s.flushOldestContent(tx)
+	})
 }
 
-// PublishCacheHistory publishes clipboard history to sync - for backward compatibility
-// In the new architecture, this should be avoided in favor of using the daemon
-func (s *BoltStorage) PublishCacheHistory(since time.Time) error {
-	if s.syncClient == nil {
-		return fmt.Errorf("no sync client available")
-	}
-
-	contents, err := s.GetContentSince(since)
-	if err != nil {
-		return fmt.Errorf("failed to get content since %v: %v", since, err)
-	}
-
-	cache := &types.CacheMessage{
-		DeviceID:    s.deviceID,
-		ContentList: contents,
-		TotalSize:   s.GetCacheSize(),
-		Timestamp:   time.Now(),
-	}
-
-	return s.syncClient.PublishCache(cache)
-}
-
+// GetCacheSize returns the current size of the cache in bytes
 func (s *BoltStorage) GetCacheSize() int64 {
 	return atomic.LoadInt64(&s.cacheSize)
 }
 
-// FlushCache flushes the oldest content from the cache
-func (s *BoltStorage) FlushCache() error {
-	if s.syncClient != nil {
-		// For backward compatibility, use the old method if a sync client is provided
-		return s.db.Update(func(tx *bbolt.Tx) error {
-			return s.flushOldestContent(tx)
-		})
-	}
-	
-	// Use the new method with no callback if no sync client
-	return s.FlushCacheWithCallback(nil)
-}
-
+// Close closes the database connection
 func (s *BoltStorage) Close() error {
 	// Attempt to flush before closing
 	if err := s.FlushCache(); err != nil {
@@ -496,7 +430,7 @@ func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.Clipbo
 	})
 	
 	if err != nil {
-		return nil, fmt.Errorf("failed to get history: %v", err)
+		return nil, fmt.Errorf("failed to get history: %w", err)
 	}
 	
 	return contents, nil
@@ -519,7 +453,7 @@ func (s *BoltStorage) LogCompleteHistory(options config.HistoryOptions) error {
 	// Get filtered history
 	contents, err := s.GetHistory(options)
 	if err != nil {
-		return fmt.Errorf("failed to get history: %v", err)
+		return fmt.Errorf("failed to get history: %w", err)
 	}
 	
 	// Log each history item
@@ -577,9 +511,4 @@ func optionOrDefault(value interface{}, defaultText string) string {
 	default:
 		return fmt.Sprintf("%v", value)
 	}
-}
-
-// SetSyncClient sets the sync client for this storage instance
-func (s *BoltStorage) SetSyncClient(client sync.SyncClient) {
-	s.syncClient = client
 }
