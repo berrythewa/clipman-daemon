@@ -5,10 +5,13 @@ package platform
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +19,48 @@ import (
 	cliplib "github.com/atotto/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 )
+
+// Available monitoring modes
+const (
+	monitorModePolling = "polling" // Polling mode
+	monitorModeXFixes  = "xfixes"  // X11 XFixes extension
+	monitorModeWayland = "wayland" // Wayland compositor
+	monitorModeMir     = "mir"     // Mir display server
+)
+
+// Available clipboard tools
+const (
+	toolAtotto = "atotto"
+	toolXclip  = "xclip"
+	toolXsel   = "xsel"
+	toolWlPaste = "wl-paste"
+	toolMirTool = "mir-tool"
+)
+
+// MIME types for clipboard content
+const (
+	mimeText      = "text/plain"
+	mimeUTF8Text  = "text/plain;charset=utf-8"
+	mimeImage     = "image/png"
+	mimeURI       = "text/uri-list"
+	mimeBMP       = "image/bmp"
+	mimeJPEG      = "image/jpeg"
+	mimeGIF       = "image/gif"
+	mimeFilenames = "x-special/gnome-copied-files"
+)
+
+// ClipboardLogger defines the interface for clipboard logging
+type ClipboardLogger interface {
+	Printf(format string, v ...interface{})
+}
+
+// DefaultLogger provides a basic implementation of the ClipboardLogger
+type DefaultLogger struct{}
+
+// Printf implements the ClipboardLogger interface
+func (l DefaultLogger) Printf(format string, v ...interface{}) {
+	fmt.Printf(format+"\n", v...)
+}
 
 // LinuxClipboard is the Linux-specific clipboard implementation
 type LinuxClipboard struct {
@@ -30,35 +75,6 @@ type LinuxClipboard struct {
 	logger         ClipboardLogger
 }
 
-// ClipboardLogger defines a minimal interface for logging
-type ClipboardLogger interface {
-	Printf(format string, v ...interface{})
-}
-
-// DefaultLogger provides basic logging to stdout
-type DefaultLogger struct{}
-
-func (l DefaultLogger) Printf(format string, v ...interface{}) {
-	fmt.Printf(format+"\n", v...)
-}
-
-// Monitoring modes
-const (
-	monitorModeXFixes  = "xfixes"  // X11 XFixes extension (event-based)
-	monitorModeWayland = "wayland" // Wayland wl-paste (blocking call)
-	monitorModePolling = "polling" // Fallback polling strategy
-	monitorModeMir     = "mir"     // Mir display server
-)
-
-// Available clipboard tools
-const (
-	toolAtotto = "atotto"
-	toolXclip  = "xclip"
-	toolXsel   = "xsel"
-	toolWlPaste = "wl-paste"
-	toolMirTool = "mir-tool"
-)
-
 // NewClipboard creates a new platform-specific clipboard implementation
 func NewClipboard() *LinuxClipboard {
 	return &LinuxClipboard{
@@ -71,12 +87,168 @@ func (c *LinuxClipboard) SetLogger(logger ClipboardLogger) {
 	c.logger = logger
 }
 
+// detectContentType tries to determine the content type from the data
+func (c *LinuxClipboard) detectContentType(data []byte) types.ContentType {
+	// Empty data
+	if len(data) == 0 {
+		return types.TypeText
+	}
+
+	// Try to detect URL
+	if isURL(string(data)) {
+		c.logger.Printf("Detected URL in clipboard content")
+		return types.TypeURL
+	}
+
+	// Check if it looks like a file path
+	if isFilePath(string(data)) {
+		c.logger.Printf("Detected file path in clipboard content")
+		return types.TypeFilePath
+	}
+
+	// Check if it's a JSON array of file paths
+	if isFileList(data) {
+		c.logger.Printf("Detected file list in clipboard content")
+		return types.TypeFile
+	}
+
+	// If we can't determine anything else, assume it's text
+	return types.TypeText
+}
+
+// isURL checks if a string is a URL
+func isURL(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+
+	// Use a more permissive URL pattern than Windows
+	urlPattern := regexp.MustCompile(`^(https?|ftp)://\S+$`)
+	if urlPattern.MatchString(text) {
+		// Double check with Go's URL parser
+		_, err := url.Parse(text)
+		return err == nil
+	}
+	return false
+}
+
+// isFilePath checks if text looks like a file path
+func isFilePath(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+
+	// Check if it starts with / (Unix path) or has a drive letter (Windows path)
+	if strings.HasPrefix(text, "/") {
+		// Check if the file exists
+		_, err := os.Stat(text)
+		return err == nil
+	}
+
+	return false
+}
+
+// isFileList checks if data is a JSON array of file paths
+func isFileList(data []byte) bool {
+	var filePaths []string
+	if err := json.Unmarshal(data, &filePaths); err != nil {
+		return false
+	}
+
+	// Must have at least one path
+	if len(filePaths) == 0 {
+		return false
+	}
+
+	// Check if at least the first path exists
+	_, err := os.Stat(filePaths[0])
+	return err == nil
+}
+
+// truncateString truncates a string to the specified length
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // Read gets the current clipboard content
 func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Try multiple clipboard reading methods in order of preference
+	// First try to detect available formats
+	formats, err := c.getAvailableFormats()
+	if err != nil {
+		c.logger.Printf("Failed to get available formats: %v, falling back to basic text read", err)
+		// Fall back to simple text reading if format detection fails
+		contentBytes, err := c.readClipboardContent()
+		if err != nil {
+			return nil, err
+		}
+		
+		// Check if content has changed
+		if bytes.Equal(contentBytes, c.lastContent) {
+			return nil, fmt.Errorf("content unchanged")
+		}
+		
+		// Update the last content
+		c.lastContent = make([]byte, len(contentBytes))
+		copy(c.lastContent, contentBytes)
+
+		// Detect content type from the data itself
+		contentType := c.detectContentType(contentBytes)
+		
+		return &types.ClipboardContent{
+			Type:    contentType,
+			Data:    contentBytes,
+			Created: time.Now(),
+		}, nil
+	}
+
+	// Process formats in priority order
+	c.logger.Printf("Available clipboard formats: %v", formats)
+
+	// Try image formats first
+	if containsAny(formats, mimeImage, mimeBMP, mimeJPEG, mimeGIF) {
+		content, err := c.readImageFormat(formats)
+		if err == nil {
+			// Check if content has changed
+			if bytes.Equal(content.Data, c.lastContent) {
+				return nil, fmt.Errorf("content unchanged")
+			}
+			
+			// Update the last content
+			c.lastContent = make([]byte, len(content.Data))
+			copy(c.lastContent, content.Data)
+			
+			return content, nil
+		}
+		c.logger.Printf("Error reading image format: %v", err)
+	}
+
+	// Try URI list format (files)
+	if contains(formats, mimeURI) || contains(formats, mimeFilenames) {
+		content, err := c.readFileFormat(formats)
+		if err == nil {
+			// Check if content has changed
+			if bytes.Equal(content.Data, c.lastContent) {
+				return nil, fmt.Errorf("content unchanged")
+			}
+			
+			// Update the last content
+			c.lastContent = make([]byte, len(content.Data))
+			copy(c.lastContent, content.Data)
+			
+			return content, nil
+		}
+		c.logger.Printf("Error reading file format: %v", err)
+	}
+
+	// Fall back to text format
 	contentBytes, err := c.readClipboardContent()
 	if err != nil {
 		return nil, err
@@ -91,11 +263,258 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 	c.lastContent = make([]byte, len(contentBytes))
 	copy(c.lastContent, contentBytes)
 
+	// Detect content type from the data itself
+	contentType := c.detectContentType(contentBytes)
+	
 	return &types.ClipboardContent{
-		Type:    types.TypeText,
+		Type:    contentType,
 		Data:    contentBytes,
 		Created: time.Now(),
 	}, nil
+}
+
+// getAvailableFormats returns a list of MIME types available in the clipboard
+func (c *LinuxClipboard) getAvailableFormats() ([]string, error) {
+	// Try X11 environment first with xclip
+	if isX11Session() && hasCommand("xclip") {
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
+		output, err := cmd.Output()
+		if err == nil {
+			formats := parseXClipFormats(output)
+			return formats, nil
+		}
+	}
+
+	// Try Wayland with wl-paste
+	if isWaylandSession() && hasCommand("wl-paste") {
+		cmd := exec.Command("wl-paste", "--list-types")
+		output, err := cmd.Output()
+		if err == nil && len(output) > 0 {
+			return parseWaylandFormats(output), nil
+		}
+	}
+
+	// If we can't determine formats, assume at least text is available
+	return []string{mimeText}, fmt.Errorf("could not determine available formats")
+}
+
+// parseXClipFormats parses the output of xclip -t TARGETS -o
+func parseXClipFormats(output []byte) []string {
+	lines := strings.Split(string(output), "\n")
+	var formats []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			formats = append(formats, line)
+		}
+	}
+	return formats
+}
+
+// parseWaylandFormats parses the output of wl-paste --list-types
+func parseWaylandFormats(output []byte) []string {
+	lines := strings.Split(string(output), "\n")
+	var formats []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			formats = append(formats, line)
+		}
+	}
+	return formats
+}
+
+// contains checks if a string is in a slice
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAny checks if any of the items are in the slice
+func containsAny(slice []string, items ...string) bool {
+	for _, item := range items {
+		if contains(slice, item) {
+			return true
+		}
+	}
+	return false
+}
+
+// readImageFormat reads image data from the clipboard
+func (c *LinuxClipboard) readImageFormat(formats []string) (*types.ClipboardContent, error) {
+	// Try X11 environment first
+	if isX11Session() && hasCommand("xclip") {
+		// Determine best format to use
+		var format string
+		if contains(formats, mimeImage) {
+			format = mimeImage
+		} else if contains(formats, mimeBMP) {
+			format = mimeBMP
+		} else if contains(formats, mimeJPEG) {
+			format = mimeJPEG
+		} else if contains(formats, mimeGIF) {
+			format = mimeGIF
+		} else {
+			return nil, fmt.Errorf("no supported image format available")
+		}
+
+		c.logger.Printf("Reading image from clipboard with format: %s", format)
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", format, "-o")
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("xclip image: %v", err)
+		}
+
+		c.logger.Printf("Read image data: %d bytes", len(output))
+		return &types.ClipboardContent{
+			Type:    types.TypeImage,
+			Data:    output,
+			Created: time.Now(),
+		}, nil
+	}
+
+	// Try Wayland
+	if isWaylandSession() && hasCommand("wl-paste") {
+		c.logger.Printf("Reading image from Wayland clipboard")
+		cmd := exec.Command("wl-paste", "--no-newline", "--type", mimeImage)
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("wl-paste image: %v", err)
+		}
+
+		c.logger.Printf("Read image data: %d bytes", len(output))
+		return &types.ClipboardContent{
+			Type:    types.TypeImage,
+			Data:    output,
+			Created: time.Now(),
+		}, nil
+	}
+
+	return nil, fmt.Errorf("image clipboard access not available")
+}
+
+// readFileFormat reads file URI data from the clipboard
+func (c *LinuxClipboard) readFileFormat(formats []string) (*types.ClipboardContent, error) {
+	var uriData []byte
+	var err error
+
+	// Try X11 environment first
+	if isX11Session() && hasCommand("xclip") {
+		// Try gnome-copied-files format first, then fall back to uri-list
+		format := mimeFilenames
+		if !contains(formats, mimeFilenames) && contains(formats, mimeURI) {
+			format = mimeURI
+		}
+
+		c.logger.Printf("Reading file URI from clipboard with format: %s", format)
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", format, "-o")
+		uriData, err = cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("xclip file URI: %v", err)
+		}
+	} else if isWaylandSession() && hasCommand("wl-paste") {
+		// Try Wayland
+		format := mimeFilenames
+		if !contains(formats, mimeFilenames) && contains(formats, mimeURI) {
+			format = mimeURI
+		}
+
+		c.logger.Printf("Reading file URI from Wayland clipboard")
+		cmd := exec.Command("wl-paste", "--no-newline", "--type", format)
+		uriData, err = cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("wl-paste file URI: %v", err)
+		}
+	} else {
+		return nil, fmt.Errorf("file clipboard access not available")
+	}
+
+	// Parse the URI data
+	return c.parseURIData(uriData)
+}
+
+// parseURIData converts URI data to the appropriate content type
+func (c *LinuxClipboard) parseURIData(data []byte) (*types.ClipboardContent, error) {
+	dataStr := string(data)
+	
+	// Check for GNOME format
+	gnomePrefix := "copy\n"
+	if strings.HasPrefix(dataStr, gnomePrefix) {
+		// Extract the actual file paths
+		lines := strings.Split(strings.TrimPrefix(dataStr, gnomePrefix), "\n")
+		var files []string
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				files = append(files, line)
+			}
+		}
+
+		if len(files) == 1 {
+			c.logger.Printf("Single file path: %s", files[0])
+			return &types.ClipboardContent{
+				Type:    types.TypeFilePath,
+				Data:    []byte(files[0]),
+				Created: time.Now(),
+			}, nil
+		} else if len(files) > 1 {
+			// Serialize multiple files
+			fileJSON, err := json.Marshal(files)
+			if err != nil {
+				return nil, fmt.Errorf("failed to serialize file list: %v", err)
+			}
+			c.logger.Printf("Multiple file paths: %d files", len(files))
+			return &types.ClipboardContent{
+				Type:    types.TypeFile,
+				Data:    fileJSON,
+				Created: time.Now(),
+			}, nil
+		}
+	}
+
+	// Handle standard URI format
+	lines := strings.Split(dataStr, "\n")
+	var files []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			// Convert URI to path
+			if strings.HasPrefix(line, "file://") {
+				path, err := url.QueryUnescape(strings.TrimPrefix(line, "file://"))
+				if err == nil {
+					files = append(files, path)
+				}
+			} else {
+				files = append(files, line)
+			}
+		}
+	}
+
+	if len(files) == 1 {
+		c.logger.Printf("Single file path (URI): %s", files[0])
+		return &types.ClipboardContent{
+			Type:    types.TypeFilePath,
+			Data:    []byte(files[0]),
+			Created: time.Now(),
+		}, nil
+	} else if len(files) > 1 {
+		// Serialize multiple files
+		fileJSON, err := json.Marshal(files)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize file list: %v", err)
+		}
+		c.logger.Printf("Multiple file paths (URI): %d files", len(files))
+		return &types.ClipboardContent{
+			Type:    types.TypeFile,
+			Data:    fileJSON,
+			Created: time.Now(),
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no valid file paths found in URI data")
 }
 
 // readClipboardContent attempts multiple methods to read the clipboard content
@@ -641,15 +1060,26 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 
 // Write sets the clipboard content
 func (c *LinuxClipboard) Write(content *types.ClipboardContent) error {
-	if content.Type != types.TypeText {
-		return fmt.Errorf("only text content is supported on Linux")
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
-	// Try multiple clipboard writing methods in order of preference
-	err := c.writeClipboardContent(content.Data)
+	c.logger.Printf("Writing to clipboard: type=%s, size=%d bytes", content.Type, len(content.Data))
+	
+	var err error
+	
+	switch content.Type {
+	case types.TypeText, types.TypeString, types.TypeURL:
+		// All text-based types use the same write mechanism
+		err = c.writeTextContent(content.Data)
+	case types.TypeImage:
+		err = c.writeImageContent(content.Data)
+	case types.TypeFilePath:
+		err = c.writeFilePathContent(content.Data)
+	case types.TypeFile:
+		err = c.writeFileListContent(content.Data)
+	default:
+		return fmt.Errorf("unsupported content type: %s", content.Type)
+	}
 	
 	// Update the lastContent on successful write
 	if err == nil {
@@ -660,8 +1090,10 @@ func (c *LinuxClipboard) Write(content *types.ClipboardContent) error {
 	return err
 }
 
-// writeClipboardContent attempts multiple methods to write to the clipboard
-func (c *LinuxClipboard) writeClipboardContent(data []byte) error {
+// writeTextContent writes text to the clipboard
+func (c *LinuxClipboard) writeTextContent(data []byte) error {
+	c.logger.Printf("Writing text to clipboard: %s", truncateString(string(data), 100))
+	
 	// Try atotto first
 	if err := cliplib.WriteAll(string(data)); err == nil {
 		return nil
@@ -673,7 +1105,7 @@ func (c *LinuxClipboard) writeClipboardContent(data []byte) error {
 	// X11 environment
 	if isX11Session() {
 		if hasCommand("xclip") {
-			cmd := exec.Command("xclip", "-selection", "clipboard")
+			cmd := exec.Command("xclip", "-selection", "clipboard", "-t", mimeText)
 			cmd.Stdin = strings.NewReader(string(data))
 			if err := cmd.Run(); err == nil {
 				return nil
@@ -719,6 +1151,198 @@ func (c *LinuxClipboard) writeClipboardContent(data []byte) error {
 		return fmt.Errorf("no suitable clipboard write method available")
 	}
 	return lastError
+}
+
+// writeImageContent writes image data to the clipboard
+func (c *LinuxClipboard) writeImageContent(data []byte) error {
+	c.logger.Printf("Writing image to clipboard: %d bytes", len(data))
+	
+	// Create a temporary file for the image
+	tmpFile, err := ioutil.TempFile("", "clipman-image-*.png")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %v", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	
+	// Write the image data to the temporary file
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write image data: %v", err)
+	}
+	tmpFile.Close()
+	
+	// Now copy the image to clipboard based on environment
+	if isX11Session() && hasCommand("xclip") {
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", "image/png", "-i", tmpPath)
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			return fmt.Errorf("xclip image: %v", err)
+		}
+	}
+	
+	if isWaylandSession() && hasCommand("wl-copy") {
+		cmd := exec.Command("wl-copy", "--type", "image/png", "-f", tmpPath)
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			return fmt.Errorf("wl-copy image: %v", err)
+		}
+	}
+	
+	return fmt.Errorf("image clipboard writing not supported in current environment")
+}
+
+// writeFilePathContent writes a file path to the clipboard
+func (c *LinuxClipboard) writeFilePathContent(data []byte) error {
+	filePath := string(data)
+	c.logger.Printf("Writing file path to clipboard: %s", filePath)
+	
+	// Check if the file exists
+	if _, err := os.Stat(filePath); err != nil {
+		return fmt.Errorf("file does not exist: %s", filePath)
+	}
+	
+	// Format for URI lists
+	uri := fmt.Sprintf("file://%s", filePath)
+	
+	// X11 environment
+	if isX11Session() && hasCommand("xclip") {
+		// Try GNOME format first
+		gnomeFormat := fmt.Sprintf("copy\n%s", filePath)
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", mimeFilenames)
+		cmd.Stdin = strings.NewReader(gnomeFormat)
+		if err := cmd.Run(); err == nil {
+			// Also set the URI list format for compatibility
+			uriCmd := exec.Command("xclip", "-selection", "clipboard", "-t", mimeURI)
+			uriCmd.Stdin = strings.NewReader(uri)
+			uriCmd.Run() // Ignore error, this is just for compatibility
+			return nil
+		}
+		
+		// Fallback to URI list
+		cmd = exec.Command("xclip", "-selection", "clipboard", "-t", mimeURI)
+		cmd.Stdin = strings.NewReader(uri)
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			return fmt.Errorf("xclip file path: %v", err)
+		}
+	}
+	
+	// Wayland environment
+	if isWaylandSession() && hasCommand("wl-copy") {
+		// Try with GNOME format
+		gnomeFormat := fmt.Sprintf("copy\n%s", filePath)
+		cmd := exec.Command("wl-copy", "--type", mimeFilenames)
+		cmd.Stdin = strings.NewReader(gnomeFormat)
+		if err := cmd.Run(); err == nil {
+			// Also set the URI format for compatibility
+			uriCmd := exec.Command("wl-copy", "--type", mimeURI)
+			uriCmd.Stdin = strings.NewReader(uri)
+			uriCmd.Run() // Ignore error, this is just for compatibility
+			return nil
+		}
+		
+		// Fallback to URI format
+		cmd = exec.Command("wl-copy", "--type", mimeURI)
+		cmd.Stdin = strings.NewReader(uri)
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			return fmt.Errorf("wl-copy file path: %v", err)
+		}
+	}
+	
+	return fmt.Errorf("file path clipboard writing not supported in current environment")
+}
+
+// writeFileListContent writes a list of file paths to the clipboard
+func (c *LinuxClipboard) writeFileListContent(data []byte) error {
+	// Deserialize the file list from JSON
+	var filePaths []string
+	if err := json.Unmarshal(data, &filePaths); err != nil {
+		return fmt.Errorf("invalid file list data: %v", err)
+	}
+	
+	c.logger.Printf("Writing file list to clipboard: %d files", len(filePaths))
+	
+	// Verify that files exist
+	for _, path := range filePaths {
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("file does not exist: %s", path)
+		}
+	}
+	
+	// Format for GNOME file list
+	var gnomeBuilder strings.Builder
+	gnomeBuilder.WriteString("copy\n")
+	for _, path := range filePaths {
+		gnomeBuilder.WriteString(path + "\n")
+	}
+	gnomeFormat := gnomeBuilder.String()
+	
+	// Format for URI list
+	var uriBuilder strings.Builder
+	for _, path := range filePaths {
+		uriBuilder.WriteString(fmt.Sprintf("file://%s\n", path))
+	}
+	uriFormat := uriBuilder.String()
+	
+	// X11 environment
+	if isX11Session() && hasCommand("xclip") {
+		// Try GNOME format first
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", mimeFilenames)
+		cmd.Stdin = strings.NewReader(gnomeFormat)
+		if err := cmd.Run(); err == nil {
+			// Also set the URI list format for compatibility
+			uriCmd := exec.Command("xclip", "-selection", "clipboard", "-t", mimeURI)
+			uriCmd.Stdin = strings.NewReader(uriFormat)
+			uriCmd.Run() // Ignore error, this is just for compatibility
+			return nil
+		}
+		
+		// Fallback to URI list
+		cmd = exec.Command("xclip", "-selection", "clipboard", "-t", mimeURI)
+		cmd.Stdin = strings.NewReader(uriFormat)
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			return fmt.Errorf("xclip file list: %v", err)
+		}
+	}
+	
+	// Wayland environment
+	if isWaylandSession() && hasCommand("wl-copy") {
+		// Try with GNOME format
+		cmd := exec.Command("wl-copy", "--type", mimeFilenames)
+		cmd.Stdin = strings.NewReader(gnomeFormat)
+		if err := cmd.Run(); err == nil {
+			// Also set the URI format for compatibility
+			uriCmd := exec.Command("wl-copy", "--type", mimeURI)
+			uriCmd.Stdin = strings.NewReader(uriFormat)
+			uriCmd.Run() // Ignore error, this is just for compatibility
+			return nil
+		}
+		
+		// Fallback to URI format
+		cmd = exec.Command("wl-copy", "--type", mimeURI)
+		cmd.Stdin = strings.NewReader(uriFormat)
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			return fmt.Errorf("wl-copy file list: %v", err)
+		}
+	}
+	
+	return fmt.Errorf("file list clipboard writing not supported in current environment")
+}
+
+// writeClipboardContent attempts multiple methods to write to the clipboard
+// This is a legacy compatibility function that is now used by writeTextContent
+func (c *LinuxClipboard) writeClipboardContent(data []byte) error {
+	return c.writeTextContent(data)
 }
 
 // Close cleans up any resources
