@@ -168,8 +168,8 @@ func DefaultConfig() *Config {
 		Storage:       DefaultStorageConfig(),
 		Sync:          DefaultSyncConfig(),
 		Server:        DefaultServerConfig(),
-		StealthMode:   false,           // Disabled by default
-		PollingInterval: 5000,          // 5 seconds by default
+		StealthMode:   true,            // Enabled by default
+		PollingInterval: 10000,         // 10 seconds by default for less frequent clipboard checks
 	}
 	return config
 }

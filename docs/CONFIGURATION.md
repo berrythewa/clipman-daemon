@@ -105,6 +105,43 @@ You can override this with the `CLIPMAN_DATA_DIR` environment variable.
 
 ## Advanced Configuration
 
+### Clipboard Monitoring Settings
+
+| Option | Config File Key | Environment Variable | Command Flag | Default | Description |
+|--------|----------------|---------------------|------------|---------|-------------|
+| Stealth Mode | `stealth_mode` | `CLIPMAN_STEALTH_MODE` | `--no-stealth` | `true` | Minimize clipboard access notifications |
+| Polling Interval | `polling_interval` | `CLIPMAN_POLLING_INTERVAL` | `--polling-interval` | `10000` | Base polling interval in milliseconds |
+
+### Stealth Mode
+
+Stealth mode is designed to minimize clipboard access notifications from desktop environments and is enabled by default. When enabled:
+
+1. The daemon checks clipboard formats less frequently
+2. The polling interval is significantly increased (10 seconds by default)
+3. Clipboard content is only read when format changes are detected
+4. Multiple checks are skipped to reduce the frequency of clipboard access
+
+To disable stealth mode (not recommended for most users):
+
+```bash
+# Disable via command line
+clipman --no-stealth
+
+# Set a lower polling interval (ms) for more frequent checks
+clipman --polling-interval 2000  # 2 seconds
+```
+
+Or modify your configuration file:
+
+```json
+{
+  "stealth_mode": false,
+  "polling_interval": 2000
+}
+```
+
+**Note**: Disabling stealth mode will cause more frequent clipboard access, which may result in notifications from your desktop environment and potentially higher resource usage.
+
 ### Clipboard Monitoring
 
 The clipboard monitoring functionality can be customized through the configuration:

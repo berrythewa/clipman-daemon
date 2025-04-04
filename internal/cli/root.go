@@ -28,6 +28,8 @@ var (
 	detach       bool
 	noSync       bool
 	maxSize      int64
+	noStealthMode bool
+	pollingInterval int64
 
 	// The loaded configuration
 	cfg *config.Config
@@ -212,6 +214,15 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		cfg.Storage.MaxSize = maxSize
 	}
 
+	// If flags specified, override config
+	if noStealthMode {
+		cfg.StealthMode = false
+	}
+	
+	if pollingInterval > 0 {
+		cfg.PollingInterval = pollingInterval
+	}
+
 	// Get all system paths
 	paths := cfg.GetPaths()
 	
@@ -371,6 +382,8 @@ func init() {
 	RootCmd.Flags().BoolVar(&detach, "detach", false, "Detach from terminal and run in background")
 	RootCmd.Flags().BoolVar(&noSync, "no-sync", false, "Disable sync connection even if configured")
 	RootCmd.Flags().Int64Var(&maxSize, "max-size", 0, "Override max cache size in bytes (default 100MB)")
+	RootCmd.Flags().BoolVar(&noStealthMode, "no-stealth", false, "Disable stealth mode (increases clipboard access notifications)")
+	RootCmd.Flags().Int64Var(&pollingInterval, "polling-interval", 0, "Clipboard polling interval in milliseconds (default 10000)")
 	
 	// For backward compatibility, keep the old flag but refer to the new one
 	RootCmd.PersistentFlags().BoolVar(&noSync, "no-broker", false, "Disable sync connection even if configured (deprecated, use --no-sync)")
