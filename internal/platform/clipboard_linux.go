@@ -815,9 +815,9 @@ func (c *LinuxClipboard) monitorWithXFixes(contentCh chan<- *types.ClipboardCont
 func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
 	go func() {
 		// Create a command that uses wl-paste with -w option to monitor changes
-		cmd := exec.Command("wl-paste", "-w", "cat")
+		cmd := exec.Command("wl-paste", "-n", "-w", "echo", "CLIPBOARD_CHANGED")
 		
-		c.logger.Printf("Starting Wayland clipboard monitoring with wl-paste")
+		c.logger.Printf("Starting Wayland clipboard monitoring with wl-paste -n -w echo CLIPBOARD_CHANGED")
 		
 		// Create a pipe to capture the output
 		stdout, err := cmd.StdoutPipe()
@@ -837,7 +837,10 @@ func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardCon
 		c.logger.Printf("Started wl-paste monitoring with process PID %d", cmd.Process.Pid)
 		
 		// Make sure to kill the process when we're done
-		defer cmd.Process.Kill()
+		defer func() {
+			c.logger.Printf("Cleaning up wl-paste process PID %d", cmd.Process.Pid)
+			cmd.Process.Kill()
+		}()
 		
 		// Create a reader and buffer
 		buf := make([]byte, 4096)
@@ -849,11 +852,14 @@ func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardCon
 		// Function to start a read operation
 		startRead := func() {
 			go func() {
+				c.logger.Printf("Waiting for wl-paste to detect clipboard change...")
 				n, err := stdout.Read(buf)
 				if err != nil {
+					c.logger.Printf("Error reading from wl-paste: %v", err)
 					close(readCh)
 					return
 				}
+				c.logger.Printf("Read %d bytes from wl-paste", n)
 				readData = buf[:n]
 				close(readCh)
 			}()
@@ -862,40 +868,66 @@ func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardCon
 		// Start the first read
 		startRead()
 		
+		// Check if the stream gets closed immediately (within 2 seconds)
+		select {
+		case <-readCh:
+			if len(readData) == 0 {
+				c.logger.Printf("Wayland monitoring: wl-paste stream closed immediately, falling back to polling")
+				c.monitorWithAdaptivePolling(contentCh, stopCh)
+				return
+			}
+			
+			c.logger.Printf("Wayland notification received: '%s'", string(readData))
+			
+			// Don't process the echo output, just get the content directly
+			content, err := c.Read()
+			if err == nil {
+				select {
+				case contentCh <- content:
+					c.logger.Printf("Wayland notification: New clipboard content detected and sent (size: %d bytes)", len(content.Data))
+				case <-stopCh:
+					return
+				}
+			} else {
+				c.logger.Printf("Error reading clipboard after Wayland notification: %v", err)
+			}
+			
+			// Reset for next read
+			readCh = make(chan struct{})
+			startRead()
+			
+		case <-time.After(2 * time.Second):
+			// If we get here, the stream is open and waiting for events
+			c.logger.Printf("Wayland monitoring successfully established and waiting for events")
+			
+		case <-stopCh:
+			return
+		}
+		
 		for {
 			// Wait for either read completion or stop signal
 			select {
 			case <-readCh:
 				// If no data was read, it means the pipe was closed
 				if len(readData) == 0 {
-					c.logger.Printf("Wayland monitoring: wl-paste stream closed, stopping monitor")
+					c.logger.Printf("Wayland monitoring: wl-paste stream closed, falling back to polling")
+					c.monitorWithAdaptivePolling(contentCh, stopCh)
 					return
 				}
 				
-				// Create clipboard content
-				content := &types.ClipboardContent{
-					Type:    types.TypeText,
-					Data:    readData,
-					Created: time.Now(),
-				}
+				c.logger.Printf("Wayland notification received: '%s'", string(readData))
 				
-				// Check if content has changed
-				c.mu.Lock()
-				changed := !bytes.Equal(content.Data, c.lastContent)
-				if changed {
-					c.lastContent = make([]byte, len(content.Data))
-					copy(c.lastContent, content.Data)
-				}
-				c.mu.Unlock()
-				
-				if changed {
-					// Send the content to the channel
+				// Don't process the echo output, just get the content directly
+				content, err := c.Read()
+				if err == nil {
 					select {
 					case contentCh <- content:
 						c.logger.Printf("Wayland notification: New clipboard content detected and sent (size: %d bytes)", len(content.Data))
 					case <-stopCh:
 						return
 					}
+				} else {
+					c.logger.Printf("Error reading clipboard after Wayland notification: %v", err)
 				}
 				
 				// Reset for next read
