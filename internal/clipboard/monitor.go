@@ -42,9 +42,17 @@ func NewMonitor(cfg *config.Config, mqttClient xsync.SyncClient, logger *zap.Log
 		contentProcessor: NewContentProcessor(),
 	}
 
-	// Add some default filters and transformers
-	m.contentProcessor.AddFilter(LengthFilter(1000))
+	// Configure the content processor
+	m.contentProcessor.SetLogger(logger)
+	
+	// Set maximum size from config if available
+	if cfg.Storage.MaxSize > 0 {
+		m.contentProcessor.SetMaxSize(cfg.Storage.MaxSize)
+	}
+	
+	// Add type-specific transformers for trimming text
 	m.contentProcessor.AddTransformer(TrimTransformer())
+
 	return m
 }
 

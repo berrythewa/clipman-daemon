@@ -6,19 +6,6 @@ package platform
 /*
 TODO: Clipboard Format Implementation Summary
 
-COMPLETED IMPROVEMENTS:
-- [✓] Multiple format support (images, files, text, URLs)
-- [✓] Environment-specific detection and handling (X11, Wayland, Mir)
-- [✓] MIME type detection using xclip -t TARGETS and wl-paste --list-types
-- [✓] Intelligent content type detection and prioritization
-- [✓] File and URI list handling with GNOME compatibility format
-- [✓] Image format handling with PNG/JPEG/GIF/BMP support
-- [✓] URL detection and special handling
-- [✓] Enhanced logging for better debugging
-- [✓] Full monitoring support for all environments with fallbacks
-- [✓] Adaptive polling strategy to reduce CPU usage
-
-FUTURE ENHANCEMENTS:
 - [ ] HTML content support (text/html MIME type)
 - [ ] Rich text format support (text/rtf MIME type)
 - [ ] Performance optimization for large clipboard contents

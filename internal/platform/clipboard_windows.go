@@ -6,19 +6,6 @@ package platform
 /*
 TODO: Clipboard Format Implementation Summary
 
-COMPLETED IMPROVEMENTS:
-- [✓] Multiple format support (text, URLs, images, files)
-- [✓] Prioritized format detection system
-- [✓] Enhanced logging for diagnostic and debugging
-- [✓] Thread safety with mutex protection
-- [✓] Automatic window thread recovery
-- [✓] Image support with DIB/DIBV5 to PNG conversion
-- [✓] File list and file path support
-- [✓] URL detection for text content
-- [✓] Better memory management
-- [✓] Improved error handling and reporting
-
-FUTURE ENHANCEMENTS:
 - [ ] Image writing support (currently only reading is implemented)
 - [ ] File writing support (currently only reading is implemented)
 - [ ] HTML content support
