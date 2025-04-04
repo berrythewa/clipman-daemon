@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // LinuxDaemonizer implements platform-specific daemonization for Linux
@@ -28,25 +29,51 @@ func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir st
 			filteredArgs = append(filteredArgs, arg)
 		}
 	}
+	
+	// Create log files for the daemon's stdout and stderr
+	// This ensures that the output is captured even when running in the background
+	logDir := filepath.Join(dataDir, "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return 0, fmt.Errorf("failed to create log directory: %v", err)
+	}
+	
+	stdoutPath := filepath.Join(logDir, "clipman-daemon.log")
+	stderrPath := filepath.Join(logDir, "clipman-daemon-error.log")
+	
+	// Open log files with append mode
+	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open stdout log file: %v", err)
+	}
+	defer stdout.Close()
+	
+	stderr, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open stderr log file: %v", err)
+	}
+	defer stderr.Close()
 
 	// Prepare the command to run
 	cmd := exec.Command(executable, filteredArgs...)
 	cmd.Dir = workDir
-
-	// Redirect standard file descriptors to /dev/null
-	nullDev, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
-	if err != nil {
-		return 0, fmt.Errorf("failed to open /dev/null: %v", err)
-	}
-	defer nullDev.Close()
 	
-	cmd.Stdin = nullDev
-	cmd.Stdout = nullDev
-	cmd.Stderr = nullDev
+	// Redirect standard file descriptors
+	cmd.Stdin = nil // No input
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	
-	// Detach from process group (Unix-specific)
+	// Set key environment variables to indicate we're running in daemon mode
+	newEnv := os.Environ()
+	newEnv = append(newEnv, "CLIPMAN_DAEMON=1")
+	cmd.Env = newEnv
+	
+	// Critical: Detach from process group and create a new session
+	// This is what allows the process to continue running after parent exits
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
+		Setsid:     true,       // Create a new session
+		Foreground: false,      // Run in background
+		// Prevent child from being killed when parent is
+		Pgid:    0,             // New process group
 	}
 
 	// Write PID file for the daemon
@@ -66,6 +93,20 @@ func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir st
 	pid := cmd.Process.Pid
 	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {
 		return pid, fmt.Errorf("failed to write pid file: %v", err)
+	}
+	
+	// Detach the process - this is critical to prevent zombie processes
+	// We're explicitly NOT calling cmd.Wait() since we want the process to continue independently
+	if err := cmd.Process.Release(); err != nil {
+		return pid, fmt.Errorf("failed to release daemon process: %v", err)
+	}
+	
+	// Give the daemon a moment to initialize
+	time.Sleep(100 * time.Millisecond)
+	
+	// Verify the process is still running
+	if err := syscall.Kill(pid, 0); err != nil {
+		return pid, fmt.Errorf("daemon process failed to start (PID: %d): %v", pid, err)
 	}
 
 	return pid, nil

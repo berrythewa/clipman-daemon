@@ -62,14 +62,25 @@ Examples:
 		isDBLocked := checkDatabaseLock(paths.DBFile)
 		
 		if isDaemonRunning || isDBLocked {
+			zapLogger.Info("Detected running daemon or database lock")
+			
+			fmt.Println("\n=== DATABASE ACCESS CONFLICT ===")
 			fmt.Println("It appears that the clipman daemon is currently running.")
-			fmt.Println("Due to database locking, you can't access the history directly while the daemon is active.")
-			fmt.Println("\nOptions:")
-			fmt.Println("1. Stop the daemon first with: killall clipman")
-			fmt.Println("2. Use a command that doesn't require database access, like:")
+			fmt.Println("This is expected behavior: the clipboard daemon has an exclusive lock on the database.")
+			fmt.Println("")
+			fmt.Println("The clipboard database cannot be accessed by multiple processes simultaneously")
+			fmt.Println("to maintain data integrity. This is not a bug, but a safety mechanism.")
+			fmt.Println("")
+			fmt.Println("Options:")
+			fmt.Println("1. Stop the daemon first: killall clipman")
+			fmt.Println("2. Use a direct clipboard access method instead:")
 			fmt.Println("   - xclip -o (for X11)")
 			fmt.Println("   - wl-paste (for Wayland)")
-			fmt.Println("\nIn a future version, we'll add IPC support to allow history access while the daemon is running.")
+			fmt.Println("")
+			fmt.Println("Future versions will include IPC support to allow history access")
+			fmt.Println("while the daemon is running.")
+			fmt.Println("=================================")
+			
 			return fmt.Errorf("daemon is running and has locked the database")
 		}
 		
@@ -86,8 +97,24 @@ Examples:
 			
 			// Check for timeout errors specifically
 			if strings.Contains(err.Error(), "timeout") {
-				fmt.Println("Timeout error accessing the database. This usually means the daemon is running.")
-				fmt.Println("Please stop the daemon first with: killall clipman")
+				zapLogger.Info("Database access timeout - daemon is likely running and has exclusive lock")
+				
+				fmt.Println("\n=== DATABASE ACCESS CONFLICT ===")
+				fmt.Println("Timeout error accessing the clipboard database.")
+				fmt.Println("This is expected behavior: the clipboard daemon has an exclusive lock on the database.")
+				fmt.Println("")
+				fmt.Println("The clipboard database cannot be accessed by multiple processes simultaneously")
+				fmt.Println("to maintain data integrity. This is not a bug, but a safety mechanism.")
+				fmt.Println("")
+				fmt.Println("Options:")
+				fmt.Println("1. Stop the daemon first: killall clipman")
+				fmt.Println("2. Use a direct clipboard access method instead:")
+				fmt.Println("   - xclip -o (for X11)")
+				fmt.Println("   - wl-paste (for Wayland)")
+				fmt.Println("")
+				fmt.Println("Future versions will include IPC support to allow history access")
+				fmt.Println("while the daemon is running.")
+				fmt.Println("=================================")
 			}
 			
 			return err

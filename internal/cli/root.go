@@ -52,7 +52,7 @@ Running clipman without any commands starts the daemon in the foreground.
 Use --detach to run it in the background.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// If no subcommand is provided, run in daemon mode by default
-		return runDaemon()
+		return runDaemon(cmd, args)
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		var err error
@@ -155,7 +155,56 @@ func getZapLogLevel(level string) zapcore.Level {
 }
 
 // runDaemon implements the daemon mode functionality (previously in run.go)
-func runDaemon() error {
+func runDaemon(cmd *cobra.Command, args []string) error {
+	// Check if we're already running as a daemon by checking env vars and process info
+	daemonizer := platform.NewDaemonizer()
+	isRunningAsDaemon := os.Getenv("CLIPMAN_DAEMON") == "1"
+	isPidSessionLeader := daemonizer.IsRunningAsDaemon()
+	pid := os.Getpid()
+	ppid := os.Getppid()
+	
+	zapLogger.Debug("Daemon status check", 
+		zap.Bool("env_var_set", isRunningAsDaemon),
+		zap.Bool("is_session_leader", isPidSessionLeader),
+		zap.Int("pid", pid),
+		zap.Int("ppid", ppid))
+	
+	// Handle detach request if needed
+	if detach && !isRunningAsDaemon {
+		zapLogger.Info("Detaching from terminal and running in background")
+		
+		// Get the executable path
+		executable, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("failed to get executable path: %w", err)
+		}
+		
+		// Get the current working directory
+		workDir, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get working directory: %w", err)
+		}
+		
+		// Call the platform-specific daemonizer
+		pid, err := daemonizer.Daemonize(executable, os.Args[1:], workDir, cfg.SystemPaths.DataDir)
+		if err != nil {
+			return fmt.Errorf("failed to daemonize: %w", err)
+		}
+		
+		fmt.Printf("Clipman started in background (PID: %d)\n", pid)
+		return nil
+	}
+	
+	if isRunningAsDaemon {
+		zapLogger.Info("Running as daemon process", 
+			zap.Int("pid", pid),
+			zap.Int("ppid", ppid),
+			zap.Bool("is_session_leader", isPidSessionLeader))
+	} else {
+		zapLogger.Info("Running in foreground")
+	}
+	
+	// Continue running as a regular foreground process or daemon child
 	zapLogger.Info("Starting Clipman daemon")
 	
 	// If maxSize is specified, override config
@@ -165,37 +214,6 @@ func runDaemon() error {
 
 	// Get all system paths
 	paths := cfg.GetPaths()
-	
-	// If detach flag is set, detach from terminal
-	if detach {
-		zapLogger.Info("Detaching from terminal and running in background")
-		
-		// Get the platform-specific daemonizer
-		daemonizer := platform.GetPlatformDaemonizer()
-		
-		// Get the executable path
-		executable, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("failed to get executable path: %v", err)
-		}
-		
-		// Get current working directory
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("failed to get current working directory: %v", err)
-		}
-		
-		// Daemonize the process
-		pid, err := daemonizer.Daemonize(executable, os.Args, cwd, paths.DataDir)
-		if err != nil {
-			return fmt.Errorf("failed to daemonize: %v", err)
-		}
-		
-	fmt.Printf("Clipman started in background (PID: %d)\n", pid)
-		
-		// Parent process exits here, child continues
-		return nil
-	}
 	
 	// Initialize sync client if configured and not explicitly disabled
 	var syncClient sync.SyncClient

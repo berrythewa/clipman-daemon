@@ -89,18 +89,48 @@ type LinuxClipboard struct {
 	inactiveStreak int
 	monitorMode    string
 	logger         ClipboardLogger
+	stealthMode    bool               // Reduces clipboard access notifications
+	baseInterval   time.Duration      // Base polling interval
+	maxInterval    time.Duration      // Maximum polling interval
 }
 
 // NewClipboard creates a new platform-specific clipboard implementation
 func NewClipboard() *LinuxClipboard {
 	return &LinuxClipboard{
-		logger: DefaultLogger{},
+		isRunning:      false,
+		useXFixes:      false,
+		xfixesProc:     nil,
+		inactiveStreak: 0,
+		monitorMode:    monitorModePolling,
+		logger:         DefaultLogger{},
+		stealthMode:    false,
+		baseInterval:   5 * time.Second,   // 5s default
+		maxInterval:    30 * time.Second,  // 30s default
 	}
 }
 
 // SetLogger allows setting a custom logger
 func (c *LinuxClipboard) SetLogger(logger ClipboardLogger) {
 	c.logger = logger
+}
+
+// SetStealthMode sets the stealth mode option
+func (c *LinuxClipboard) SetStealthMode(enabled bool) {
+	c.stealthMode = enabled
+}
+
+// SetPollingIntervals sets the polling intervals in milliseconds
+func (c *LinuxClipboard) SetPollingIntervals(baseMs, maxMs int64) {
+	// Don't allow intervals that are too small (bad for performance)
+	if baseMs < 1000 {
+		baseMs = 1000 // Minimum 1 second
+	}
+	if maxMs < baseMs {
+		maxMs = baseMs * 3 // Ensure max is larger than base
+	}
+	
+	c.baseInterval = time.Duration(baseMs) * time.Millisecond
+	c.maxInterval = time.Duration(maxMs) * time.Millisecond
 }
 
 // detectContentType tries to determine the content type from the data
@@ -1231,10 +1261,16 @@ func (c *LinuxClipboard) monitorWithMir(contentCh chan<- *types.ClipboardContent
 // monitorWithAdaptivePolling uses a smart polling strategy that adapts to system activity
 func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
 	go func() {
-		// Configure adaptive polling parameters
-		baseInterval := 1 * time.Second
-		maxInterval := 10 * time.Second
+		// Use configured polling parameters
+		baseInterval := c.baseInterval
+		maxInterval := c.maxInterval
 		currentInterval := baseInterval
+		
+		// For stealth mode, increase the skip threshold
+		skipThreshold := 3
+		if c.stealthMode {
+			skipThreshold = 5 // Skip more checks in stealth mode
+		}
 		
 		// Track inactivity to adjust polling frequency
 		c.inactiveStreak = 0
@@ -1243,13 +1279,61 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 		ticker := time.NewTicker(currentInterval)
 		defer ticker.Stop()
 
-		c.logger.Printf("Started adaptive polling with base interval %v, max interval %v", baseInterval, maxInterval)
+		c.logger.Printf("Started adaptive polling with base interval %v, max interval %v, stealth mode: %t", 
+			baseInterval, maxInterval, c.stealthMode)
+		
+		// Track the last content to avoid triggering clipboard access when nothing changed
+		var lastContentHash string
+		var formats []string
+		var skipCounter int = 0
 		
 		for {
 			select {
 			case <-stopCh:
 				return
 			case <-ticker.C:
+				// Only check formats first (causes fewer clipboard access notifications)
+				newFormats, err := c.getAvailableFormats()
+				if err != nil {
+					c.logger.Printf("Error checking clipboard formats: %v", err)
+					continue
+				}
+				
+				// Check if formats changed, if not increment skip counter
+				if formatsEqual(formats, newFormats) {
+					// Format didn't change, might still have same content
+					c.inactiveStreak++
+					skipCounter++
+					
+					// Only do a full content check every Nth time when formats didn't change
+					// This dramatically reduces clipboard access notifications
+					if skipCounter < skipThreshold {
+						// Exponential backoff for inactivity
+						if c.inactiveStreak >= 2 { // Reduced from 3 to 2
+							// Increase interval gradually, up to max
+							newInterval := currentInterval * 2
+							if newInterval > maxInterval {
+								newInterval = maxInterval
+							}
+							
+							// Only update if interval changed
+							if newInterval != currentInterval {
+								c.logger.Printf("Increasing polling interval to %v due to inactivity", newInterval)
+								currentInterval = newInterval
+								ticker.Reset(currentInterval)
+							}
+						}
+						continue
+					}
+					
+					// Reset skip counter after threshold
+					skipCounter = 0
+				} else {
+					// Formats changed, reset skip counter and update formats
+					skipCounter = 0
+					formats = newFormats
+				}
+				
 				// Check clipboard content
 				content, err := c.Read()
 				if err != nil {
@@ -1258,7 +1342,7 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 						c.inactiveStreak++
 						
 						// Exponential backoff for inactivity
-						if c.inactiveStreak >= 3 {
+						if c.inactiveStreak >= 2 { // Reduced from 3 to 2
 							// Increase interval gradually, up to max
 							newInterval := currentInterval * 2
 							if newInterval > maxInterval {
@@ -1277,6 +1361,18 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 					}
 					continue
 				}
+				
+				// Create simple hash of content to detect changes
+				currentHash := hashContent(content.Data)
+				
+				// If content hash is the same, continue
+				if currentHash == lastContentHash {
+					c.inactiveStreak++
+					continue
+				}
+				
+				// New content detected
+				lastContentHash = currentHash
 				
 				// Content changed, reset to base interval
 				if currentInterval != baseInterval {
@@ -1298,6 +1394,46 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 			}
 		}
 	}()
+}
+
+// hashContent creates a simple hash string of content for change detection
+func hashContent(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	
+	// Simple checksum-based hash that doesn't need to access clipboard again
+	var hash uint32
+	for i, b := range data {
+		hash = (hash << 5) + hash + uint32(b)
+		// Only use first 4KB for hashing large content
+		if i > 4096 {
+			break
+		}
+	}
+	return fmt.Sprintf("%x", hash)
+}
+
+// formatsEqual checks if two string slices contain the same elements (order independent)
+func formatsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	
+	// Create maps for a and b
+	aMap := make(map[string]bool)
+	for _, v := range a {
+		aMap[v] = true
+	}
+	
+	// Check if all elements in b are in a
+	for _, v := range b {
+		if !aMap[v] {
+			return false
+		}
+	}
+	
+	return true
 }
 
 // Write sets the clipboard content

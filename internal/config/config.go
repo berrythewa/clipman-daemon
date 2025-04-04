@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
@@ -81,6 +82,10 @@ type Config struct {
 	
 	// Synchronization configuration
 	Sync SyncConfig `json:"sync"`
+	
+	// Clipboard monitoring options
+	StealthMode     bool  `json:"stealth_mode"`     // Minimize clipboard access notifications
+	PollingInterval int64 `json:"polling_interval"` // Base polling interval in milliseconds
 }
 
 // DefaultServerConfig returns default server configuration
@@ -163,6 +168,8 @@ func DefaultConfig() *Config {
 		Storage:       DefaultStorageConfig(),
 		Sync:          DefaultSyncConfig(),
 		Server:        DefaultServerConfig(),
+		StealthMode:   false,           // Disabled by default
+		PollingInterval: 5000,          // 5 seconds by default
 	}
 	return config
 }
@@ -322,6 +329,16 @@ func overrideFromEnv(config *Config) {
 	}
 	if val := os.Getenv("CLIPMAN_SYNC_DISCOVERABLE"); val != "" {
 		config.Sync.Discoverable = val == "true"
+	}
+	
+	// Clipboard monitoring options
+	if val := os.Getenv("CLIPMAN_STEALTH_MODE"); val != "" {
+		config.StealthMode = val == "true"
+	}
+	if val := os.Getenv("CLIPMAN_POLLING_INTERVAL"); val != "" {
+		if ms, err := strconv.ParseInt(val, 10, 64); err == nil {
+			config.PollingInterval = ms
+		}
 	}
 }
 

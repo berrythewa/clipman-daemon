@@ -52,6 +52,25 @@ func NewMonitor(cfg *config.Config, mqttClient xsync.SyncClient, logger *zap.Log
 	
 	// Add type-specific transformers for trimming text
 	m.contentProcessor.AddTransformer(TrimTransformer())
+	
+	// Configure the clipboard with the stealth mode settings
+	if clipLinux, ok := m.clipboard.(interface {
+		SetStealthMode(bool)
+		SetPollingIntervals(int64, int64)
+	}); ok {
+		// Set stealth mode from config
+		clipLinux.SetStealthMode(cfg.StealthMode)
+		
+		// Set polling intervals from config
+		baseInterval := cfg.PollingInterval
+		maxInterval := baseInterval * 6
+		clipLinux.SetPollingIntervals(baseInterval, maxInterval)
+		
+		logger.Debug("Applied clipboard stealth settings",
+			zap.Bool("stealth_mode", cfg.StealthMode),
+			zap.Int64("base_interval_ms", baseInterval),
+			zap.Int64("max_interval_ms", maxInterval))
+	}
 
 	return m
 }
