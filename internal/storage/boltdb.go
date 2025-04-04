@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -445,10 +447,32 @@ func (s *BoltStorage) LogCompleteHistory(options config.HistoryOptions) error {
 		}
 	}
 	
-	s.logger.Info("=== DUMPING CLIPBOARD HISTORY ===",
-		zap.Any("limit", optionOrDefault(options.Limit, "no limit")),
-		zap.Bool("reverse", options.Reverse),
-		zap.String("content_type", optionOrDefault(options.ContentType, "all types")))
+	// Print a header with filter information
+	limitInfo := optionOrDefault(options.Limit, "no limit")
+	typeInfo := optionOrDefault(options.ContentType, "all types")
+	reverseInfo := ""
+	if options.Reverse {
+		reverseInfo = " (newest first)"
+	} else {
+		reverseInfo = " (oldest first)"
+	}
+	
+	fmt.Printf("\n=== CLIPBOARD HISTORY %s===\n", reverseInfo)
+	fmt.Printf("Filters: limit=%s, type=%s\n", limitInfo, typeInfo)
+	
+	if options.MinSize > 0 {
+		fmt.Printf("         min_size=%d bytes\n", options.MinSize)
+	}
+	
+	if !options.Since.IsZero() {
+		fmt.Printf("         since=%s\n", options.Since.Format(time.RFC3339))
+	}
+	
+	if !options.Before.IsZero() {
+		fmt.Printf("         before=%s\n", options.Before.Format(time.RFC3339))
+	}
+	
+	fmt.Println("")
 	
 	// Get filtered history
 	contents, err := s.GetHistory(options)
@@ -456,49 +480,222 @@ func (s *BoltStorage) LogCompleteHistory(options config.HistoryOptions) error {
 		return fmt.Errorf("failed to get history: %w", err)
 	}
 	
+	if len(contents) == 0 {
+		fmt.Println("No clipboard history matching the specified filters.")
+		return nil
+	}
+	
 	// Log each history item
 	for i, content := range contents {
-		// Format preview based on content type
-		var preview string
-		switch content.Type {
-		case types.TypeImage:
-			preview = fmt.Sprintf("[Image: %d bytes]", len(content.Data))
-		case types.TypeFile:
-			preview = fmt.Sprintf("[File: %s]", string(content.Data))
-		case types.TypeURL:
-			preview = fmt.Sprintf("[URL: %s]", string(content.Data))
-		case types.TypeFilePath:
-			preview = fmt.Sprintf("[Path: %s]", string(content.Data))
-		default:
-			// For text, show preview
-			if len(content.Data) > 100 {
-				preview = fmt.Sprintf("%s... (%d more bytes)", 
-					string(content.Data[:100]), 
-					len(content.Data)-100)
+		// Format timestamp for display
+		timestampStr := content.Created.Format("2006-01-02 15:04:05")
+		
+		// Create a header for each item
+		var itemHeader string
+		if options.Reverse {
+			// For reverse order, show age relative to now
+			age := formatTimeAgo(time.Since(content.Created))
+			
+			if options.Limit == 1 || (i == 0 && len(contents) <= 3) {
+				// For single-item limit or small result set, highlight the most recent item
+				itemHeader = fmt.Sprintf("MOST RECENT ITEM (%s ago):", age)
 			} else {
-				preview = string(content.Data)
+				itemHeader = fmt.Sprintf("ITEM %d (%s ago):", i+1, age)
+			}
+		} else {
+			// For chronological order
+			if i == len(contents)-1 && len(contents) > 1 {
+				// Highlight the last (most recent) item in chronological display
+				age := formatTimeAgo(time.Since(content.Created))
+				itemHeader = fmt.Sprintf("MOST RECENT ITEM %d of %d (%s ago):", i+1, len(contents), age)
+			} else {
+				itemHeader = fmt.Sprintf("ITEM %d of %d:", i+1, len(contents))
 			}
 		}
 		
-		s.logger.Info(fmt.Sprintf("History item %d:", i+1),
-			zap.String("timestamp", content.Created.Format(time.RFC3339)),
-			zap.String("type", string(content.Type)),
-			zap.Int("size", len(content.Data)),
-			zap.Bool("compressed", content.Compressed),
-			zap.String("content", preview))
+		fmt.Printf("\n%s\n", itemHeader)
+		fmt.Printf("  Timestamp: %s\n", timestampStr)
+		fmt.Printf("  Type: %s\n", content.Type)
+		fmt.Printf("  Size: %d bytes\n", len(content.Data))
+		
+		// Format preview based on content type
+		fmt.Println("  Content:")
+		
+		switch content.Type {
+		case types.TypeImage:
+			fmt.Println("    [Binary image data]")
+		
+		case types.TypeFile:
+			// For file lists, try to parse JSON and display in a nicer format
+			var files []string
+			if err := json.Unmarshal(content.Data, &files); err == nil && len(files) > 0 {
+				if len(files) == 1 {
+					fmt.Printf("    [File: %s]\n", files[0])
+				} else {
+					// Show first few files for multiple files
+					fmt.Printf("    [Files: %d total]\n", len(files))
+					maxFilesToShow := 3
+					if len(files) < maxFilesToShow {
+						maxFilesToShow = len(files)
+					}
+					
+					for i := 0; i < maxFilesToShow; i++ {
+						fmt.Printf("    - %s\n", files[i])
+					}
+					
+					if len(files) > maxFilesToShow {
+						fmt.Printf("    - ... and %d more files\n", len(files)-maxFilesToShow)
+					}
+				}
+			} else {
+				// If we couldn't parse as JSON, show formatted text
+				fmt.Println(formatTextPreviewWithIndent(string(content.Data), 120, 4))
+			}
+		
+		case types.TypeURL:
+			url := strings.TrimSpace(string(content.Data))
+			fmt.Printf("    %s\n", url)
+		
+		case types.TypeFilePath:
+			path := strings.TrimSpace(string(content.Data))
+			fmt.Printf("    %s\n", path)
+			
+			// Check if file exists and add info
+			if _, err := os.Stat(path); err == nil {
+				fmt.Printf("    (File exists)\n")
+			} else {
+				fmt.Printf("    (File not found: %v)\n", err)
+			}
+		
+		default:
+			// For text content, show a nicely formatted preview
+			fmt.Println(formatTextPreviewWithIndent(string(content.Data), 120, 4))
+		}
 	}
 	
-	s.logger.Info("=== END OF CLIPBOARD HISTORY ===", 
-		zap.Int("total_items", len(contents)),
-		zap.Int64("total_size_bytes", s.GetCacheSize()))
-		
+	fmt.Printf("\n=== END OF CLIPBOARD HISTORY (%d items) ===\n\n", len(contents))
+	
 	return nil
+}
+
+// formatTextPreview formats a text string for display, handling newlines and length limits
+func formatTextPreview(text string, maxLength int, indentSpaces int) string {
+	// Replace tabs with spaces
+	text = strings.Replace(text, "\t", "  ", -1)
+	
+	// Create indent string
+	indent := strings.Repeat(" ", indentSpaces)
+	
+	// Handle multi-line content
+	lines := strings.Split(text, "\n")
+	var builder strings.Builder
+	
+	// Determine how many lines to show
+	maxLines := 15 // Maximum number of lines to display
+	showLines := len(lines)
+	if showLines > maxLines {
+		showLines = maxLines
+	}
+	
+	// Add each line with indentation
+	for i := 0; i < showLines; i++ {
+		line := strings.TrimRight(lines[i], " \t\r\n")
+		
+		if len(line) > maxLength {
+			line = line[:maxLength] + "..."
+		}
+		
+		builder.WriteString(indent)
+		builder.WriteString(line)
+		builder.WriteString("\n")
+	}
+	
+	// If we truncated lines, show a count
+	if len(lines) > maxLines {
+		builder.WriteString(indent)
+		builder.WriteString(fmt.Sprintf("... (%d more lines not shown)\n", len(lines)-maxLines))
+	}
+	
+	return builder.String()
+}
+
+// formatTextPreviewWithIndent formats text with proper indentation
+func formatTextPreviewWithIndent(text string, maxLength int, indentSpaces int) string {
+	// Replace tabs with spaces
+	text = strings.Replace(text, "\t", "  ", -1)
+	
+	// Create indent string
+	indent := strings.Repeat(" ", indentSpaces)
+	
+	// Handle multi-line content
+	lines := strings.Split(text, "\n")
+	var builder strings.Builder
+	
+	// Determine how many lines to show
+	maxLines := 15 // Maximum number of lines to display
+	showLines := len(lines)
+	if showLines > maxLines {
+		showLines = maxLines
+	}
+	
+	// Add each line with indentation
+	for i := 0; i < showLines; i++ {
+		line := strings.TrimRight(lines[i], " \t\r\n")
+		
+		if len(line) > maxLength {
+			line = line[:maxLength] + "..."
+		}
+		
+		builder.WriteString(indent)
+		builder.WriteString(line)
+		builder.WriteString("\n")
+	}
+	
+	// If we truncated lines, show a count
+	if len(lines) > maxLines {
+		builder.WriteString(indent)
+		builder.WriteString(fmt.Sprintf("... (%d more lines not shown)\n", len(lines)-maxLines))
+	}
+	
+	return builder.String()
+}
+
+// formatTimeAgo formats a duration as a human-readable "time ago" string
+func formatTimeAgo(duration time.Duration) string {
+	seconds := int(duration.Seconds())
+	
+	if seconds < 60 {
+		return fmt.Sprintf("%d seconds", seconds)
+	}
+	
+	minutes := seconds / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%d minutes", minutes)
+	}
+	
+	hours := minutes / 60
+	if hours < 24 {
+		return fmt.Sprintf("%d hours", hours)
+	}
+	
+	days := hours / 24
+	if days < 30 {
+		return fmt.Sprintf("%d days", days)
+	}
+	
+	months := days / 30
+	if months < 12 {
+		return fmt.Sprintf("%d months", months)
+	}
+	
+	years := months / 12
+	return fmt.Sprintf("%d years", years)
 }
 
 // Helper function to display option values or defaults
 func optionOrDefault(value interface{}, defaultText string) string {
 	switch v := value.(type) {
-	case int:
+	case int64:
 		if v == 0 {
 			return defaultText
 		}

@@ -29,9 +29,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"syscall"
 
 	cliplib "github.com/atotto/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/types"
+	"bufio"
 )
 
 // Available monitoring modes
@@ -631,14 +633,21 @@ func (c *LinuxClipboard) detectMonitoringMode() string {
 	// Log the environment detection
 	c.logger.Printf("Detecting best clipboard monitoring method for this environment")
 
-	// Check for X11 XFIXES extension
-	if isX11Session() && checkXFixesSupport() {
+	// Check if both X11 and Wayland are available (common in many distributions)
+	if isX11Session() && isWaylandSession() {
+		c.logger.Printf("Both X11 and Wayland detected, preferring X11 monitoring")
+		
+		// Check for X11 XFIXES extension
+		if checkXFixesSupport() {
+			c.logger.Printf("X11 with XFixes extension detected, using event-based monitoring")
+			return monitorModeXFixes
+		}
+	} else if isX11Session() && checkXFixesSupport() {
+		// Only X11 is available with XFixes
 		c.logger.Printf("X11 with XFixes extension detected, using event-based monitoring")
 		return monitorModeXFixes
-	}
-	
-	// Check for Wayland
-	if isWaylandSession() {
+	} else if isWaylandSession() {
+		// Only Wayland is available
 		if hasCommand("wl-paste") {
 			c.logger.Printf("Wayland session detected with wl-paste available, using Wayland monitoring")
 			return monitorModeWayland
@@ -684,12 +693,22 @@ func checkXFixesSupport() bool {
 	// Try to run xprop to check if X11 is running
 	_, err := exec.Command("xprop", "-root").Output()
 	if err != nil {
+		fmt.Printf("XFixes check: xprop -root failed: %v\n", err)
 		return false
 	}
-
+	
+	fmt.Printf("XFixes check: xprop -root succeeded, checking for XFIXES\n")
+	
 	// Try to run a small script using xprop to check for XFIXES
 	cmd := exec.Command("bash", "-c", "xprop -root | grep -q XFIXES")
-	return cmd.Run() == nil
+	err = cmd.Run()
+	if err != nil {
+		fmt.Printf("XFixes check: XFIXES not found: %v\n", err)
+	} else {
+		fmt.Printf("XFixes check: XFIXES extension found\n")
+	}
+	
+	return err == nil
 }
 
 // MonitorChanges monitors for clipboard changes and sends updates to the channel
@@ -719,6 +738,19 @@ func (c *LinuxClipboard) MonitorChanges(contentCh chan<- *types.ClipboardContent
 
 // monitorWithXFixes uses X11 XFixes extension to monitor clipboard changes
 func (c *LinuxClipboard) monitorWithXFixes(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
+	c.logger.Printf("Setting up XFixes monitoring...")
+	
+	// Try alternative method first if it's on Wayland+X11
+	if isWaylandSession() {
+		c.logger.Printf("Both X11 and Wayland detected, trying more robust X monitoring")
+		
+		// Try monitoring with a direct xprop approach first
+		if c.tryDirectXpropMonitoring(contentCh, stopCh) {
+			c.logger.Printf("Successfully set up direct xprop monitoring")
+			return
+		}
+	}
+	
 	// Create a named pipe for communication
 	pipeName := fmt.Sprintf("/tmp/clipman-xfixes-%d", os.Getpid())
 	
@@ -780,13 +812,23 @@ func (c *LinuxClipboard) monitorWithXFixes(contentCh chan<- *types.ClipboardCont
 			
 			// Start a goroutine to read from the pipe
 			go func() {
-				_, _ = pipe.Read(buf) // Ignore error - we just care about notification
+				_, err := pipe.Read(buf) // We care about errors here to detect closed pipes
+				if err != nil {
+					c.logger.Printf("Error reading from pipe: %v", err)
+				}
 				close(pipeReadCh)
 			}()
 			
 			// Wait for either a pipe read or stop signal
 			select {
 			case <-pipeReadCh:
+				// Check if the process is still running
+				if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+					c.logger.Printf("XFixes monitoring process has died, falling back to polling")
+					c.monitorWithAdaptivePolling(contentCh, stopCh)
+					return
+				}
+				
 				// Clipboard change detected, read the content
 				content, err := c.Read()
 				if err != nil {
@@ -811,26 +853,97 @@ func (c *LinuxClipboard) monitorWithXFixes(contentCh chan<- *types.ClipboardCont
 	}()
 }
 
+// tryDirectXpropMonitoring tries a more robust monitoring approach using xprop directly
+func (c *LinuxClipboard) tryDirectXpropMonitoring(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) bool {
+	c.logger.Printf("Trying direct xprop monitoring...")
+	
+	// Start xprop in a way that works better in mixed Wayland/X11 environments
+	cmd := exec.Command("xprop", "-root", "-spy", "_NET_SELECTION_OWNER_CHANGES_CLIPBOARD")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		c.logger.Printf("Failed to create stdout pipe: %v", err)
+		return false
+	}
+	
+	if err := cmd.Start(); err != nil {
+		c.logger.Printf("Failed to start xprop: %v", err)
+		return false
+	}
+	
+	c.logger.Printf("Started direct xprop monitoring with PID %d", cmd.Process.Pid)
+	
+	// Store the process for cleanup
+	c.xfixesProc = cmd.Process
+	
+	// Read from xprop output
+	go func() {
+		defer cmd.Process.Kill()
+		
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			select {
+			case <-stopCh:
+				return
+			default:
+				// Each line means a clipboard change
+				c.logger.Printf("Direct xprop detected clipboard change")
+				
+				// Read the new content
+				content, err := c.Read()
+				if err != nil {
+					if err.Error() != "content unchanged" {
+						c.logger.Printf("Error reading clipboard after xprop notification: %v", err)
+					}
+					continue
+				}
+				
+				// Send the content
+				select {
+				case contentCh <- content:
+					c.logger.Printf("Direct xprop: New clipboard content detected and sent (size: %d bytes)", len(content.Data))
+				case <-stopCh:
+					return
+				}
+			}
+		}
+		
+		// If we get here, xprop has stopped
+		if err := scanner.Err(); err != nil {
+			c.logger.Printf("Error reading from xprop: %v", err)
+		} else {
+			c.logger.Printf("xprop monitoring stopped unexpectedly")
+		}
+		
+		// Fall back to polling
+		c.monitorWithAdaptivePolling(contentCh, stopCh)
+	}()
+	
+	return true
+}
+
 // monitorWithWayland uses wl-paste to monitor clipboard changes in Wayland
 func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
 	go func() {
+		// First try: Use wl-paste with -n -w echo
+		c.logger.Printf("Starting Wayland clipboard monitoring with wl-paste -n -w echo")
+		
 		// Create a command that uses wl-paste with -w option to monitor changes
 		cmd := exec.Command("wl-paste", "-n", "-w", "echo", "CLIPBOARD_CHANGED")
-		
-		c.logger.Printf("Starting Wayland clipboard monitoring with wl-paste -n -w echo CLIPBOARD_CHANGED")
 		
 		// Create a pipe to capture the output
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			c.logger.Printf("Failed to create wl-paste pipe, falling back to polling: %v", err)
-			c.monitorWithAdaptivePolling(contentCh, stopCh)
+			c.logger.Printf("Failed to create wl-paste pipe: %v", err)
+			c.logger.Printf("Trying alternative approach...")
+			c.tryAlternativeWaylandMonitoring(contentCh, stopCh)
 			return
 		}
 		
 		// Start the command
 		if err := cmd.Start(); err != nil {
-			c.logger.Printf("Failed to start wl-paste, falling back to polling: %v", err)
-			c.monitorWithAdaptivePolling(contentCh, stopCh)
+			c.logger.Printf("Failed to start wl-paste: %v", err)
+			c.logger.Printf("Trying alternative approach...")
+			c.tryAlternativeWaylandMonitoring(contentCh, stopCh)
 			return
 		}
 		
@@ -872,8 +985,9 @@ func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardCon
 		select {
 		case <-readCh:
 			if len(readData) == 0 {
-				c.logger.Printf("Wayland monitoring: wl-paste stream closed immediately, falling back to polling")
-				c.monitorWithAdaptivePolling(contentCh, stopCh)
+				c.logger.Printf("Wayland monitoring: wl-paste stream closed immediately")
+				c.logger.Printf("Trying alternative approach...")
+				c.tryAlternativeWaylandMonitoring(contentCh, stopCh)
 				return
 			}
 			
@@ -910,8 +1024,9 @@ func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardCon
 			case <-readCh:
 				// If no data was read, it means the pipe was closed
 				if len(readData) == 0 {
-					c.logger.Printf("Wayland monitoring: wl-paste stream closed, falling back to polling")
-					c.monitorWithAdaptivePolling(contentCh, stopCh)
+					c.logger.Printf("Wayland monitoring: wl-paste stream closed")
+					c.logger.Printf("Trying alternative approach...")
+					c.tryAlternativeWaylandMonitoring(contentCh, stopCh)
 					return
 				}
 				
@@ -939,6 +1054,87 @@ func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardCon
 			}
 		}
 	}()
+}
+
+// tryAlternativeWaylandMonitoring attempts a different approach to Wayland monitoring
+func (c *LinuxClipboard) tryAlternativeWaylandMonitoring(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
+	// Second try: Use wl-paste -w without -n
+	c.logger.Printf("Trying alternative Wayland monitoring with wl-paste -w")
+	cmd := exec.Command("wl-paste", "-w", "echo", "CHANGED")
+	
+	// Create a pipe to capture the output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		c.logger.Printf("Failed to create pipe for alternative approach: %v", err)
+		c.logger.Printf("Falling back to polling")
+		c.monitorWithAdaptivePolling(contentCh, stopCh)
+		return
+	}
+	
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		c.logger.Printf("Failed to start alternative approach: %v", err)
+		c.logger.Printf("Falling back to polling")
+		c.monitorWithAdaptivePolling(contentCh, stopCh)
+		return
+	}
+	
+	c.logger.Printf("Started alternative Wayland monitoring with process PID %d", cmd.Process.Pid)
+	
+	// Make sure to kill the process when we're done
+	defer func() {
+		c.logger.Printf("Cleaning up wl-paste process PID %d", cmd.Process.Pid)
+		cmd.Process.Kill()
+	}()
+	
+	// Create a reader
+	scanner := bufio.NewScanner(stdout)
+	
+	// Create a channel for notifications
+	notifyCh := make(chan struct{})
+	
+	// Start a goroutine to read from the pipe
+	go func() {
+		for scanner.Scan() {
+			// Just notify that we got something
+			select {
+			case notifyCh <- struct{}{}:
+				// Sent notification
+			case <-stopCh:
+				return
+			}
+		}
+		
+		// If we get here, the scanner has stopped
+		c.logger.Printf("Alternative Wayland monitoring stopped: %v", scanner.Err())
+		c.logger.Printf("Falling back to polling")
+		c.monitorWithAdaptivePolling(contentCh, stopCh)
+	}()
+	
+	for {
+		select {
+		case <-notifyCh:
+			// Get clipboard content
+			content, err := c.Read()
+			if err != nil {
+				if err.Error() != "content unchanged" {
+					c.logger.Printf("Error reading clipboard: %v", err)
+				}
+				continue
+			}
+			
+			// Send the content
+			select {
+			case contentCh <- content:
+				c.logger.Printf("Alternative monitoring: New clipboard content detected and sent (size: %d bytes)", len(content.Data))
+			case <-stopCh:
+				return
+			}
+			
+		case <-stopCh:
+			return
+		}
+	}
 }
 
 // monitorWithMir uses Mir display server's tools to monitor clipboard
