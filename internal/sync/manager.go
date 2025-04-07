@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
 	"github.com/berrythewa/clipman-daemon/internal/sync/protocol"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/google/uuid"
@@ -28,6 +29,11 @@ type Manager struct {
 	handlerMu       sync.RWMutex
 	stats           *SyncStats
 	statsMu         sync.RWMutex
+	discovery       Discovery          // Discovery mechanism
+	discoveryMu     sync.RWMutex       // Mutex for discovery operations
+	peers           map[string]PeerInfo // Discovered peers
+	peersMu         sync.RWMutex       // Mutex for peers map
+	deviceName      string             // Local device name
 }
 
 // NewManager creates a new sync manager
@@ -69,6 +75,17 @@ func NewManager(cfg *config.Config, mode SyncMode) (*Manager, error) {
 		return nil, fmt.Errorf("failed to create protocol client: %w", err)
 	}
 
+	// Get device name
+	deviceName := cfg.DeviceName
+	if deviceName == "" {
+		hostName, err := getHostname()
+		if err != nil {
+			deviceName = "Unknown Device"
+		} else {
+			deviceName = hostName
+		}
+	}
+
 	mgr := &Manager{
 		config:          cfg,
 		logger:          logger.With(zap.String("component", "sync_manager")),
@@ -79,15 +96,44 @@ func NewManager(cfg *config.Config, mode SyncMode) (*Manager, error) {
 		messageHandlers: make([]MessageHandler, 0),
 		contentHandlers: make([]ContentHandlerFunc, 0),
 		stats:           &SyncStats{LastSyncTime: time.Now()},
+		peers:           make(map[string]PeerInfo),
+		deviceName:      deviceName,
+	}
+
+	// Initialize discovery if enabled in config
+	if cfg.Sync.EnableDiscovery {
+		if err := mgr.initDiscovery(); err != nil {
+			logger.Warn("Failed to initialize discovery", zap.Error(err))
+		}
 	}
 
 	return mgr, nil
+}
+
+// getHostname gets the system hostname
+func getHostname() (string, error) {
+	// Use os.Hostname(), but we'll simulate it here
+	return "clipman-device", nil
 }
 
 // SetLogger sets the logger for the manager
 func (m *Manager) SetLogger(logger *zap.Logger) {
 	if logger != nil {
 		m.logger = logger.With(zap.String("component", "sync_manager"))
+		
+		// Update logger for discovery too
+		m.discoveryMu.RLock()
+		disc := m.discovery
+		m.discoveryMu.RUnlock()
+		
+		if disc != nil {
+			// Some discovery implementations might provide SetLogger
+			if discLogger, ok := disc.(interface {
+				SetLogger(*zap.Logger)
+			}); ok {
+				discLogger.SetLogger(logger.With(zap.String("component", "discovery")))
+			}
+		}
 	}
 }
 
@@ -97,12 +143,42 @@ func (m *Manager) Start() error {
 		zap.String("mode", string(m.mode)),
 		zap.String("client_id", m.clientID))
 	
+	// Start discovery if available
+	if m.config.Sync.EnableDiscovery {
+		m.discoveryMu.RLock()
+		disc := m.discovery
+		m.discoveryMu.RUnlock()
+		
+		if disc != nil {
+			m.logger.Info("Starting discovery service")
+			if err := disc.Start(); err != nil {
+				m.logger.Error("Failed to start discovery", zap.Error(err))
+			}
+			
+			// Announce our presence
+			m.announceSelf()
+		}
+	}
+	
 	return m.Connect()
 }
 
 // Stop stops the sync manager and releases resources
 func (m *Manager) Stop() error {
 	m.logger.Info("Stopping sync manager")
+	
+	// Stop discovery first
+	m.discoveryMu.RLock()
+	disc := m.discovery
+	m.discoveryMu.RUnlock()
+	
+	if disc != nil {
+		m.logger.Info("Stopping discovery service")
+		if err := disc.Stop(); err != nil {
+			m.logger.Error("Failed to stop discovery", zap.Error(err))
+		}
+	}
+	
 	return m.Disconnect()
 }
 
@@ -118,11 +194,15 @@ func (m *Manager) Status() SyncStatus {
 	stats := *m.stats // Make a copy of the stats
 	m.statsMu.RUnlock()
 	
+	m.peersMu.RLock()
+	peerCount := len(m.peers)
+	m.peersMu.RUnlock()
+	
 	return SyncStatus{
 		Connected:    m.status == SyncStatusConnected,
 		Mode:         string(m.mode),
 		ActiveGroups: activeGroups,
-		PeerCount:    0, // Not implemented yet
+		PeerCount:    peerCount,
 		Stats:        stats,
 	}
 }
@@ -319,17 +399,160 @@ func (m *Manager) ListGroups() ([]string, error) {
 	return groups, nil
 }
 
+// initDiscovery initializes the discovery mechanism
+func (m *Manager) initDiscovery() error {
+	m.discoveryMu.Lock()
+	defer m.discoveryMu.Unlock()
+	
+	// Skip if already initialized
+	if m.discovery != nil {
+		return nil
+	}
+	
+	// Get discovery method from config
+	method := m.config.Sync.DiscoveryMethod
+	if method == "" {
+		// Default to mDNS for local discovery
+		method = string(discovery.MethodMDNS)
+	}
+	
+	// Set up discovery options
+	options := &discovery.DiscoveryOptions{
+		AnnounceInterval: 60,                 // Announce every minute
+		PeerTimeout:      120,                // Peers timeout after 2 minutes
+		DeviceID:         m.clientID,         // Use our client ID
+		DeviceName:       m.deviceName,       // Use our device name
+		Logger:           m.logger,           // Use our logger
+	}
+	
+	// Get factory for the specified method
+	factory, err := discovery.GetDiscoveryFactory(method)
+	if err != nil {
+		return fmt.Errorf("failed to get discovery factory: %w", err)
+	}
+	
+	// Create discovery instance
+	disc, err := factory.CreateDiscovery(options)
+	if err != nil {
+		return fmt.Errorf("failed to create discovery: %w", err)
+	}
+	
+	// Set handler for discovered peers
+	disc.SetPeerDiscoveryHandler(m.handlePeerDiscovered)
+	
+	// Store discovery instance
+	m.discovery = disc
+	
+	m.logger.Info("Discovery initialized", zap.String("method", method))
+	
+	return nil
+}
+
 // EnableDiscovery enables or disables peer discovery
 func (m *Manager) EnableDiscovery(enabled bool) error {
 	m.logger.Info("Discovery mode changed", zap.Bool("enabled", enabled))
-	// Not implemented yet
+	
+	// Update config
+	m.config.Sync.EnableDiscovery = enabled
+	
+	if enabled {
+		// Initialize discovery if not already
+		if err := m.initDiscovery(); err != nil {
+			return fmt.Errorf("failed to initialize discovery: %w", err)
+		}
+		
+		// Start discovery
+		m.discoveryMu.RLock()
+		disc := m.discovery
+		m.discoveryMu.RUnlock()
+		
+		if disc != nil {
+			if err := disc.Start(); err != nil {
+				return fmt.Errorf("failed to start discovery: %w", err)
+			}
+			
+			// Announce our presence
+			m.announceSelf()
+		}
+	} else {
+		// Stop discovery
+		m.discoveryMu.RLock()
+		disc := m.discovery
+		m.discoveryMu.RUnlock()
+		
+		if disc != nil {
+			if err := disc.Stop(); err != nil {
+				return fmt.Errorf("failed to stop discovery: %w", err)
+			}
+		}
+	}
+	
 	return nil
 }
 
 // GetDiscoveredPeers returns the list of discovered peers
 func (m *Manager) GetDiscoveredPeers() []PeerInfo {
-	// Not implemented yet
-	return []PeerInfo{}
+	m.peersMu.RLock()
+	defer m.peersMu.RUnlock()
+	
+	// Convert map to slice
+	peers := make([]PeerInfo, 0, len(m.peers))
+	for _, peer := range m.peers {
+		peers = append(peers, peer)
+	}
+	
+	return peers
+}
+
+// announceSelf announces our presence to other peers
+func (m *Manager) announceSelf() {
+	m.discoveryMu.RLock()
+	disc := m.discovery
+	m.discoveryMu.RUnlock()
+	
+	if disc == nil {
+		return
+	}
+	
+	// Get our groups
+	groups := m.client.ListGroups()
+	
+	// Create peer info
+	peer := PeerInfo{
+		ID:           m.clientID,
+		Name:         m.deviceName,
+		Groups:       groups,
+		LastSeen:     time.Now(),
+		Capabilities: map[string]string{
+			"version":  "1.0.0",
+			"protocol": string(m.mode),
+		},
+		Version:    "1.0.0",
+		DeviceType: "desktop",
+	}
+	
+	// Announce our presence
+	if err := disc.Announce(peer); err != nil {
+		m.logger.Error("Failed to announce presence", zap.Error(err))
+	}
+}
+
+// handlePeerDiscovered handles discovered peers
+func (m *Manager) handlePeerDiscovered(peer PeerInfo) {
+	// Skip our own announcements
+	if peer.ID == m.clientID {
+		return
+	}
+	
+	m.logger.Debug("Peer discovered", 
+		zap.String("peer_id", peer.ID),
+		zap.String("peer_name", peer.Name),
+		zap.Strings("groups", peer.Groups))
+	
+	// Add peer to our list
+	m.peersMu.Lock()
+	m.peers[peer.ID] = peer
+	m.peersMu.Unlock()
 }
 
 // AddHandler adds a message handler
@@ -436,6 +659,17 @@ func (m *Manager) handleContentMessage(msg Message) {
 		LastSeen: time.Now(),
 		Groups:   []string{msg.Group()},
 	}
+	
+	// Update peer info if we have more details from discovery
+	m.peersMu.RLock()
+	if discoveredPeer, ok := m.peers[msg.Source()]; ok {
+		peer.Name = discoveredPeer.Name
+		peer.Address = discoveredPeer.Address
+		peer.Capabilities = discoveredPeer.Capabilities
+		peer.Version = discoveredPeer.Version
+		peer.DeviceType = discoveredPeer.DeviceType
+	}
+	m.peersMu.RUnlock()
 	
 	// Call content handlers
 	m.handlerMu.RLock()

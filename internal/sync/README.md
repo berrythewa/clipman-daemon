@@ -4,7 +4,7 @@ This package provides clipboard synchronization capabilities for Clipman, allowi
 
 ## Architecture
 
-The sync package follows a layered architecture with a plugin-based system for protocols:
+The sync package follows a layered architecture with a plugin-based system for protocols and discovery mechanisms:
 
 ```
                            ┌───────────────────┐
@@ -22,34 +22,56 @@ The sync package follows a layered architecture with a plugin-based system for p
               │      Protocol     │     │     Discovery     │
               └─────────┬─────────┘     └─────────┬─────────┘
                         │                         │
-         ┌──────────────┴──────────────┐         │
-         │                             │         │
-┌────────▼───────┐           ┌─────────▼────────┐│
-│ Protocol Impl. │           │ Protocol Impl.   ││
-│    (MQTT)      │           │     (P2P)        ││
-└────────────────┘           └──────────────────┘┘
+         ┌──────────────┴──────────────┐    ┌────┴───────────────┐
+         │                             │    │                     │
+┌────────▼───────┐           ┌─────────▼────┴───┐   ┌─────────────▼───┐
+│ Protocol Impl. │           │ Protocol Impl.    │   │ Discovery Impl. │
+│    (MQTT)      │           │     (P2P)         │   │    (mDNS)       │
+└────────────────┘           └───────────────────┘   └─────────────────┘
 ```
 
 ### Key Components
 
-1. **SyncManager**: The primary entry point and orchestrator for synchronization.
-2. **Protocol Interface**: Abstracts communication protocols (MQTT, P2P).
-3. **Discovery**: Handles peer discovery and announcements.
-4. **Message**: Represents the messages exchanged between peers.
-5. **Security**: Handles encryption, authentication, and integrity.
+1. **SyncManager**: The primary entry point and orchestrator for synchronization. Implements the `SyncManager` interface.
+2. **Protocol**: Abstracts communication protocols (MQTT, P2P). Implements the `Protocol` interface.
+3. **Discovery**: Handles peer discovery and announcements. Implements the `Discovery` interface.
+4. **Message**: Represents the messages exchanged between peers. Implements the `Message` interface.
 
 ## Decentralized Factory Pattern
 
-The sync package uses a decentralized factory pattern for protocol implementations:
+The sync package uses a decentralized factory pattern for both protocol and discovery implementations:
 
-1. Each protocol implementation (e.g., MQTT, P2P) has its own factory
-2. Factories register themselves with a central registry in `protocol/protocol.go`
-3. The `Manager` uses this registry to retrieve the appropriate factory
+1. Each protocol/discovery implementation has its own factory that implements the respective factory interface
+2. Factories register themselves with a central registry in their respective packages
+3. The `Manager` uses these registries to retrieve the appropriate factory based on configuration
 
 This design allows:
-- Modular protocol implementations that can be added/removed easily
-- Automatic registration of protocols via `init()`
+- Modular implementations that can be added/removed easily
+- Automatic registration of components via `init()`
 - Extension of the system without modifying core code
+
+### Registration Flow
+
+```
+┌────────────────┐    registers     ┌──────────────────┐
+│ Protocol Impl. ├───────────────►  │ Protocol Registry │
+└────────────────┘                  └──────────────────┘
+                                              ▲
+                                              │ looks up
+                                              │
+┌────────────────┐    requests      ┌────────┴─────────┐
+│   Application  ├───────────────►  │    SyncManager   │
+└────────────────┘                  └──────────────────┘
+```
+
+## Current Implementation
+
+Currently, the following components are implemented:
+
+- **Core interfaces**: `SyncManager`, `Protocol`, `Discovery`, and `Message`
+- **Manager**: The main implementation of the `SyncManager` interface
+- **MQTT Protocol**: Implementation of the `Protocol` interface using MQTT
+- **mDNS Discovery**: Implementation of the `Discovery` interface using mDNS
 
 ## Directory Structure
 
@@ -60,28 +82,15 @@ internal/sync/
 ├── manager.go          # SyncManager implementation
 ├── config.go           # Sync-specific configuration handling
 ├── discovery/
-│   ├── discovery.go    # Interface definitions for peer discovery
-│   ├── mdns.go         # mDNS implementation for local network discovery
-│   └── mqtt.go         # MQTT-based discovery service
-├── protocol/
-│   ├── protocol.go     # Common protocol interface and utilities
-│   ├── mqtt/
-│   │   ├── client.go   # MQTT protocol client implementation
-│   │   ├── factory.go  # MQTT factory for protocol registry
-│   │   └── message.go  # MQTT message formats
-│   └── p2p/
-│       ├── client.go   # P2P protocol client implementation
-│       ├── factory.go  # P2P factory for protocol registry
-│       ├── nat.go      # NAT traversal utilities
-│       └── message.go  # P2P message formats
-├── transport/
-│   ├── transport.go    # Transport layer interfaces
-│   ├── direct.go       # Direct socket-based transport
-│   └── relay.go        # Relay-based transport for NAT traversal
-└── security/
-    ├── security.go     # Security interfaces
-    ├── encryption.go   # Content encryption utilities
-    └── auth.go         # Authentication mechanisms
+│   ├── discovery.go    # Common discovery interfaces and utilities
+│   └── mdns/
+│       └── mdns.go     # mDNS implementation for local network discovery
+└── protocol/
+    ├── protocol.go     # Common protocol interface and utilities
+    └── mqtt/
+        ├── client.go   # MQTT protocol client implementation
+        ├── factory.go  # MQTT factory for protocol registry
+        └── message.go  # MQTT message formats
 ```
 
 ## Usage
@@ -143,8 +152,11 @@ func main() {
 ### Adding a New Protocol Implementation
 
 1. Create a new directory under `protocol/` for your protocol
-2. Implement the required interfaces
-3. Create a factory that registers itself:
+2. Implement the required interfaces:
+   - `protocol.Client` - Client implementation
+   - `protocol.Factory` - Factory for creating clients
+   - `protocol.Message` - Message format specific to your protocol
+3. Create a factory that registers itself in `init()`:
 
 ```go
 package newprotocol
@@ -169,9 +181,17 @@ func init() {
 }
 ```
 
+### Adding a New Discovery Implementation
+
+Similar to adding a protocol implementation:
+
+1. Create a new directory under `discovery/` for your discovery mechanism
+2. Implement the required interfaces
+3. Register your factory in `init()`
+
 ## Configuration
 
-The sync functionality is configured through the main config.json:
+The sync functionality is configured through the centralized configuration:
 
 ```json
 {
@@ -182,8 +202,8 @@ The sync functionality is configured through the main config.json:
     "username": "username",
     "password": "password",
     "default_group": "default",
-    "mode": "centralized",
-    "discoverable": true,
+    "enable_discovery": true,
+    "discovery_method": "mdns",
     "client_id": "device123"
   }
 }
@@ -196,17 +216,29 @@ The sync functionality is configured through the main config.json:
 The MQTT protocol implementation provides:
 - Reliable clipboard content synchronization using MQTT brokers
 - Topic structure: `clipman/{group}/{content|control}/{message_type}`
-- Support for private groups with access control
-- Automatic reconnection and message buffering
+- Support for groups with different access levels
+- Automatic reconnection with configurable retry logic
+- Well-structured messages with metadata
 
-### P2P Protocol (Planned)
+### mDNS Discovery
 
-The P2P protocol implementation will provide:
-- Direct device-to-device communication
-- NAT traversal for connecting across networks
-- Automatic peer discovery using mDNS
-- End-to-end encryption for all traffic
+The mDNS discovery implementation provides:
+- Local network peer discovery using Multicast DNS
+- Automatic announcement of device presence
+- Device information sharing (capabilities, groups, etc.)
+- Regular announcements to maintain peer lists
+
+## Future Enhancements
+
+Planned enhancements include:
+
+1. **P2P Protocol**: Direct device-to-device communication without central servers
+2. **End-to-End Encryption**: Security layer for message encryption 
+3. **File Transfer**: Large file transfer capabilities
+4. **DHT Discovery**: Distributed Hash Table based discovery for P2P networks
+5. **Transport Abstraction**: Lower-level network transport abstraction
+6. **Conflict Resolution**: Improved handling of concurrent edits
 
 ## License
 
-Same as main project. 
+Same as the main project.
