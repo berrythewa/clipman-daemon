@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Sync modes
@@ -15,9 +16,10 @@ const (
 // SyncConfig defines synchronization-related configuration
 type SyncConfig struct {
 	// MQTT broker connection settings (compatible with legacy broker config)
-	URL      string `json:"url"`       // URL of the MQTT broker
-	Username string `json:"username"`  // Username for broker authentication
-	Password string `json:"password"`  // Password for broker authentication
+	URL            string        `json:"url"`            // URL of the MQTT broker
+	Username       string        `json:"username"`       // Username for broker authentication
+	Password       string        `json:"password"`       // Password for broker authentication
+	ConnectTimeout time.Duration `json:"connect_timeout"` // Timeout for connection attempts
 
 	// Sync mode
 	Mode      string `json:"mode"`      // Synchronization mode: "p2p" or "centralized"
@@ -51,9 +53,10 @@ type SyncConfig struct {
 func DefaultSyncConfig() SyncConfig {
 	return SyncConfig{
 		// Default to empty broker settings - must be configured by user
-		URL:      "",
-		Username: "",
-		Password: "", 
+		URL:            "",
+		Username:       "",
+		Password:       "", 
+		ConnectTimeout: 30 * time.Second, // Default 30 second timeout
 
 		// Default to P2P mode
 		Mode:      SyncModeP2P,

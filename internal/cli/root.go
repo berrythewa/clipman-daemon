@@ -10,7 +10,6 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
-	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/platform"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 
@@ -225,67 +224,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	// Get all system paths
 	paths := cfg.GetPaths()
-	
-	// Initialize sync client if configured and not explicitly disabled
-	var syncClient sync.SyncClient
-	if !noSync && cfg.Sync.URL != "" {
-		zapLogger.Info("Initializing sync connection", 
-			zap.String("url", cfg.Sync.URL),
-			zap.String("device_id", cfg.DeviceID),
-			zap.String("mode", cfg.Sync.Mode))
-		
-		var err error
-		syncClient, err = sync.CreateClient(cfg, zapLogger)
-		if err != nil {
-			zapLogger.Warn("Failed to initialize sync client", zap.Error(err))
-			zapLogger.Info("Continuing without sync support")
-		} else {
-			zapLogger.Info("Sync client initialized successfully")
-			
-			// If a default group is set, try to join it
-			if cfg.Sync.DefaultGroup != "" && cfg.Sync.AutoJoinGroups {
-				if err := syncClient.JoinGroup(cfg.Sync.DefaultGroup); err != nil {
-					zapLogger.Error("Failed to join default group", 
-						zap.String("group", cfg.Sync.DefaultGroup), 
-						zap.Error(err))
-				} else {
-					zapLogger.Info("Joined default group", 
-						zap.String("group", cfg.Sync.DefaultGroup))
-				}
-			}
-			
-			// Set up content filtering based on config
-			if len(cfg.Sync.AllowedTypes) > 0 || len(cfg.Sync.ExcludedTypes) > 0 || cfg.Sync.MaxSyncSize > 0 {
-				contentTypes := make([]types.ContentType, 0, len(cfg.Sync.AllowedTypes))
-				for _, t := range cfg.Sync.AllowedTypes {
-					contentTypes = append(contentTypes, types.ContentType(t))
-				}
-				
-				excludedTypes := make([]types.ContentType, 0, len(cfg.Sync.ExcludedTypes))
-				for _, t := range cfg.Sync.ExcludedTypes {
-					excludedTypes = append(excludedTypes, types.ContentType(t))
-				}
-				
-				filter := &sync.ContentFilter{
-					AllowedTypes:    contentTypes,
-					ExcludedTypes:   excludedTypes,
-					MaxSize:         cfg.Sync.MaxSyncSize,
-					IncludePatterns: cfg.Sync.IncludePatterns,
-					ExcludePatterns: cfg.Sync.ExcludePatterns,
-				}
-				
-				if err := syncClient.SetContentFilter(filter); err != nil {
-					zapLogger.Error("Failed to set content filter", zap.Error(err))
-				}
-			}
-		}
-	} else {
-		if noSync {
-			zapLogger.Info("Sync client disabled by command line flag")
-		} else if cfg.Sync.URL == "" {
-			zapLogger.Info("No sync URL configured, running without sync connection")
-		}
-	}
+
+	// Initialize a no-op publisher (sync is disabled for now until we implement proper sync package)
+	zapLogger.Info("Using no-op publisher (sync functionality disabled)")
+	contentPublisher := clipboard.NewNoOpPublisher(zapLogger)
 	
 	// Initialize storage
 	storageConfig := storage.StorageConfig{
@@ -308,7 +250,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 	
 	// Start the monitor
-	monitor := clipboard.NewMonitor(cfg, syncClient, zapLogger, store)
+	monitor := clipboard.NewMonitor(cfg, contentPublisher, zapLogger, store)
 	if err := monitor.Start(); err != nil {
 		zapLogger.Error("Failed to start monitor", zap.Error(err))
 		return err

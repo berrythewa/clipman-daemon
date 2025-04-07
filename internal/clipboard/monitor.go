@@ -9,14 +9,19 @@ import (
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
-	xsync "github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
 )
 
+// ContentPublisher defines a minimal interface for publishing clipboard content
+type ContentPublisher interface {
+	PublishContent(content *types.ClipboardContent) error
+	IsConnected() bool
+}
+
 type Monitor struct {
 	config           *config.Config
-	mqttClient       xsync.SyncClient
+	contentPublisher ContentPublisher
 	logger           *zap.Logger
 	clipboard        Clipboard
 	storage          *storage.BoltStorage
@@ -28,11 +33,11 @@ type Monitor struct {
 	contentProcessor *ContentProcessor
 }
 
-func NewMonitor(cfg *config.Config, mqttClient xsync.SyncClient, logger *zap.Logger, storage *storage.BoltStorage) *Monitor {
+func NewMonitor(cfg *config.Config, contentPublisher ContentPublisher, logger *zap.Logger, storage *storage.BoltStorage) *Monitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Monitor{
 		config:           cfg,
-		mqttClient:       mqttClient,
+		contentPublisher: contentPublisher,
 		logger:           logger,
 		clipboard:        NewClipboard(),
 		storage:          storage,
@@ -221,12 +226,19 @@ func (m *Monitor) saveContent(content *types.ClipboardContent) error {
 }
 
 func (m *Monitor) publishContent(content *types.ClipboardContent) error {
-	// Skip publishing if there's no MQTT client (sync disabled)
-	if m.mqttClient == nil {
-		m.logger.Debug("Sync client not available, skipping content publish")
+	// Skip publishing if there's no content publisher (sync disabled)
+	if m.contentPublisher == nil {
+		m.logger.Debug("Content publisher not available, skipping content publish")
 		return nil
 	}
-	return m.mqttClient.PublishContent(content)
+	
+	// Check if the publisher is connected
+	if !m.contentPublisher.IsConnected() {
+		m.logger.Debug("Content publisher not connected, skipping content publish")
+		return nil
+	}
+	
+	return m.contentPublisher.PublishContent(content)
 }
 
 func (m *Monitor) isContentEqual(content1, content2 *types.ClipboardContent) bool {

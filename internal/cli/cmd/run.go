@@ -3,8 +3,8 @@ package cmd
 import (
 	"time"
 
-	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
+	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/spf13/cobra"
@@ -45,28 +45,9 @@ until interrupted.`,
 		// Get all system paths
 		paths := cfg.GetPaths()
 		
-		// Initialize sync client if configured and not explicitly disabled
-		var syncClient sync.SyncClient
-		if !noSync && (cfg.Sync.URL != "") {
-			zapLogger.Info("Initializing sync connection", 
-				zap.String("url", cfg.Sync.URL),
-				zap.String("device_id", cfg.DeviceID))
-			
-			var err error
-			syncClient, err = sync.CreateClient(cfg, zapLogger)
-			if err != nil {
-				zapLogger.Warn("Failed to initialize sync client", zap.Error(err))
-				zapLogger.Info("Continuing without sync support")
-			} else {
-				zapLogger.Info("Sync client initialized successfully")
-			}
-		} else {
-			if noSync {
-				zapLogger.Info("Sync client disabled by command line flag")
-			} else if cfg.Sync.URL == "" {
-				zapLogger.Info("No sync URL configured, running without sync connection")
-			}
-		}
+		// Initialize a no-op publisher (sync is disabled for now until we implement proper sync package)
+		zapLogger.Info("Using no-op publisher (sync functionality disabled)")
+		contentPublisher := clipboard.NewNoOpPublisher(zapLogger)
 		
 		// Initialize storage
 		storageConfig := storage.StorageConfig{
@@ -89,7 +70,7 @@ until interrupted.`,
 		defer store.Close()
 		
 		// Start the monitor
-		monitor := clipboard.NewMonitor(cfg, syncClient, zapLogger, store)
+		monitor := clipboard.NewMonitor(cfg, contentPublisher, zapLogger, store)
 		if err := monitor.Start(); err != nil {
 			zapLogger.Error("Failed to start monitor", zap.Error(err))
 			return err
@@ -110,12 +91,6 @@ until interrupted.`,
 			
 			zapLogger.Info("Stopping monitor")
 			monitor.Stop()
-			
-			// Properly close all connections
-			if syncClient != nil {
-				zapLogger.Info("Disconnecting sync client")
-				syncClient.Disconnect()
-			}
 			
 			// Flush logger to ensure all logs are written
 			zapLogger.Sync()
