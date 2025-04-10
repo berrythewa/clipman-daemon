@@ -59,6 +59,7 @@ type ServerConfig struct {
 }
 
 // Config holds all application configuration
+// TODO: move config types to types/relevant_file.go
 type Config struct {
 	// General settings
 	DeviceID      string `json:"device_id"`
@@ -81,19 +82,11 @@ type Config struct {
 	Server ServerConfig `json:"server"`
 	
 	// Synchronization configuration
+    Sync types.SyncConfig `json:"sync"`
 	
 	// Clipboard monitoring options
 	StealthMode     bool  `json:"stealth_mode"`     // Minimize clipboard access notifications
 	PollingInterval int64 `json:"polling_interval"` // Base polling interval in milliseconds
-}
-
-// DefaultServerConfig returns default server configuration
-// TODO: this will be needed for p2p maybe ?
-func DefaultServerConfig() ServerConfig {
-	return ServerConfig{
-		Port: 8080,
-		Host: "localhost",
-	}
 }
 
 // DefaultSystemPaths returns default system paths
@@ -165,9 +158,9 @@ func DefaultConfig() *Config {
 		Log:           DefaultLogConfig(),
 		History:       DefaultHistoryOptions(),
 		Storage:       DefaultStorageConfig(),
-		Server:        DefaultServerConfig(),
 		StealthMode:   true,            // Enabled by default
 		PollingInterval: 10000,         // 10 seconds by default for less frequent clipboard checks
+		Sync:          DefaultSyncConfig(),
 	}
 	return config
 }
