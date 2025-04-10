@@ -81,7 +81,6 @@ type Config struct {
 	Server ServerConfig `json:"server"`
 	
 	// Synchronization configuration
-	Sync SyncConfig `json:"sync"`
 	
 	// Clipboard monitoring options
 	StealthMode     bool  `json:"stealth_mode"`     // Minimize clipboard access notifications
@@ -166,7 +165,6 @@ func DefaultConfig() *Config {
 		Log:           DefaultLogConfig(),
 		History:       DefaultHistoryOptions(),
 		Storage:       DefaultStorageConfig(),
-		Sync:          DefaultSyncConfig(),
 		Server:        DefaultServerConfig(),
 		StealthMode:   true,            // Enabled by default
 		PollingInterval: 10000,         // 10 seconds by default for less frequent clipboard checks

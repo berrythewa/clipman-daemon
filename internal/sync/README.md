@@ -1,10 +1,10 @@
 # Clipman Sync Package
 
-This package provides clipboard synchronization capabilities for Clipman, allowing content to be synced across multiple devices.
+This package provides clipboard synchronization capabilities for Clipman, allowing content to be synced across multiple devices using libp2p for peer-to-peer communication.
 
 ## Architecture
 
-The sync package follows a layered architecture with a plugin-based system for protocols and discovery mechanisms:
+The sync package follows a node-centric architecture leveraging libp2p for all networking capabilities:
 
 ```
                            ┌───────────────────┐
@@ -13,84 +13,58 @@ The sync package follows a layered architecture with a plugin-based system for p
                                      │
                                      ▼
                            ┌───────────────────┐
-                           │    SyncManager    │
+                           │      sync.go      │
                            └─────────┬─────────┘
                                      │
-                        ┌────────────┴────────────┐
-                        │                         │
-              ┌─────────▼─────────┐     ┌─────────▼─────────┐
-              │      Protocol     │     │     Discovery     │
-              └─────────┬─────────┘     └─────────┬─────────┘
-                        │                         │
-         ┌──────────────┴──────────────┐    ┌────┴───────────────┐
-         │                             │    │                     │
-┌────────▼───────┐           ┌─────────▼────┴───┐   ┌─────────────▼───┐
-│ Protocol Impl. │           │ Protocol Impl.    │   │ Discovery Impl. │
-│    (MQTT)      │           │     (P2P)         │   │    (mDNS)       │
-└────────────────┘           └───────────────────┘   └─────────────────┘
+                                     ▼
+                           ┌───────────────────┐
+                           │      node.go      │
+                           └─────────┬─────────┘
+                                     │
+                    ┌────────────────┼────────────────┐
+                    │                │                │
+          ┌─────────▼─────────┐ ┌────▼──────────┐ ┌───▼────────────┐
+          │   protocols.go    │ │ discovery.go  │ │  clipboard.go  │
+          └───────────────────┘ └───────────────┘ └────────────────┘
+                                                          │
+                                                    ┌─────▼─────┐
+                                                    │  file.go  │
+                                                    └───────────┘
 ```
 
 ### Key Components
 
-1. **SyncManager**: The primary entry point and orchestrator for synchronization. Implements the `SyncManager` interface.
-2. **Protocol**: Abstracts communication protocols (MQTT, P2P). Implements the `Protocol` interface.
-3. **Discovery**: Handles peer discovery and announcements. Implements the `Discovery` interface.
-4. **Message**: Represents the messages exchanged between peers. Implements the `Message` interface.
+1. **sync.go**: The primary entry point and orchestrator for synchronization. Provides high-level API for applications.
+2. **node.go**: Core libp2p node setup, managing the host, identity, and connections.
+3. **protocols.go**: Defines and manages custom protocols for clipboard and file synchronization.
+4. **discovery.go**: Handles peer discovery using libp2p's built-in methods (mDNS and DHT).
+5. **clipboard.go**: Implements clipboard content synchronization logic.
+6. **file.go**: Implements file transfer functionality.
+7. **types.go**: Common types and interfaces used throughout the package.
 
-## Decentralized Factory Pattern
+## libp2p Integration
 
-The sync package uses a decentralized factory pattern for both protocol and discovery implementations:
+The sync package leverages libp2p for all networking capabilities:
 
-1. Each protocol/discovery implementation has its own factory that implements the respective factory interface
-2. Factories register themselves with a central registry in their respective packages
-3. The `Manager` uses these registries to retrieve the appropriate factory based on configuration
-
-This design allows:
-- Modular implementations that can be added/removed easily
-- Automatic registration of components via `init()`
-- Extension of the system without modifying core code
-
-### Registration Flow
-
-```
-┌────────────────┐    registers     ┌──────────────────┐
-│ Protocol Impl. ├───────────────►  │ Protocol Registry │
-└────────────────┘                  └──────────────────┘
-                                              ▲
-                                              │ looks up
-                                              │
-┌────────────────┐    requests      ┌────────┴─────────┐
-│   Application  ├───────────────►  │    SyncManager   │
-└────────────────┘                  └──────────────────┘
-```
-
-## Current Implementation
-
-Currently, the following components are implemented:
-
-- **Core interfaces**: `SyncManager`, `Protocol`, `Discovery`, and `Message`
-- **Manager**: The main implementation of the `SyncManager` interface
-- **MQTT Protocol**: Implementation of the `Protocol` interface using MQTT
-- **mDNS Discovery**: Implementation of the `Discovery` interface using mDNS
+1. **Direct P2P Communication**: Content is transferred directly between peers without central servers
+2. **Multiple Transport Support**: Uses libp2p's transport layer (TCP, QUIC, WebRTC)
+3. **NAT Traversal**: Automatic NAT hole punching and relay support for connectivity
+4. **Secure Communication**: End-to-end encryption with libp2p's secure transports
+5. **PubSub**: Group messaging using libp2p's GossipSub
+6. **DHT**: Distributed peer discovery for wide-area networking
+7. **mDNS**: Local network discovery
 
 ## Directory Structure
 
 ```
 internal/sync/
-├── sync.go             # Main package exports and factory functions
-├── interfaces.go       # Core interfaces (SyncManager, Protocol, Discovery)
-├── manager.go          # SyncManager implementation
-├── config.go           # Sync-specific configuration handling
-├── discovery/
-│   ├── discovery.go    # Common discovery interfaces and utilities
-│   └── mdns/
-│       └── mdns.go     # mDNS implementation for local network discovery
-└── protocol/
-    ├── protocol.go     # Common protocol interface and utilities
-    └── mqtt/
-        ├── client.go   # MQTT protocol client implementation
-        ├── factory.go  # MQTT factory for protocol registry
-        └── message.go  # MQTT message formats
+├── sync.go             # High-level sync manager API (entrypoint)
+├── node.go             # Core libp2p node setup (host, discovery, routing)
+├── protocols.go        # Define custom protocols (e.g., clipboard, file)
+├── discovery.go        # mDNS / DHT discovery logic
+├── clipboard.go        # Clipboard sync handler
+├── file.go             # File transfer logic
+└── types.go            # Common structs/enums
 ```
 
 ## Usage
@@ -111,7 +85,7 @@ func main() {
     logger := zap.NewExample()
 
     // Create sync manager
-    syncManager, err := sync.NewSyncManager(cfg, logger)
+    syncManager, err := sync.New(cfg, logger)
     if err != nil {
         logger.Fatal("Failed to create sync manager", zap.Error(err))
     }
@@ -149,45 +123,27 @@ func main() {
 }
 ```
 
-### Adding a New Protocol Implementation
+## Protocol Details
 
-1. Create a new directory under `protocol/` for your protocol
-2. Implement the required interfaces:
-   - `protocol.Client` - Client implementation
-   - `protocol.Factory` - Factory for creating clients
-   - `protocol.Message` - Message format specific to your protocol
-3. Create a factory that registers itself in `init()`:
+### Clipboard Protocol
 
-```go
-package newprotocol
+The clipboard protocol allows sharing clipboard content between peers:
 
-import "github.com/berrythewa/clipman-daemon/internal/sync/protocol"
+- **Protocol Path**: `/clipman/1.0.0/clipboard`
+- **Content Types**: Text, Image, Files, HTML, and more
+- **Metadata**: Content type, size, timestamp, source device
+- **Delivery**: Direct to peer for 1:1 or via pubsub for groups
 
-const (
-    ProtocolName = "newprotocol"
-)
+### File Transfer Protocol
 
-// Factory is the protocol factory
-type Factory struct{}
+The file transfer protocol enables transferring larger files:
 
-// NewFactory creates a new factory
-func NewFactory() *Factory {
-    return &Factory{}
-}
-
-// init registers the protocol factory
-func init() {
-    protocol.RegisterProtocolFactory(ProtocolName, NewFactory())
-}
-```
-
-### Adding a New Discovery Implementation
-
-Similar to adding a protocol implementation:
-
-1. Create a new directory under `discovery/` for your discovery mechanism
-2. Implement the required interfaces
-3. Register your factory in `init()`
+- **Protocol Path**: `/clipman/1.0.0/file`
+- **Features**: 
+  - Resume support
+  - Progress tracking
+  - Integrity verification
+  - Selective sync
 
 ## Configuration
 
@@ -197,47 +153,70 @@ The sync functionality is configured through the centralized configuration:
 {
   "sync": {
     "enabled": true,
-    "protocol": "mqtt",
-    "url": "mqtt://broker.example.com:1883",
-    "username": "username",
-    "password": "password",
-    "default_group": "default",
-    "enable_discovery": true,
-    "discovery_method": "mdns",
-    "client_id": "device123"
+    "peer_id": "optional-persistent-peer-id",
+    "libp2p": {
+      "listen_addresses": [
+        "/ip4/0.0.0.0/tcp/0",
+        "/ip4/0.0.0.0/udp/0/quic"
+      ],
+      "bootstrap_peers": [],
+      "enable_relay": true,
+      "enable_nat": true,
+      "dht": {
+        "enabled": true,
+        "bootstrap_peers": []
+      },
+      "mdns": {
+        "enabled": true,
+        "service_tag": "clipman"
+      },
+      "pubsub": {
+        "enabled": true,
+        "sign_messages": true
+      }
+    },
+    "default_group": "default"
   }
 }
 ```
 
-## Protocol Details
+## Discovery Mechanisms
 
-### MQTT Protocol
+### Local Discovery (mDNS)
 
-The MQTT protocol implementation provides:
-- Reliable clipboard content synchronization using MQTT brokers
-- Topic structure: `clipman/{group}/{content|control}/{message_type}`
-- Support for groups with different access levels
-- Automatic reconnection with configurable retry logic
-- Well-structured messages with metadata
+The sync package uses libp2p's built-in mDNS discovery for finding peers on the local network:
 
-### mDNS Discovery
+- Automatic discovery without configuration
+- Low latency for local connections
+- Zero configuration required
 
-The mDNS discovery implementation provides:
-- Local network peer discovery using Multicast DNS
-- Automatic announcement of device presence
-- Device information sharing (capabilities, groups, etc.)
-- Regular announcements to maintain peer lists
+### Wide-area Discovery (DHT)
+
+For peers outside the local network, the sync package uses libp2p's Kademlia DHT:
+
+- Find peers across the internet
+- Bootstrap from known peers
+- Persistent peer routing
+
+## PubSub Groups
+
+Groups in Clipman are implemented using libp2p's GossipSub:
+
+- Topic-based messaging
+- Message signing and verification
+- Efficient message propagation
+- Message deduplication
 
 ## Future Enhancements
 
 Planned enhancements include:
 
-1. **P2P Protocol**: Direct device-to-device communication without central servers
-2. **End-to-End Encryption**: Security layer for message encryption 
-3. **File Transfer**: Large file transfer capabilities
-4. **DHT Discovery**: Distributed Hash Table based discovery for P2P networks
-5. **Transport Abstraction**: Lower-level network transport abstraction
-6. **Conflict Resolution**: Improved handling of concurrent edits
+1. **Multiple Device Profiles**: Different sync profiles for different devices or use cases
+2. **Conflict Resolution**: Smart handling of concurrent edits
+3. **Bandwidth Controls**: Limiting sync based on network conditions
+4. **Search**: Searching across synced content
+5. **End-to-End Encryption**: Additional encryption layer for content
+6. **History and Versioning**: Content history and version management
 
 ## License
 
