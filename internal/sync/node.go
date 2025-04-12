@@ -12,7 +12,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"go.uber.org/zap"
@@ -28,7 +27,7 @@ type Node struct {
 	logger        *zap.Logger
 	
 	// Discovery components
-	mdnsService   mdns.Service
+	discovery    *DiscoveryManager
 	
 	// PubSub for group communication
 	pubsub        *pubsub.PubSub
@@ -123,6 +122,55 @@ func NewNode(ctx context.Context, cfg *config.Config, logger *zap.Logger, opts .
 		started:       false,
 	}
 	
+	// Create discovery manager
+	node.discovery = NewDiscoveryManager(nodeCtx, h, syncCfg, nodeLogger)
+	
+	// Set callback for peer discovery
+	node.discovery.SetPeerDiscoveredCallback(func(peerInfo InternalPeerInfo) {
+		// Add peer to our store
+		id, err := peer.Decode(peerInfo.ID)
+		if err != nil {
+			node.logger.Warn("Invalid peer ID from discovery", zap.String("peer_id", peerInfo.ID), zap.Error(err))
+			return
+		}
+		
+		// Add to peer store
+		node.peerStore[id] = peerInfo
+		
+		// Attempt to connect to the peer
+		ctx, cancel := context.WithTimeout(node.ctx, time.Second*10)
+		defer cancel()
+		
+		// Create AddrInfo from the discovered peer
+		addrInfo := peer.AddrInfo{
+			ID: id,
+			// Convert string addresses back to multiaddrs
+			Addrs: make([]peer.Multiaddr, 0, len(peerInfo.Addrs)),
+		}
+		
+		for _, addrStr := range peerInfo.Addrs {
+			addr, err := peer.AddrInfoFromString(addrStr)
+			if err != nil {
+				node.logger.Warn("Invalid address for peer", 
+					zap.String("peer_id", peerInfo.ID),
+					zap.String("addr", addrStr),
+					zap.Error(err))
+				continue
+			}
+			addrInfo.Addrs = append(addrInfo.Addrs, addr.Addrs...)
+		}
+		
+		// Connect to the peer
+		if err := node.host.Connect(ctx, addrInfo); err != nil {
+			node.logger.Warn("Failed to connect to discovered peer", 
+				zap.String("peer_id", peerInfo.ID),
+				zap.Error(err))
+			return
+		}
+		
+		node.logger.Info("Connected to discovered peer", zap.String("peer_id", peerInfo.ID))
+	})
+	
 	// Apply any options
 	for _, opt := range opts {
 		if err := opt(node); err != nil {
@@ -140,9 +188,9 @@ func (n *Node) Start() error {
 		return nil
 	}
 	
-	// Initialize discovery
-	if err := n.setupDiscovery(); err != nil {
-		return fmt.Errorf("failed to set up discovery: %w", err)
+	// Start discovery services
+	if err := n.discovery.Start(); err != nil {
+		return fmt.Errorf("failed to start discovery services: %w", err)
 	}
 	
 	// Initialize pubsub if needed
@@ -161,9 +209,9 @@ func (n *Node) Stop() error {
 		return nil
 	}
 	
-	// Stop any services
-	if n.mdnsService != nil {
-		n.mdnsService.Close()
+	// Stop discovery services
+	if err := n.discovery.Stop(); err != nil {
+		n.logger.Warn("Error stopping discovery services", zap.Error(err))
 	}
 	
 	// Unsubscribe from all topics
@@ -301,29 +349,6 @@ func (n *Node) Close() error {
 
 // Setup functions
 
-// setupDiscovery sets up peer discovery mechanisms
-func (n *Node) setupDiscovery() error {
-	// Get discovery config
-	discCfg := GetDiscoveryConfig(n.config)
-	
-	// Set up mDNS discovery if enabled
-	if discCfg.EnableMDNS {
-		service := mdns.NewMdnsService(n.host, "clipman", &discoveryNotifee{node: n})
-		if err := service.Start(); err != nil {
-			return fmt.Errorf("failed to start mDNS service: %w", err)
-		}
-		n.mdnsService = service
-		n.logger.Info("Started mDNS discovery service")
-	}
-	
-	// Set up DHT discovery if enabled (not implemented yet)
-	if discCfg.EnableDHT {
-		n.logger.Warn("DHT discovery requested but not implemented yet")
-	}
-	
-	return nil
-}
-
 // setupPubSub sets up the pubsub system for group messaging
 func (n *Node) setupPubSub() error {
 	// Create pubsub instance (using GossipSub)
@@ -351,43 +376,4 @@ func formatHostAddresses(h host.Host) []string {
 		hostAddr = append(hostAddr, fmt.Sprintf("%s/p2p/%s", addr.String(), h.ID().String()))
 	}
 	return hostAddr
-}
-
-// discoveryNotifee gets notified when we discover a new peer
-type discoveryNotifee struct {
-	node *Node
-}
-
-// HandlePeerFound is called when a peer is discovered
-func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
-	// Ignore our own peer ID
-	if pi.ID == n.node.host.ID() {
-		return
-	}
-	
-	n.node.logger.Debug("Discovered peer via mDNS", zap.String("peer_id", pi.ID.String()))
-	
-	// Add peer to host peerstore and connect
-	n.node.host.Peerstore().AddAddrs(pi.ID, pi.Addrs, time.Hour)
-	
-	// Attempt to connect to the peer
-	ctx, cancel := context.WithTimeout(n.node.ctx, time.Second*10)
-	defer cancel()
-	
-	if err := n.node.host.Connect(ctx, pi); err != nil {
-		n.node.logger.Warn("Failed to connect to discovered peer", 
-			zap.String("peer_id", pi.ID.String()),
-			zap.Error(err))
-		return
-	}
-	
-	// Create PeerInfo and add to our store
-	peerInfo := InternalPeerInfo{
-		ID:           pi.ID.String(),
-		LastSeen:     time.Now(),
-		Capabilities: make(map[string]string),
-		// Other fields would be populated later after protocol handshake
-	}
-	
-	n.node.AddPeer(peerInfo)
 }
