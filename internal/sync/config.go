@@ -23,6 +23,13 @@ type SyncConfig struct {
 	ListenPort        int      `json:"listen_port"`
 	PeerIdentity      string   `json:"peer_identity"`
 	DiscoveryMethod   string   `json:"discovery_method"` // "mdns", "dht", or "manual"
+	DHTBootstrapPeers []string `json:"dht_bootstrap_peers"` // Bootstrap peers for DHT
+	
+	// Peer Persistence
+	PersistDiscoveredPeers bool   `json:"persist_discovered_peers"` // Whether to save discovered peers to disk
+	DiscoveredPeersPath    string `json:"discovered_peers_path"`    // Path to store discovered peers
+	AutoReconnectToPeers   bool   `json:"auto_reconnect_to_peers"`  // Whether to auto-reconnect to known peers
+	MaxStoredPeers         int    `json:"max_stored_peers"`         // Maximum number of peers to store
 	
 	// Clipboard Sync Options
 	ClipboardTypes    []string `json:"clipboard_types"`  // "text", "image", "files"
@@ -49,6 +56,11 @@ type SyncConfig struct {
 	ShowPeerDebugInfo  bool    `json:"show_peer_debug_info"`
 	DisableMultiplexing bool   `json:"disable_multiplexing"`
 	ForceDirectConnectionOnly bool `json:"force_direct_connection_only"`
+	
+	// DHT Discovery Options
+	DHTPersistentStorage bool   `json:"dht_persistent_storage"` // Whether to store DHT data on disk
+	DHTStoragePath       string `json:"dht_storage_path"`      // Path to store DHT data
+	DHTServerMode        bool   `json:"dht_server_mode"`       // Whether to run DHT in server mode
 }
 
 // NodeConfig contains configuration specific to the libp2p node
@@ -87,26 +99,44 @@ func LoadSyncConfig(cfg *config.Config) *SyncConfig {
 		UseRelayNodes:     true,
 		ListenPort:        0, // Use dynamic port
 		DiscoveryMethod:   "mdns",
+		DHTBootstrapPeers: []string{}, // Default is empty, will use the hard-coded defaults
+		
+		// Peer Persistence
+		PersistDiscoveredPeers: true, 
+		DiscoveredPeersPath:    "~/.clipman/peers.json",
+		AutoReconnectToPeers:   true,
+		MaxStoredPeers:         100, // Reasonable limit to prevent excessive storage
 		
 		// Clipboard Sync Options
 		ClipboardTypes:    []string{"text", "image"},
 		AutoCopyFromPeers: true,
 		MaxClipboardSizeKB: 512,
 		ClipboardHistorySize: 50,
+		ClipboardBlacklistApps: []string{},
 		
 		// File Transfer Options
 		EnableFileSharing: true,
 		RequireFileConfirmation: true,
 		DefaultDownloadFolder: "~/Downloads/Clipman",
 		MaxFileSizeMB:     100,
+		AutoAcceptFromPeers: []string{},
 		
 		// Privacy & Security
 		AllowOnlyKnownPeers: false,
-		LogPeerActivity:    true,
+		TrustedPeers:        []string{},
+		RequireApprovalPin:  false,
+		LogPeerActivity:     true,
 		
 		// Developer & Debug Options
 		DebugLogging:      false,
 		ShowPeerDebugInfo: false,
+		DisableMultiplexing: false,
+		ForceDirectConnectionOnly: false,
+		
+		// DHT Discovery Options
+		DHTPersistentStorage: false,
+		DHTStoragePath:       "~/.clipman/dht",
+		DHTServerMode:        false, // Default to client mode for lower resource usage
 	}
 }
 
@@ -170,11 +200,29 @@ func GetNodeConfig(cfg *SyncConfig) NodeConfig {
 
 // GetDiscoveryConfig extracts discovery-specific configuration
 func GetDiscoveryConfig(cfg *SyncConfig) DiscoveryConfig {
+	// Default bootstrap peers for the DHT
+	defaultBootstrapPeers := []string{
+		// IPFS bootstrap nodes (useful as general DHT bootstrap nodes)
+		"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+		"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+		"/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+		"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+		
+		// These nodes would ideally be replaced with dedicated Clipman bootstrap nodes
+		// in a production environment
+	}
+	
+	// Use configured bootstrap peers if available, otherwise use defaults
+	bootstrapPeers := defaultBootstrapPeers
+	if len(cfg.DHTBootstrapPeers) > 0 {
+		bootstrapPeers = cfg.DHTBootstrapPeers
+	}
+	
 	return DiscoveryConfig{
 		Method:          cfg.DiscoveryMethod,
 		EnableMDNS:      cfg.DiscoveryMethod == "mdns" || cfg.DiscoveryMethod == "",
 		EnableDHT:       cfg.DiscoveryMethod == "dht",
-		BootstrapPeers:  []string{}, // Would come from global config
+		BootstrapPeers:  bootstrapPeers,
 	}
 }
 

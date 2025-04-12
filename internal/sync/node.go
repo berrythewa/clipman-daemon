@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
@@ -15,6 +16,8 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"go.uber.org/zap"
+	"github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p/core/network"
 )
 
 // Node manages the libp2p host and core networking functionality
@@ -188,6 +191,53 @@ func (n *Node) Start() error {
 		return nil
 	}
 	
+	// If configured to do so, load previously discovered peers
+	if n.config.PersistDiscoveredPeers && n.config.AutoReconnectToPeers {
+		// Load peers from storage
+		previousPeers, err := n.discovery.LoadDiscoveredPeers()
+		if err != nil {
+			n.logger.Warn("Failed to load previously discovered peers", zap.Error(err))
+		} else if len(previousPeers) > 0 {
+			n.logger.Info("Loaded previously discovered peers", zap.Int("count", len(previousPeers)))
+			
+			// Add them to our peerstore
+			for id, peerInfo := range previousPeers {
+				// Convert string ID to peer.ID
+				pid, err := peer.Decode(id)
+				if err != nil {
+					n.logger.Warn("Invalid peer ID in stored peers", zap.String("peer_id", id), zap.Error(err))
+					continue
+				}
+				
+				// Add to internal peer store
+				n.peerStore[pid] = peerInfo
+				
+				// Try to connect in the background
+				go func(pi InternalPeerInfo) {
+					// Create a timeout context for the connection
+					ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+					defer cancel()
+					
+					addrInfo, err := peerInfoToAddrInfo(pi)
+					if err != nil {
+						n.logger.Warn("Failed to parse addresses for stored peer", 
+							zap.String("peer_id", pi.ID), 
+							zap.Error(err))
+						return
+					}
+					
+					if err := n.host.Connect(ctx, addrInfo); err != nil {
+						n.logger.Debug("Could not connect to stored peer, will try again later", 
+							zap.String("peer_id", pi.ID), 
+							zap.Error(err))
+					} else {
+						n.logger.Info("Connected to stored peer", zap.String("peer_id", pi.ID))
+					}
+				}(peerInfo)
+			}
+		}
+	}
+	
 	// Start discovery services
 	if err := n.discovery.Start(); err != nil {
 		return fmt.Errorf("failed to start discovery services: %w", err)
@@ -196,6 +246,11 @@ func (n *Node) Start() error {
 	// Initialize pubsub if needed
 	if err := n.setupPubSub(); err != nil {
 		return fmt.Errorf("failed to set up pubsub: %w", err)
+	}
+	
+	// Start a goroutine to periodically save discovered peers
+	if n.config.PersistDiscoveredPeers {
+		go n.savePeersRoutine()
 	}
 	
 	n.started = true
@@ -269,6 +324,79 @@ func (n *Node) GetPeers() []InternalPeerInfo {
 	for _, p := range n.peerStore {
 		peers = append(peers, p)
 	}
+	return peers
+}
+
+// AddPeerByAddress adds a peer by its multiaddress string
+func (n *Node) AddPeerByAddress(addrStr string) error {
+	// Get the manual discovery service
+	manualDiscovery, err := n.discovery.GetManualDiscovery()
+	if err != nil {
+		return fmt.Errorf("failed to get manual discovery service: %w", err)
+	}
+	
+	// Add the peer
+	return manualDiscovery.AddPeer(addrStr)
+}
+
+// RemovePeerByID removes a peer by its ID
+func (n *Node) RemovePeerByID(peerID string) error {
+	// Get the manual discovery service
+	manualDiscovery, err := n.discovery.GetManualDiscovery()
+	if err != nil {
+		return fmt.Errorf("failed to get manual discovery service: %w", err)
+	}
+	
+	// Remove the peer
+	return manualDiscovery.RemovePeer(peerID)
+}
+
+// DisconnectPeer disconnects from a peer but keeps it in the peerstore
+func (n *Node) DisconnectPeer(peerID string) error {
+	id, err := peer.Decode(peerID)
+	if err != nil {
+		return fmt.Errorf("invalid peer ID: %w", err)
+	}
+	
+	// Check if connected
+	if n.host.Network().Connectedness(id) != network.Connected {
+		return fmt.Errorf("not connected to peer %s", peerID)
+	}
+	
+	// Disconnect
+	return n.host.Network().ClosePeer(id)
+}
+
+// GetConnectedPeers returns a list of currently connected peers
+func (n *Node) GetConnectedPeers() []InternalPeerInfo {
+	peers := make([]InternalPeerInfo, 0)
+	
+	// Get all connections
+	for _, conn := range n.host.Network().Conns() {
+		pid := conn.RemotePeer()
+		
+		// Look up in our peerstore
+		if pi, ok := n.peerStore[pid]; ok {
+			// Update last seen time
+			pi.LastSeen = time.Now()
+			peers = append(peers, pi)
+		} else {
+			// Create a basic entry for this peer
+			addrs := make([]string, 0)
+			for _, addr := range n.host.Peerstore().Addrs(pid) {
+				addrs = append(addrs, addr.String())
+			}
+			
+			peers = append(peers, InternalPeerInfo{
+				ID:           pid.String(),
+				LastSeen:     time.Now(),
+				Addrs:        addrs,
+				Capabilities: make(map[string]string),
+				DeviceType:   "unknown",
+			})
+		}
+	}
+	
 	return peers
 }
 
@@ -376,4 +504,89 @@ func formatHostAddresses(h host.Host) []string {
 		hostAddr = append(hostAddr, fmt.Sprintf("%s/p2p/%s", addr.String(), h.ID().String()))
 	}
 	return hostAddr
+}
+
+// savePeersRoutine periodically saves discovered peers to disk
+func (n *Node) savePeersRoutine() {
+	// Save peers every 5 minutes
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-n.ctx.Done():
+			// Context canceled, save peers one last time before exiting
+			n.savePeers()
+			return
+		case <-ticker.C:
+			// Time to save peers
+			n.savePeers()
+		}
+	}
+}
+
+// savePeers saves the current set of peers to disk
+func (n *Node) savePeers() {
+	n.logger.Debug("Saving discovered peers to disk")
+	
+	// Create a map of string ID to peer info for the discovery manager
+	peerMap := make(map[string]InternalPeerInfo)
+	
+	// Convert our peer store to the format expected by the discovery manager
+	for id, peerInfo := range n.peerStore {
+		// Only save if not too old (within the last 30 days)
+		cutoff := time.Now().Add(-30 * 24 * time.Hour)
+		if peerInfo.LastSeen.After(cutoff) {
+			peerMap[id.String()] = peerInfo
+		}
+	}
+	
+	// Limit the number of stored peers if needed
+	if len(peerMap) > n.config.MaxStoredPeers && n.config.MaxStoredPeers > 0 {
+		// Create a slice of peers sorted by last seen time
+		peers := make([]InternalPeerInfo, 0, len(peerMap))
+		for _, pi := range peerMap {
+			peers = append(peers, pi)
+		}
+		
+		// Sort by LastSeen, most recent first
+		sort.Slice(peers, func(i, j int) bool {
+			return peers[i].LastSeen.After(peers[j].LastSeen)
+		})
+		
+		// Create a new map with only the most recently seen peers
+		newMap := make(map[string]InternalPeerInfo)
+		for i := 0; i < n.config.MaxStoredPeers && i < len(peers); i++ {
+			newMap[peers[i].ID] = peers[i]
+		}
+		
+		peerMap = newMap
+	}
+	
+	// Save the peers
+	if err := n.discovery.SaveDiscoveredPeers(peerMap); err != nil {
+		n.logger.Warn("Failed to save discovered peers", zap.Error(err))
+	}
+}
+
+// peerInfoToAddrInfo converts an InternalPeerInfo to a peer.AddrInfo
+func peerInfoToAddrInfo(pi InternalPeerInfo) (peer.AddrInfo, error) {
+	id, err := peer.Decode(pi.ID)
+	if err != nil {
+		return peer.AddrInfo{}, fmt.Errorf("invalid peer ID: %w", err)
+	}
+	
+	addrs := make([]peer.Multiaddr, 0, len(pi.Addrs))
+	for _, addrStr := range pi.Addrs {
+		addr, err := multiaddr.NewMultiaddr(addrStr)
+		if err != nil {
+			continue // Skip invalid addresses
+		}
+		addrs = append(addrs, addr)
+	}
+	
+	return peer.AddrInfo{
+		ID:    id,
+		Addrs: addrs,
+	}, nil
 }

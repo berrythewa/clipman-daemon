@@ -199,6 +199,55 @@ func (m *Manager) IsConnected() bool {
 	return len(m.node.Host().Network().Conns()) > 0
 }
 
+// AddPeer adds a peer by its multiaddress string
+func (m *Manager) AddPeer(address string) error {
+	if !m.started {
+		return fmt.Errorf("sync manager not started")
+	}
+	
+	return m.node.AddPeerByAddress(address)
+}
+
+// RemovePeer removes a peer by its ID
+func (m *Manager) RemovePeer(peerID string) error {
+	if !m.started {
+		return fmt.Errorf("sync manager not started")
+	}
+	
+	return m.node.RemovePeerByID(peerID)
+}
+
+// DisconnectPeer disconnects from a peer but keeps it in the peerstore
+func (m *Manager) DisconnectPeer(peerID string) error {
+	if !m.started {
+		return fmt.Errorf("sync manager not started")
+	}
+	
+	return m.node.DisconnectPeer(peerID)
+}
+
+// GetConnectedPeers returns a list of currently connected peers
+func (m *Manager) GetConnectedPeers() []types.PeerInfo {
+	if !m.started {
+		return nil
+	}
+	
+	connectedPeers := m.node.GetConnectedPeers()
+	
+	// Convert to external peer info
+	result := make([]types.PeerInfo, 0, len(connectedPeers))
+	for _, peer := range connectedPeers {
+		result = append(result, peer.ToExternalPeerInfo())
+	}
+	
+	return result
+}
+
+// GetConfig returns the node's configuration
+func (m *Manager) GetConfig() *SyncConfig {
+	return m.config
+}
+
 // GetConfigFromGlobal retrieves sync configuration from the global config
 func GetConfigFromGlobal(cfg *config.Config) *types.SyncConfig {
     // Map from the global config to our internal sync config
