@@ -1,0 +1,277 @@
+// Package sync provides clipboard synchronization using libp2p
+package sync
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/p2p/security/noise"
+	"github.com/multiformats/go-multiaddr"
+	"go.uber.org/zap"
+)
+
+// SyncConfig holds all sync-related configuration
+type SyncConfig struct {
+	// Core Sync Settings
+	Enabled           bool     `json:"enable_sync"`
+	SyncOverInternet  bool     `json:"sync_over_internet"`
+	UseRelayNodes     bool     `json:"use_relay_nodes"`
+	ListenPort        int      `json:"listen_port"`
+	PeerIdentity      string   `json:"peer_identity"`
+	DiscoveryMethod   string   `json:"discovery_method"` // "mdns", "dht", or "manual"
+	
+	// Clipboard Sync Options
+	ClipboardTypes    []string `json:"clipboard_types"`  // "text", "image", "files"
+	AutoCopyFromPeers bool     `json:"auto_copy_from_peers"`
+	MaxClipboardSizeKB int     `json:"max_clipboard_size_kb"`
+	ClipboardHistorySize int   `json:"clipboard_history_size"`
+	ClipboardBlacklistApps []string `json:"clipboard_blacklist_apps"`
+	
+	// File Transfer Options
+	EnableFileSharing bool     `json:"enable_file_sharing"`
+	RequireFileConfirmation bool `json:"require_file_confirmation"`
+	DefaultDownloadFolder string `json:"default_download_folder"`
+	AutoAcceptFromPeers []string `json:"auto_accept_from_peers"`
+	MaxFileSizeMB      int     `json:"max_file_size_mb"`
+	
+	// Privacy & Security
+	AllowOnlyKnownPeers bool   `json:"allow_only_known_peers"`
+	TrustedPeers       []string `json:"trusted_peers"`
+	RequireApprovalPin bool    `json:"require_approval_pin"`
+	LogPeerActivity    bool    `json:"log_peer_activity"`
+	
+	// Developer & Debug Options
+	DebugLogging       bool    `json:"debug_logging"`
+	ShowPeerDebugInfo  bool    `json:"show_peer_debug_info"`
+	DisableMultiplexing bool   `json:"disable_multiplexing"`
+	ForceDirectConnectionOnly bool `json:"force_direct_connection_only"`
+}
+
+// NodeConfig contains configuration specific to the libp2p node
+type NodeConfig struct {
+	ListenAddresses []string
+	EnableNAT       bool
+	EnableRelay     bool
+	PeerIdentity    string
+}
+
+// DiscoveryConfig contains discovery-specific configuration
+type DiscoveryConfig struct {
+	Method          string
+	EnableMDNS      bool
+	EnableDHT       bool
+	BootstrapPeers  []string
+}
+
+// ProtocolConfig contains protocol-specific configuration
+type ProtocolConfig struct {
+	EnablePubSub     bool
+	SignMessages     bool
+	StrictSigning    bool
+}
+
+// LoadSyncConfig extracts sync config from the global config
+func LoadSyncConfig(cfg *config.Config) *SyncConfig {
+	// This is a placeholder - in a real implementation, 
+	// you would map from cfg.Sync to SyncConfig
+	
+	// For now, return default values
+	return &SyncConfig{
+		// Core Sync Settings
+		Enabled:           true,
+		SyncOverInternet:  true,
+		UseRelayNodes:     true,
+		ListenPort:        0, // Use dynamic port
+		DiscoveryMethod:   "mdns",
+		
+		// Clipboard Sync Options
+		ClipboardTypes:    []string{"text", "image"},
+		AutoCopyFromPeers: true,
+		MaxClipboardSizeKB: 512,
+		ClipboardHistorySize: 50,
+		
+		// File Transfer Options
+		EnableFileSharing: true,
+		RequireFileConfirmation: true,
+		DefaultDownloadFolder: "~/Downloads/Clipman",
+		MaxFileSizeMB:     100,
+		
+		// Privacy & Security
+		AllowOnlyKnownPeers: false,
+		LogPeerActivity:    true,
+		
+		// Developer & Debug Options
+		DebugLogging:      false,
+		ShowPeerDebugInfo: false,
+	}
+}
+
+// ValidateSyncConfig validates the sync configuration
+func ValidateSyncConfig(cfg *SyncConfig) error {
+	// Validate discovery method
+	switch cfg.DiscoveryMethod {
+	case "mdns", "dht", "manual":
+		// Valid options
+	default:
+		return fmt.Errorf("invalid discovery method: %s", cfg.DiscoveryMethod)
+	}
+	
+	// Validate clipboard types
+	for _, t := range cfg.ClipboardTypes {
+		switch t {
+		case "text", "image", "files":
+			// Valid options
+		default:
+			return fmt.Errorf("invalid clipboard type: %s", t)
+		}
+	}
+	
+	// Validate size limits
+	if cfg.MaxClipboardSizeKB < 0 {
+		return fmt.Errorf("max_clipboard_size_kb cannot be negative")
+	}
+	
+	if cfg.MaxFileSizeMB < 0 {
+		return fmt.Errorf("max_file_size_mb cannot be negative")
+	}
+	
+	return nil
+}
+
+// GetNodeConfig extracts node-specific configuration
+func GetNodeConfig(cfg *SyncConfig) NodeConfig {
+	listenAddrs := []string{}
+	
+	// If a specific port is configured, use it
+	if cfg.ListenPort > 0 {
+		listenAddrs = append(listenAddrs, 
+			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.ListenPort),
+			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic", cfg.ListenPort),
+		)
+	} else {
+		// Otherwise use dynamic ports
+		listenAddrs = append(listenAddrs,
+			"/ip4/0.0.0.0/tcp/0",
+			"/ip4/0.0.0.0/udp/0/quic",
+		)
+	}
+	
+	return NodeConfig{
+		ListenAddresses: listenAddrs,
+		EnableNAT:       cfg.SyncOverInternet,
+		EnableRelay:     cfg.UseRelayNodes,
+		PeerIdentity:    cfg.PeerIdentity,
+	}
+}
+
+// GetDiscoveryConfig extracts discovery-specific configuration
+func GetDiscoveryConfig(cfg *SyncConfig) DiscoveryConfig {
+	return DiscoveryConfig{
+		Method:          cfg.DiscoveryMethod,
+		EnableMDNS:      cfg.DiscoveryMethod == "mdns" || cfg.DiscoveryMethod == "",
+		EnableDHT:       cfg.DiscoveryMethod == "dht",
+		BootstrapPeers:  []string{}, // Would come from global config
+	}
+}
+
+// GetProtocolConfig extracts protocol-specific configuration
+func GetProtocolConfig(cfg *SyncConfig) ProtocolConfig {
+	return ProtocolConfig{
+		EnablePubSub:     true, // Default to enabled
+		SignMessages:     true, // Default to signing messages
+		StrictSigning:    false, // Default to not requiring signatures
+	}
+}
+
+// MapToLibp2pOptions converts sync config to libp2p options
+func MapToLibp2pOptions(cfg *SyncConfig, nodeCfg NodeConfig, logger *zap.Logger) ([]libp2p.Option, error) {
+	options := []libp2p.Option{}
+	
+	// Set up peer identity
+	if nodeCfg.PeerIdentity != "" {
+		// Load identity from string
+		privKey, err := loadIdentityFromString(nodeCfg.PeerIdentity)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load peer identity: %w", err)
+		}
+		options = append(options, libp2p.Identity(privKey))
+	}
+	
+	// Set up security
+	options = append(options, libp2p.Security(noise.ID, noise.New))
+	
+	// Set up listen addresses
+	for _, addr := range nodeCfg.ListenAddresses {
+		// Validate address
+		_, err := multiaddr.NewMultiaddr(addr)
+		if err != nil {
+			logger.Warn("Invalid listen address", zap.String("addr", addr), zap.Error(err))
+			continue
+		}
+		options = append(options, libp2p.ListenAddrStrings(addr))
+	}
+	
+	// Enable NAT traversal if internet sync is enabled
+	if nodeCfg.EnableNAT {
+		options = append(options, libp2p.NATPortMap())
+	}
+	
+	// Enable relay if configured
+	if nodeCfg.EnableRelay {
+		options = append(options, libp2p.EnableRelay())
+	}
+	
+	// Disable multiplexing if configured
+	if cfg.DisableMultiplexing {
+		// This would need to be implemented with the correct libp2p options
+		logger.Warn("DisableMultiplexing is configured but not implemented")
+	}
+	
+	return options, nil
+}
+
+// loadIdentityFromString loads a libp2p identity from a string
+func loadIdentityFromString(identityStr string) (crypto.PrivKey, error) {
+	// This is a placeholder - you would implement proper deserialization
+	// of the private key from the string format used in your config
+	return nil, fmt.Errorf("loading identity from string not implemented")
+}
+
+// SaveIdentityToString converts a private key to a storable string format
+func SaveIdentityToString(privKey crypto.PrivKey) (string, error) {
+	// This is a placeholder - you would implement proper serialization
+	// of the private key to a secure string format for config storage
+	return "", fmt.Errorf("saving identity to string not implemented")
+}
+
+// ClipboardTypesToContentTypes converts string type names to ContentType values
+func ClipboardTypesToContentTypes(types []string) []string {
+	result := make([]string, 0, len(types))
+	for _, t := range types {
+		switch strings.ToLower(t) {
+		case "text":
+			result = append(result, "text/plain")
+		case "image":
+			result = append(result, "image/png", "image/jpeg", "image/gif")
+		case "files":
+			result = append(result, "application/octet-stream")
+		}
+	}
+	return result
+}
+
+// ExpandPath expands paths like ~ to absolute paths
+func ExpandPath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := filepath.Abs(filepath.Join(filepath.Dir("~"), filepath.Base("~")))
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
+} 
