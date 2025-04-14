@@ -95,6 +95,19 @@ This document outlines the tasks for enhancing Clipman's MQTT-based synchronizat
 - [x] Implement pairing timeout and auto-accept options
 - [ ] Add QR code generation for mobile device pairing
 
+## 9. Device-Centric Synchronization Model
+
+- [x] Design device-centric clipboard access model
+- [x] Document device selection approach in SYNC.md
+- [ ] Implement device selection interface in CLI
+- [ ] Create device list command with online status indicators
+- [ ] Implement pagination system for remote content
+- [ ] Create cursor-based pagination protocol
+- [ ] Add content filtering options for remote content
+- [ ] Implement caching system for remote clipboard history
+- [ ] Create prefetch mechanism for pagination
+- [ ] Add search functionality across remote device content
+
 ## Implementation Phases
 
 ### Phase 1: Core Architecture (2-3 weeks)
@@ -110,7 +123,8 @@ This document outlines the tasks for enhancing Clipman's MQTT-based synchronizat
 - ✅ Paired device discovery
 
 ### Phase 3: Advanced Features (4-5 weeks)
-- Dynamic discovery
+- ✅ Device-centric synchronization model
+- Pagination and remote content browsing
 - Enhanced command set
 - User experience improvements
 
@@ -128,8 +142,10 @@ This document outlines the tasks for enhancing Clipman's MQTT-based synchronizat
 - ✅ `internal/sync/discovery.go` - Device discovery protocol
 - ✅ `internal/sync/pairing.go` - Secure device pairing protocol
 - `internal/sync/commands.go` - Enhanced command structure
+- `internal/sync/pagination.go` - Pagination implementation for remote content
 - `docs/MQTT_GROUPS.md` - Documentation for sync groups
 - ✅ `docs/PAIRING.md` - Documentation for secure device pairing
+- ✅ `docs/SYNC.md` - Documentation for device-centric synchronization
 
 ### Modified Files
 - `internal/broker/mqtt_client.go` - Update for new topic structure and features
@@ -137,6 +153,8 @@ This document outlines the tasks for enhancing Clipman's MQTT-based synchronizat
 - `internal/types/shared.go` - Enhance message types 
 - `internal/clipboard/monitor.go` - Update content publishing logic
 - ✅ `internal/cli/cmd/pair.go` - Add pairing command interface
+- `internal/cli/cmd/devices.go` - Add device management commands
+- `internal/cli/cmd/content.go` - Add remote content browsing commands
 
 ## Development Guidelines
 
@@ -151,4 +169,5 @@ This document outlines the tasks for enhancing Clipman's MQTT-based synchronizat
 1. Set up testing infrastructure for MQTT implementation
 2. Create detailed technical specifications for each component
 3. Begin implementing Phase 1 components
-4. Schedule regular reviews of MQTT-related code 
+4. Schedule regular reviews of MQTT-related code
+5. Implement command-line interface for device selection and content browsing 
