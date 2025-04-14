@@ -13,7 +13,34 @@ This document describes the configuration options available for customizing the 
 | `use_relay_nodes`               | `bool`     | Enable fallback to libp2p relay nodes if direct connection fails |
 | `listen_port`                   | `int`      | Override the default TCP port (defaults to dynamic/random) |
 | `peer_identity`                 | `string`   | Exportable identity for restoring or sharing (advanced users) |
-| `discovery_method`              | `string`   | Choose between `mdns`, `dht`, or `manual` discovery |
+| `discovery_method`              | `string`   | Choose between `mdns`, `dht`, `manual`, or `paired` discovery |
+
+---
+
+## 🔗 Peer Discovery & Persistence
+
+| Setting                          | Type       | Description |
+|----------------------------------|------------|-------------|
+| `persist_discovered_peers`      | `bool`     | Save discovered peers to disk for future sessions |
+| `discovered_peers_path`         | `string`   | Path to store discovered peers information |
+| `auto_reconnect_to_peers`       | `bool`     | Automatically connect to previously discovered peers |
+| `max_stored_peers`              | `int`      | Maximum number of peers to store (oldest removed first) |
+| `dht_bootstrap_peers`           | `array`    | List of bootstrap peers for DHT discovery |
+| `dht_persistent_storage`        | `bool`     | Whether to store DHT data on disk |
+| `dht_storage_path`              | `string`   | Path to store DHT routing table data |
+| `dht_server_mode`               | `bool`     | Run DHT in server mode (more resource usage but helps network) |
+
+---
+
+## 🤝 Secure Pairing Options
+
+| Setting                          | Type       | Description |
+|----------------------------------|------------|-------------|
+| `pairing_enabled`               | `bool`     | Enable or disable secure device pairing functionality |
+| `pairing_timeout`               | `int`      | Seconds before pairing mode times out (0 for no timeout) |
+| `require_verification`          | `bool`     | Whether verification codes must be confirmed for pairing |
+| `device_name`                   | `string`   | Human-readable name for this device shown during pairing |
+| `device_type`                   | `string`   | Type of device (desktop, mobile, etc.) |
 
 ---
 
@@ -66,28 +93,68 @@ This document describes the configuration options available for customizing the 
 ## 📝 Example Configuration (TOML)
 
 ```toml
+# Core Sync Settings
 enable_sync = true
 sync_over_internet = true
 use_relay_nodes = true
 listen_port = 4001
-discovery_method = "mdns"
+discovery_method = "paired"
 
+# Peer Discovery & Persistence
+persist_discovered_peers = true
+discovered_peers_path = "~/.clipman/peers.json"
+auto_reconnect_to_peers = true
+max_stored_peers = 100
+dht_bootstrap_peers = []
+dht_persistent_storage = false
+dht_storage_path = "~/.clipman/dht"
+dht_server_mode = false
+
+# Device Information
+device_name = "My Linux Desktop"
+device_type = "desktop"
+
+# Secure Pairing Options
+pairing_enabled = true
+pairing_timeout = 300
+require_verification = true
+
+# Clipboard Sync Options
 clipboard_types = ["text", "image"]
 auto_copy_from_peers = true
 max_clipboard_size_kb = 1024
 clipboard_history_size = 50
 clipboard_blacklist_apps = ["keepassxc", "bitwarden"]
 
+# File Transfer Options
 enable_file_sharing = true
 require_file_confirmation = true
 default_download_folder = "~/Downloads/Clipman"
 max_file_size_mb = 100
 auto_accept_from_peers = ["QmPeerID1", "QmPeerID2"]
 
-allow_only_known_peers = false
+# Privacy & Security
+allow_only_known_peers = true
 trusted_peers = ["QmTrustedPeer"]
 require_approval_pin = false
 log_peer_activity = true
 
+# Developer & Debug Options
 debug_logging = false
 show_peer_debug_info = false
+
+```
+
+## 🔍 Discovery Methods
+
+### `paired` (Recommended)
+Uses the secure device pairing protocol to connect only with devices that have been explicitly paired through a manual pairing process. This is the most secure option and recommended for most users.
+
+### `mdns`
+Uses multicast DNS (mDNS) to discover peers on the local network automatically. No configuration required, but only works on the local network.
+
+### `dht`
+Uses a Distributed Hash Table (DHT) to discover peers across the internet. Requires bootstrap peers and may use more bandwidth.
+
+### `manual`
+Only connects to peers that have been manually added by address. Most restrictive option but gives complete control.
