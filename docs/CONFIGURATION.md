@@ -51,6 +51,21 @@ You can override this with the `CLIPMAN_DATA_DIR` environment variable.
 | Maximum Size | `storage.max_size` | - | `--max-size` | 100MB | Maximum size of clipboard history in bytes |
 | Keep Items | `storage.keep_items` | - | - | 10 | Number of items to keep when flushing cache |
 
+### Sync and Pairing Settings
+
+| Option | Config File Key | Environment Variable | Command Flag | Default | Description |
+|--------|----------------|---------------------|------------|---------|-------------|
+| Enable Sync | `sync.enable_sync` | `CLIPMAN_ENABLE_SYNC` | `--no-sync` | `true` | Enable or disable synchronization entirely |
+| Sync Over Internet | `sync.sync_over_internet` | `CLIPMAN_SYNC_INTERNET` | - | `false` | Allow peer discovery and sync over WAN |
+| Use Relay Nodes | `sync.use_relay_nodes` | `CLIPMAN_USE_RELAYS` | - | `true` | Enable fallback to relay nodes if direct connection fails |
+| Listen Port | `sync.listen_port` | `CLIPMAN_LISTEN_PORT` | - | 0 (dynamic) | Override the default TCP port used for sync |
+| Discovery Method | `sync.discovery_method` | `CLIPMAN_DISCOVERY` | - | `paired` | Method for discovering peers (`paired`, `mdns`, `dht`, `manual`) |
+| Pairing Enabled | `sync.pairing_enabled` | `CLIPMAN_PAIRING` | - | `true` | Enable or disable the secure pairing functionality |
+| Pairing Timeout | `sync.pairing_timeout` | - | - | 300 | Seconds before pairing mode times out (0 for no timeout) |
+| Device Name | `sync.device_name` | `CLIPMAN_DEVICE_NAME` | - | Hostname | Human-readable name for this device shown during pairing |
+| Device Type | `sync.device_type` | `CLIPMAN_DEVICE_TYPE` | - | `desktop` | Type of device (`desktop`, `laptop`, `mobile`, etc.) |
+| Allow Known Peers Only | `sync.allow_only_known_peers` | - | - | `true` | Only sync with explicitly paired devices |
+
 ### MQTT Broker Settings
 
 | Option | Config File Key | Environment Variable | Command Flag | Default | Description |
@@ -103,6 +118,16 @@ You can override this with the `CLIPMAN_DATA_DIR` environment variable.
 |------|---------|-------------|
 | `--quiet` | false | Don't display history before and after flush |
 
+### Pair Command
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--request` | Empty | Request secure pairing with device at specified address |
+| `--list` | false | List all securely paired devices |
+| `--remove` | Empty | Remove a securely paired device by Peer ID |
+| `--auto-accept` | false | Automatically accept all pairing requests (use with caution) |
+| `--timeout` | 0 (no timeout) | Timeout in seconds for pairing mode |
+
 ## Advanced Configuration
 
 ### Clipboard Monitoring Settings
@@ -141,6 +166,37 @@ Or modify your configuration file:
 ```
 
 **Note**: Disabling stealth mode will cause more frequent clipboard access, which may result in notifications from your desktop environment and potentially higher resource usage.
+
+### Secure Device Pairing
+
+Clipman uses secure device pairing as the recommended method for establishing trusted connections between devices:
+
+1. **Setup**: Configure your device name and type for clear identification:
+   ```json
+   {
+     "sync": {
+       "device_name": "My Work Laptop",
+       "device_type": "laptop"
+     }
+   }
+   ```
+
+2. **Pairing Process**:
+   - Run `clipman pair` on one device to enter pairing mode
+   - Use `clipman pair --request ADDRESS` on another device to connect
+   - Verify the matching verification codes on both devices
+
+3. **Discovery Method**: The `paired` discovery method (default) only connects to explicitly paired devices:
+   ```json
+   {
+     "sync": {
+       "discovery_method": "paired",
+       "allow_only_known_peers": true
+     }
+   }
+   ```
+
+For complete documentation on the pairing functionality, see [PAIRING.md](PAIRING.md).
 
 ### Clipboard Monitoring
 
@@ -197,6 +253,17 @@ Clipman provides platform-specific daemonization:
     "max_size": 209715200,
     "keep_items": 50
   },
+  "sync": {
+    "enable_sync": true,
+    "sync_over_internet": false,
+    "use_relay_nodes": true,
+    "discovery_method": "paired",
+    "pairing_enabled": true,
+    "device_name": "My Linux Laptop",
+    "device_type": "laptop",
+    "pairing_timeout": 300,
+    "allow_only_known_peers": true
+  },
   "broker": {
     "url": "mqtt://broker.example.com:1883",
     "username": "your_username",
@@ -235,11 +302,11 @@ Clipman provides platform-specific daemonization:
    - Use `clipmand flush` to clear old items while keeping the most recent
    - View cache size with `clipmand info`
 
-8. **Cloud Synchronization Security**:
-   - Use TLS for broker connections (mqtts://)
-   - Set strong, unique passwords
-   - Consider using a private MQTT broker
-   - Enable ACLs on your MQTT broker to limit access
+8. **Synchronization Security**:
+   - Use the secure pairing functionality rather than open discovery
+   - Set descriptive device names to easily identify your devices
+   - Use `--timeout` when entering pairing mode to limit exposure
+   - For MQTT, use TLS connections (mqtts://) and strong passwords
 
 ## Current Limitations
 
@@ -265,4 +332,6 @@ Clipman provides platform-specific daemonization:
 
 6. Add content encryption options for sensitive clipboard data.
 
-7. Implement more sophisticated pruning strategies based on content age and frequency of use. 
+7. Implement more sophisticated pruning strategies based on content age and frequency of use.
+
+8. Add QR code generation for mobile device pairing. 

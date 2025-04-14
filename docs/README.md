@@ -10,6 +10,7 @@ This directory contains detailed documentation for Clipman, a cross-platform cli
 - [**Platform Implementations**](PLATFORM_IMPLEMENTATIONS.md) - Details on how Clipman implements functionality on Linux, macOS, and Windows
 - [**Caching System**](CACHING.md) - Deep dive into Clipman's multi-level caching architecture
 - [**MQTT Synchronization**](MQTT_SYNC.md) - How Clipman synchronizes clipboard content between devices
+- [**Secure Device Pairing**](PAIRING.md) - Guide to securely connecting your devices for synchronization
 
 ### For Developers
 
@@ -18,6 +19,7 @@ If you're interested in contributing to Clipman or understanding its internal ar
 - [**Platform Implementations**](PLATFORM_IMPLEMENTATIONS.md) - Details of platform-specific code
 - [**Caching System**](CACHING.md) - Explains the storage and caching architecture
 - [**MQTT Synchronization**](MQTT_SYNC.md) - Communication protocol between Clipman instances
+- [**Secure Device Pairing**](PAIRING.md) - Implementation of the secure pairing protocol
 - [**Development Roadmap**](TODO.md) - Planned enhancements for the MQTT synchronization system
 - [**Sync Package Migration**](SYNC_PACKAGE_MIGRATION.md) - Plan for migrating from broker to sync package
 - [**Sync MQTT Client**](SYNC_MQTT_CLIENT.md) - Reference implementation for the new sync MQTT client
@@ -27,6 +29,7 @@ If you're interested in contributing to Clipman or understanding its internal ar
 - **Clipboard History**: Keep track of your clipboard history and access past items
 - **Cross-Platform**: Works on Linux, macOS, and Windows with native implementations
 - **Cloud Sync**: Optionally sync clipboard across devices using MQTT
+- **Secure Pairing**: Establish trusted relationships between devices using secure pairing
 - **Daemon Mode**: Runs in the background with minimal resource usage
 - **Secure**: Keeps your clipboard data private and local by default
 - **Platform-Specific**: Optimized for each supported operating system
@@ -40,6 +43,7 @@ If you're interested in contributing to Clipman or understanding its internal ar
 - [Caching System](CACHING.md)
 - [Platform Implementations](PLATFORM_IMPLEMENTATIONS.md)
 - [MQTT Synchronization](MQTT_SYNC.md)
+- [Secure Device Pairing](PAIRING.md)
 - [Development Roadmap](TODO.md)
 - [Sync Package Migration](SYNC_PACKAGE_MIGRATION.md)
 - [Sync MQTT Client](SYNC_MQTT_CLIENT.md)
