@@ -61,6 +61,12 @@ type SyncConfig struct {
 	DHTPersistentStorage bool   `json:"dht_persistent_storage"` // Whether to store DHT data on disk
 	DHTStoragePath       string `json:"dht_storage_path"`      // Path to store DHT data
 	DHTServerMode        bool   `json:"dht_server_mode"`       // Whether to run DHT in server mode
+	
+	// Pairing Options
+	PairingEnabled bool   `json:"pairing_enabled"`
+	DeviceName     string `json:"device_name"`
+	DeviceType     string `json:"device_type"`
+	PairingTimeout int    `json:"pairing_timeout"`
 }
 
 // NodeConfig contains configuration specific to the libp2p node
@@ -137,6 +143,12 @@ func LoadSyncConfig(cfg *config.Config) *SyncConfig {
 		DHTPersistentStorage: false,
 		DHTStoragePath:       "~/.clipman/dht",
 		DHTServerMode:        false, // Default to client mode for lower resource usage
+		
+		// Pairing Options
+		PairingEnabled: false,
+		DeviceName:     "",
+		DeviceType:     "",
+		PairingTimeout: 0,
 	}
 }
 
@@ -144,7 +156,7 @@ func LoadSyncConfig(cfg *config.Config) *SyncConfig {
 func ValidateSyncConfig(cfg *SyncConfig) error {
 	// Validate discovery method
 	switch cfg.DiscoveryMethod {
-	case "mdns", "dht", "manual":
+	case "mdns", "dht", "manual", "paired":
 		// Valid options
 	default:
 		return fmt.Errorf("invalid discovery method: %s", cfg.DiscoveryMethod)
@@ -167,6 +179,21 @@ func ValidateSyncConfig(cfg *SyncConfig) error {
 	
 	if cfg.MaxFileSizeMB < 0 {
 		return fmt.Errorf("max_file_size_mb cannot be negative")
+	}
+	
+	// Validate pairing timeout
+	if cfg.PairingTimeout < 0 {
+		return fmt.Errorf("pairing_timeout cannot be negative")
+	}
+	
+	// Ensure device name is set when pairing is enabled
+	if cfg.PairingEnabled && cfg.DeviceName == "" {
+		return fmt.Errorf("device_name must be set when pairing is enabled")
+	}
+	
+	// Ensure device type is set when pairing is enabled
+	if cfg.PairingEnabled && cfg.DeviceType == "" {
+		return fmt.Errorf("device_type must be set when pairing is enabled")
 	}
 	
 	return nil

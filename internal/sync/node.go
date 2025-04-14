@@ -32,6 +32,10 @@ type Node struct {
 	// Discovery components
 	discovery    *DiscoveryManager
 	
+	// Protocol components
+	protocols    *ProtocolManager
+	pairing      *PairingManager
+	
 	// PubSub for group communication
 	pubsub        *pubsub.PubSub
 	topics        map[string]*pubsub.Topic
@@ -127,6 +131,18 @@ func NewNode(ctx context.Context, cfg *config.Config, logger *zap.Logger, opts .
 	
 	// Create discovery manager
 	node.discovery = NewDiscoveryManager(nodeCtx, h, syncCfg, nodeLogger)
+	
+	// Create protocol manager
+	node.protocols = NewProtocolManager(nodeCtx, h, syncCfg, nodeLogger)
+	
+	// Create pairing manager
+	node.pairing = NewPairingManager(nodeCtx, h, node.protocols, syncCfg, nodeLogger)
+	
+	// Add pairing discovery service if configured to use paired discovery
+	if syncCfg.DiscoveryMethod == "paired" {
+		pairingDiscovery := NewPairingDiscoveryService(node.pairing, h)
+		node.discovery.AddService("paired", pairingDiscovery)
+	}
 	
 	// Set callback for peer discovery
 	node.discovery.SetPeerDiscoveredCallback(func(peerInfo InternalPeerInfo) {
@@ -238,6 +254,11 @@ func (n *Node) Start() error {
 		}
 	}
 	
+	// Start protocol manager
+	if err := n.protocols.Start(); err != nil {
+		return fmt.Errorf("failed to start protocol manager: %w", err)
+	}
+	
 	// Start discovery services
 	if err := n.discovery.Start(); err != nil {
 		return fmt.Errorf("failed to start discovery services: %w", err)
@@ -267,6 +288,11 @@ func (n *Node) Stop() error {
 	// Stop discovery services
 	if err := n.discovery.Stop(); err != nil {
 		n.logger.Warn("Error stopping discovery services", zap.Error(err))
+	}
+	
+	// Stop protocol manager
+	if err := n.protocols.Stop(); err != nil {
+		n.logger.Warn("Error stopping protocol manager", zap.Error(err))
 	}
 	
 	// Unsubscribe from all topics
@@ -301,6 +327,16 @@ func (n *Node) Host() host.Host {
 // ID returns the node's peer ID
 func (n *Node) ID() peer.ID {
 	return n.host.ID()
+}
+
+// Protocols returns the protocol manager
+func (n *Node) Protocols() *ProtocolManager {
+	return n.protocols
+}
+
+// Pairing returns the pairing manager
+func (n *Node) Pairing() *PairingManager {
+	return n.pairing
 }
 
 // AddPeer adds a peer to the peerstore

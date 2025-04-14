@@ -243,6 +243,112 @@ func (m *Manager) GetConnectedPeers() []types.PeerInfo {
 	return result
 }
 
+// EnablePairing enables pairing mode for the device
+func (m *Manager) EnablePairing(handler types.PairingRequestCallback) (string, error) {
+	if !m.started {
+		return "", fmt.Errorf("sync manager not started")
+	}
+	
+	// Wrap the callback to convert between types
+	wrappedHandler := func(request PairingRequest, remotePeerID string) (bool, error) {
+		// Convert to external type
+		extRequest := types.PairingRequest{
+			DeviceName: request.DeviceName,
+			DeviceType: request.DeviceType,
+			PeerID:     request.PeerID,
+		}
+		
+		return handler(extRequest, remotePeerID)
+	}
+	
+	return m.node.Pairing().EnablePairing(wrappedHandler)
+}
+
+// DisablePairing disables pairing mode
+func (m *Manager) DisablePairing() {
+	if !m.started {
+		return
+	}
+	
+	m.node.Pairing().DisablePairing()
+}
+
+// RequestPairing sends a pairing request to a device
+func (m *Manager) RequestPairing(address string) (*types.PairingResponse, error) {
+	if !m.started {
+		return nil, fmt.Errorf("sync manager not started")
+	}
+	
+	// Call the internal implementation
+	internalResponse, err := m.node.Pairing().RequestPairing(address)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Convert to external type
+	response := &types.PairingResponse{
+		Accepted:     internalResponse.Accepted,
+		ErrorMessage: internalResponse.ErrorMessage,
+		PairingCode:  internalResponse.PairingCode,
+		DeviceName:   internalResponse.DeviceName,
+		DeviceType:   internalResponse.DeviceType,
+		PeerID:       internalResponse.PeerID,
+	}
+	
+	return response, nil
+}
+
+// IsPairingEnabled returns whether pairing is enabled
+func (m *Manager) IsPairingEnabled() bool {
+	if !m.started {
+		return false
+	}
+	
+	return m.node.Pairing().IsPairingEnabled()
+}
+
+// IsPaired checks if a device is paired
+func (m *Manager) IsPaired(peerID string) bool {
+	if !m.started {
+		return false
+	}
+	
+	return m.node.Pairing().IsPaired(peerID)
+}
+
+// GetPairedDevices returns all paired devices
+func (m *Manager) GetPairedDevices() []types.PairedDevice {
+	if !m.started {
+		return nil
+	}
+	
+	// Get internal paired devices
+	internalDevices := m.node.Pairing().GetPairedDevices()
+	
+	// Convert to external type
+	devices := make([]types.PairedDevice, 0, len(internalDevices))
+	for _, device := range internalDevices {
+		devices = append(devices, types.PairedDevice{
+			PeerID:     device.PeerID,
+			DeviceName: device.DeviceName,
+			DeviceType: device.DeviceType,
+			LastSeen:   device.LastSeen,
+			PairedAt:   device.PairedAt,
+		})
+	}
+	
+	return devices
+}
+
+// RemovePairedDevice removes a paired device
+func (m *Manager) RemovePairedDevice(peerID string) error {
+	if !m.started {
+		return fmt.Errorf("sync manager not started")
+	}
+	
+	return m.node.Pairing().RemovePairedDevice(peerID)
+}
+
 // GetConfig returns the node's configuration
 func (m *Manager) GetConfig() *SyncConfig {
 	return m.config
