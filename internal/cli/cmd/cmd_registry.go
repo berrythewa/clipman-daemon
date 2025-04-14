@@ -12,5 +12,6 @@ func GetCommands() []*cobra.Command {
 		historyCmd,
 		flushCmd,
 		serviceCmd,
+		pairCmd,
 	}
 } 
