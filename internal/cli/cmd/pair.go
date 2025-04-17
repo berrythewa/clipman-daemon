@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -9,9 +10,9 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
+	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
-	"github.com/berrythewa/clipman-daemon/internal/client"
 )
 
 var (
@@ -375,16 +376,10 @@ func removePairedDevice(peerID string) error {
 
 // getSyncManager gets the sync manager from the current service
 func getSyncManager() (types.SyncManager, error) {
-	// Connect to the daemon process
-	client, err := newDaemonClient()
+	// Create a new sync manager instance directly
+	syncManager, err := sync.New(context.Background(), cfg, zapLogger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to daemon: %w", err)
-	}
-
-	// Get the sync manager from the client
-	syncManager, err := client.GetSyncManager()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get sync manager: %w", err)
+		return nil, fmt.Errorf("failed to create sync manager: %w", err)
 	}
 
 	// Ensure that we're configured to use pairing-based discovery
@@ -398,18 +393,6 @@ func getSyncManager() (types.SyncManager, error) {
 	}
 
 	return syncManager, nil
-}
-
-// newDaemonClient creates a new client to communicate with the daemon process
-func newDaemonClient() (*client.DaemonClient, error) {
-	// Get socket path from environment or use default
-	socketPath := os.Getenv("CLIPMAN_SOCKET")
-	if socketPath == "" {
-		socketPath = "/tmp/clipman.sock"
-	}
-
-	// Create client
-	return client.New(socketPath)
 }
 
 // formatRelativeTime formats a time.Time as a human-readable relative time

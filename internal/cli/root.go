@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/platform"
 	"github.com/berrythewa/clipman-daemon/internal/types"
+	"github.com/berrythewa/clipman-daemon/internal/sync"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -225,9 +227,37 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	// Get all system paths
 	paths := cfg.GetPaths()
 
-	// Initialize a no-op publisher (sync is disabled for now until we implement proper sync package)
-	zapLogger.Info("Using no-op publisher (sync functionality disabled)")
-	contentPublisher := clipboard.NewNoOpPublisher(zapLogger)
+	// Initialize content publisher
+	var contentPublisher clipboard.ContentPublisher
+	
+	if noSync {
+		zapLogger.Info("Using no-op publisher (sync functionality disabled)")
+		contentPublisher = clipboard.NewNoOpPublisher(zapLogger)
+	} else {
+		// Create sync manager with the global config
+		syncManager, err := sync.New(context.Background(), cfg, zapLogger)
+		if err != nil {
+			zapLogger.Error("Failed to initialize sync manager, falling back to no-op publisher", zap.Error(err))
+			contentPublisher = clipboard.NewNoOpPublisher(zapLogger)
+		} else {
+			// Start the sync manager
+			if err := syncManager.Start(); err != nil {
+				zapLogger.Error("Failed to start sync manager, falling back to no-op publisher", zap.Error(err))
+				contentPublisher = clipboard.NewNoOpPublisher(zapLogger)
+			} else {
+				// Join the default group
+				defaultGroup := "clipman-default"
+				if err := syncManager.JoinGroup(defaultGroup); err != nil {
+					zapLogger.Error("Failed to join default group, falling back to no-op publisher", zap.Error(err))
+					contentPublisher = clipboard.NewNoOpPublisher(zapLogger)
+				} else {
+					zapLogger.Info("Using sync publisher",
+						zap.String("group", defaultGroup))
+					contentPublisher = clipboard.NewSyncPublisher(syncManager, defaultGroup, zapLogger)
+				}
+			}
+		}
+	}
 	
 	// Initialize storage
 	storageConfig := storage.StorageConfig{

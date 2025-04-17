@@ -300,26 +300,22 @@ func overrideFromEnv(config *Config) {
 	}
 	
 	// Sync settings
-	if val := os.Getenv("CLIPMAN_SYNC_URL"); val != "" {
-		config.Sync.URL = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_USERNAME"); val != "" {
-		config.Sync.Username = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_PASSWORD"); val != "" {
-		config.Sync.Password = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_MODE"); val != "" {
-		config.Sync.Mode = val
-	}
-	if val := os.Getenv("CLIPMAN_SYNC_GROUP"); val != "" {
-		config.Sync.DefaultGroup = val
-	}
 	if val := os.Getenv("CLIPMAN_SYNC_ENABLED"); val != "" {
 		config.Sync.Enabled = val == "true"
 	}
-	if val := os.Getenv("CLIPMAN_SYNC_DISCOVERABLE"); val != "" {
-		config.Sync.Discoverable = val == "true"
+	if val := os.Getenv("CLIPMAN_SYNC_INTERNET"); val != "" {
+		config.Sync.SyncOverInternet = val == "true"
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_RELAY"); val != "" {
+		config.Sync.UseRelayNodes = val == "true"
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_PORT"); val != "" {
+		if port, err := strconv.Atoi(val); err == nil {
+			config.Sync.ListenPort = port
+		}
+	}
+	if val := os.Getenv("CLIPMAN_SYNC_DISCOVERY"); val != "" {
+		config.Sync.DiscoveryMethod = val
 	}
 	
 	// Clipboard monitoring options

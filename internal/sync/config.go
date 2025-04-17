@@ -94,62 +94,64 @@ type ProtocolConfig struct {
 
 // LoadSyncConfig extracts sync config from the global config
 func LoadSyncConfig(cfg *config.Config) *SyncConfig {
-	// This is a placeholder - in a real implementation, 
-	// you would map from cfg.Sync to SyncConfig
+	// Get paths for file storage
+	paths := cfg.GetPaths()
 	
-	// For now, return default values
-	return &SyncConfig{
+	// Map from config.Config.Sync to our internal SyncConfig
+	syncCfg := &SyncConfig{
 		// Core Sync Settings
-		Enabled:           true,
-		SyncOverInternet:  true,
-		UseRelayNodes:     true,
-		ListenPort:        0, // Use dynamic port
-		DiscoveryMethod:   "mdns",
+		Enabled:           cfg.Sync.Enabled,
+		SyncOverInternet:  cfg.Sync.SyncOverInternet,
+		UseRelayNodes:     cfg.Sync.UseRelayNodes,
+		ListenPort:        cfg.Sync.ListenPort,
+		DiscoveryMethod:   cfg.Sync.DiscoveryMethod,
 		DHTBootstrapPeers: []string{}, // Default is empty, will use the hard-coded defaults
 		
 		// Peer Persistence
 		PersistDiscoveredPeers: true, 
-		DiscoveredPeersPath:    "~/.clipman/peers.json",
+		DiscoveredPeersPath:    filepath.Join(paths.DataDir, "peers.json"),
 		AutoReconnectToPeers:   true,
 		MaxStoredPeers:         100, // Reasonable limit to prevent excessive storage
 		
 		// Clipboard Sync Options
-		ClipboardTypes:    []string{"text", "image"},
-		AutoCopyFromPeers: true,
-		MaxClipboardSizeKB: 512,
-		ClipboardHistorySize: 50,
-		ClipboardBlacklistApps: []string{},
+		ClipboardTypes:         cfg.Sync.ClipboardTypes,
+		AutoCopyFromPeers:      cfg.Sync.AutoCopyFromPeers,
+		MaxClipboardSizeKB:     cfg.Sync.MaxClipboardSizeKB,
+		ClipboardHistorySize:   cfg.Sync.ClipboardHistorySize,
+		ClipboardBlacklistApps: cfg.Sync.ClipboardBlacklistApps,
 		
 		// File Transfer Options
-		EnableFileSharing: true,
-		RequireFileConfirmation: true,
-		DefaultDownloadFolder: "~/Downloads/Clipman",
-		MaxFileSizeMB:     100,
-		AutoAcceptFromPeers: []string{},
+		EnableFileSharing:       cfg.Sync.EnableFileSharing,
+		RequireFileConfirmation: cfg.Sync.RequireFileConfirmation,
+		DefaultDownloadFolder:   cfg.Sync.DefaultDownloadFolder,
+		MaxFileSizeMB:           cfg.Sync.MaxFileSizeMB,
+		AutoAcceptFromPeers:     []string{}, // Not exposed in user config yet
 		
 		// Privacy & Security
-		AllowOnlyKnownPeers: false,
-		TrustedPeers:        []string{},
-		RequireApprovalPin:  false,
-		LogPeerActivity:     true,
+		AllowOnlyKnownPeers: cfg.Sync.AllowOnlyKnownPeers,
+		TrustedPeers:        cfg.Sync.TrustedPeers,
+		RequireApprovalPin:  cfg.Sync.RequireApprovalPin,
+		LogPeerActivity:     cfg.Sync.LogPeerActivity,
 		
 		// Developer & Debug Options
-		DebugLogging:      false,
-		ShowPeerDebugInfo: false,
-		DisableMultiplexing: false,
-		ForceDirectConnectionOnly: false,
+		DebugLogging:              cfg.Sync.DebugLogging,
+		ShowPeerDebugInfo:         cfg.Sync.ShowPeerDebugInfo,
+		DisableMultiplexing:       cfg.Sync.DisableMultiplexing,
+		ForceDirectConnectionOnly: cfg.Sync.ForceDirectConnectionOnly,
 		
 		// DHT Discovery Options
-		DHTPersistentStorage: false,
-		DHTStoragePath:       "~/.clipman/dht",
+		DHTPersistentStorage: true, // Enable persistent storage by default
+		DHTStoragePath:       filepath.Join(paths.DataDir, "dht"),
 		DHTServerMode:        false, // Default to client mode for lower resource usage
 		
-		// Pairing Options
-		PairingEnabled: false,
-		DeviceName:     "",
-		DeviceType:     "",
-		PairingTimeout: 0,
+		// Pairing Options - use device info from main config
+		PairingEnabled: true, // Enable pairing by default
+		DeviceName:     cfg.DeviceName,
+		DeviceType:     "desktop", // Hardcoded for now, should be determined based on platform
+		PairingTimeout: 300, // 5 minutes default timeout
 	}
+	
+	return syncCfg
 }
 
 // ValidateSyncConfig validates the sync configuration

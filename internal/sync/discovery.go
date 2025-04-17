@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
+	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
@@ -951,4 +953,152 @@ func convertToProvideKey(s string) cid.Cid {
 	
 	// Create a CID from the multihash
 	return cid.NewCidV1(cid.Raw, h)
+}
+
+// InitializeDiscovery sets up peer discovery for the sync package
+func InitializeDiscovery(ctx context.Context, host host.Host, config *SyncConfig, logger *zap.Logger) (*discovery.Manager, error) {
+	// Map our SyncConfig to the discovery.Config
+	discConfig := &discovery.Config{
+		EnableMDNS:           config.DiscoveryMethod == "mdns" || config.DiscoveryMethod == "",
+		EnableDHT:            config.DiscoveryMethod == "dht",
+		BootstrapPeers:       config.DHTBootstrapPeers,
+		PersistPeers:         config.PersistDiscoveredPeers,
+		PeersPath:            config.DiscoveredPeersPath,
+		MaxStoredPeers:       config.MaxStoredPeers,
+		AutoReconnect:        config.AutoReconnectToPeers,
+		DHTServerMode:        config.DHTServerMode,
+		DHTPersistentStorage: config.DHTPersistentStorage,
+		DHTStoragePath:       config.DHTStoragePath,
+	}
+
+	// Create the discovery manager
+	manager := discovery.NewManager(ctx, host, discConfig, logger)
+
+	return manager, nil
+}
+
+// SetupDiscoveryCallback sets up the callback for peer discovery
+func SetupDiscoveryCallback(discoveryManager *discovery.Manager, handler func(peerInfo InternalPeerInfo)) {
+	if discoveryManager == nil {
+		return
+	}
+
+	// Create a callback that converts types.DiscoveryPeerInfo to our InternalPeerInfo
+	callback := func(peerInfo types.DiscoveryPeerInfo) {
+		if handler != nil {
+			// Convert from DiscoveryPeerInfo to InternalPeerInfo
+			internalPeerInfo := InternalPeerInfo{
+				ID:           peerInfo.ID,
+				Name:         peerInfo.Name,
+				Addrs:        peerInfo.Addrs,
+				Groups:       peerInfo.Groups,
+				LastSeen:     peerInfo.LastSeen,
+				Capabilities: peerInfo.Capabilities,
+				Version:      peerInfo.Version,
+				DeviceType:   peerInfo.DeviceType,
+			}
+			handler(internalPeerInfo)
+		}
+	}
+
+	discoveryManager.SetPeerDiscoveredCallback(callback)
+}
+
+// StartDiscovery starts the discovery manager
+func StartDiscovery(discoveryManager *discovery.Manager) error {
+	if discoveryManager == nil {
+		return fmt.Errorf("discovery manager is nil")
+	}
+
+	return discoveryManager.Start()
+}
+
+// StopDiscovery stops the discovery manager
+func StopDiscovery(discoveryManager *discovery.Manager) error {
+	if discoveryManager == nil {
+		return nil
+	}
+
+	return discoveryManager.Stop()
+}
+
+// AddPeerByAddress adds a peer by its multiaddress string
+func AddPeerByAddress(discoveryManager *discovery.Manager, address string) error {
+	if discoveryManager == nil {
+		return fmt.Errorf("discovery manager is nil")
+	}
+
+	manualDiscovery, err := discoveryManager.GetManualDiscovery()
+	if err != nil {
+		return fmt.Errorf("failed to get manual discovery: %w", err)
+	}
+
+	return manualDiscovery.AddPeer(address)
+}
+
+// RemovePeerByID removes a peer by its ID
+func RemovePeerByID(discoveryManager *discovery.Manager, peerID string) error {
+	if discoveryManager == nil {
+		return fmt.Errorf("discovery manager is nil")
+	}
+
+	manualDiscovery, err := discoveryManager.GetManualDiscovery()
+	if err != nil {
+		return fmt.Errorf("failed to get manual discovery: %w", err)
+	}
+
+	return manualDiscovery.RemovePeer(peerID)
+}
+
+// SaveDiscoveredPeers saves the list of discovered peers
+func SaveDiscoveredPeers(discoveryManager *discovery.Manager, peers map[string]InternalPeerInfo) error {
+	if discoveryManager == nil {
+		return fmt.Errorf("discovery manager is nil")
+	}
+	
+	// Convert from our internal type to the types package
+	discoveryPeers := make(map[string]types.DiscoveryPeerInfo)
+	for id, peer := range peers {
+		discoveryPeers[id] = types.DiscoveryPeerInfo{
+			ID:           peer.ID,
+			Name:         peer.Name,
+			Addrs:        peer.Addrs,
+			Groups:       peer.Groups,
+			LastSeen:     peer.LastSeen,
+			Capabilities: peer.Capabilities,
+			Version:      peer.Version,
+			DeviceType:   peer.DeviceType,
+		}
+	}
+
+	return discoveryManager.SaveDiscoveredPeers(discoveryPeers)
+}
+
+// LoadDiscoveredPeers loads the list of discovered peers
+func LoadDiscoveredPeers(discoveryManager *discovery.Manager) (map[string]InternalPeerInfo, error) {
+	if discoveryManager == nil {
+		return nil, fmt.Errorf("discovery manager is nil")
+	}
+	
+	discoveryPeers, err := discoveryManager.LoadDiscoveredPeers()
+	if err != nil {
+		return nil, err
+	}
+	
+	// Convert from types package to our internal type
+	internalPeers := make(map[string]InternalPeerInfo)
+	for id, peer := range discoveryPeers {
+		internalPeers[id] = InternalPeerInfo{
+			ID:           peer.ID,
+			Name:         peer.Name,
+			Addrs:        peer.Addrs,
+			Groups:       peer.Groups,
+			LastSeen:     peer.LastSeen,
+			Capabilities: peer.Capabilities,
+			Version:      peer.Version,
+			DeviceType:   peer.DeviceType,
+		}
+	}
+	
+	return internalPeers, nil
 } 

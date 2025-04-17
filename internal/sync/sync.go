@@ -349,9 +349,46 @@ func (m *Manager) RemovePairedDevice(peerID string) error {
 	return m.node.Pairing().RemovePairedDevice(peerID)
 }
 
-// GetConfig returns the node's configuration
-func (m *Manager) GetConfig() *SyncConfig {
-	return m.config
+// GetConfig returns the manager's configuration in the format expected by the SyncManager interface
+func (m *Manager) GetConfig() *types.SyncConfig {
+	// Convert our internal SyncConfig to the external types.SyncConfig
+	if m.config == nil {
+		return nil
+	}
+	
+	return &types.SyncConfig{
+		// Core Settings
+		Enabled:           m.config.Enabled,
+		SyncOverInternet:  m.config.SyncOverInternet,
+		UseRelayNodes:     m.config.UseRelayNodes,
+		ListenPort:        m.config.ListenPort,
+		DiscoveryMethod:   m.config.DiscoveryMethod,
+		
+		// Clipboard Options
+		ClipboardTypes:         m.config.ClipboardTypes,
+		AutoCopyFromPeers:      m.config.AutoCopyFromPeers,
+		MaxClipboardSizeKB:     m.config.MaxClipboardSizeKB,
+		ClipboardHistorySize:   m.config.ClipboardHistorySize,
+		ClipboardBlacklistApps: m.config.ClipboardBlacklistApps,
+		
+		// File Transfer Options
+		EnableFileSharing:       m.config.EnableFileSharing,
+		RequireFileConfirmation: m.config.RequireFileConfirmation,
+		DefaultDownloadFolder:   m.config.DefaultDownloadFolder,
+		MaxFileSizeMB:           m.config.MaxFileSizeMB,
+		
+		// Privacy & Security
+		AllowOnlyKnownPeers: m.config.AllowOnlyKnownPeers,
+		TrustedPeers:        m.config.TrustedPeers,
+		RequireApprovalPin:  m.config.RequireApprovalPin,
+		LogPeerActivity:     m.config.LogPeerActivity,
+		
+		// Developer & Debug Options
+		DebugLogging:              m.config.DebugLogging,
+		ShowPeerDebugInfo:         m.config.ShowPeerDebugInfo,
+		DisableMultiplexing:       m.config.DisableMultiplexing,
+		ForceDirectConnectionOnly: m.config.ForceDirectConnectionOnly,
+	}
 }
 
 // GetConfigFromGlobal retrieves sync configuration from the global config
