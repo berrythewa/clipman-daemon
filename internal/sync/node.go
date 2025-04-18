@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -30,7 +31,7 @@ type Node struct {
 	logger        *zap.Logger
 	
 	// Discovery components
-	discovery    *DiscoveryManager
+	discovery    *discovery.Manager
 	
 	// Protocol components
 	protocols    *ProtocolManager
@@ -129,8 +130,9 @@ func NewNode(ctx context.Context, cfg *config.Config, logger *zap.Logger, opts .
 		started:       false,
 	}
 	
-	// Create discovery manager
-	node.discovery = NewDiscoveryManager(nodeCtx, h, syncCfg, nodeLogger)
+	// Create discovery manager with new discovery package
+	discoveryConfig := GetDiscoveryConfig(syncCfg)
+	node.discovery = discovery.NewManager(nodeCtx, h, discoveryConfig, nodeLogger)
 	
 	// Create protocol manager
 	node.protocols = NewProtocolManager(nodeCtx, h, syncCfg, nodeLogger)
@@ -145,7 +147,7 @@ func NewNode(ctx context.Context, cfg *config.Config, logger *zap.Logger, opts .
 	}
 	
 	// Set callback for peer discovery
-	node.discovery.SetPeerDiscoveredCallback(func(peerInfo InternalPeerInfo) {
+	node.discovery.SetPeerDiscoveredCallback(func(peerInfo types.DiscoveryPeerInfo) {
 		// Add peer to our store
 		id, err := peer.Decode(peerInfo.ID)
 		if err != nil {
@@ -153,8 +155,20 @@ func NewNode(ctx context.Context, cfg *config.Config, logger *zap.Logger, opts .
 			return
 		}
 		
+		// Convert discovery peer info to internal peer info
+		internalPeerInfo := InternalPeerInfo{
+			ID:          peerInfo.ID,
+			Name:        peerInfo.Name,
+			Addrs:       peerInfo.Addrs,
+			DeviceType:  peerInfo.DeviceType,
+			LastSeen:    peerInfo.LastSeen,
+			Version:     peerInfo.Version,
+			Groups:      peerInfo.Groups,
+			Capabilities: peerInfo.Capabilities,
+		}
+		
 		// Add to peer store
-		node.peerStore[id] = peerInfo
+		node.peerStore[id] = internalPeerInfo
 		
 		// Attempt to connect to the peer
 		ctx, cancel := context.WithTimeout(node.ctx, time.Second*10)
@@ -209,7 +223,7 @@ func (n *Node) Start() error {
 	
 	// If configured to do so, load previously discovered peers
 	if n.config.PersistDiscoveredPeers && n.config.AutoReconnectToPeers {
-		// Load peers from storage
+		// Load peers from storage using the new discovery package
 		previousPeers, err := n.discovery.LoadDiscoveredPeers()
 		if err != nil {
 			n.logger.Warn("Failed to load previously discovered peers", zap.Error(err))
@@ -225,8 +239,20 @@ func (n *Node) Start() error {
 					continue
 				}
 				
+				// Convert to internal peer info
+				internalPeerInfo := InternalPeerInfo{
+					ID:           peerInfo.ID,
+					Name:         peerInfo.Name,
+					Addrs:        peerInfo.Addrs,
+					DeviceType:   peerInfo.DeviceType,
+					LastSeen:     peerInfo.LastSeen,
+					Version:      peerInfo.Version,
+					Groups:       peerInfo.Groups,
+					Capabilities: peerInfo.Capabilities,
+				}
+				
 				// Add to internal peer store
-				n.peerStore[pid] = peerInfo
+				n.peerStore[pid] = internalPeerInfo
 				
 				// Try to connect in the background
 				go func(pi InternalPeerInfo) {
@@ -249,33 +275,35 @@ func (n *Node) Start() error {
 					} else {
 						n.logger.Info("Connected to stored peer", zap.String("peer_id", pi.ID))
 					}
-				}(peerInfo)
+				}(internalPeerInfo)
 			}
 		}
 	}
 	
-	// Start protocol manager
-	if err := n.protocols.Start(); err != nil {
-		return fmt.Errorf("failed to start protocol manager: %w", err)
-	}
-	
 	// Start discovery services
+	n.logger.Info("Starting discovery services")
 	if err := n.discovery.Start(); err != nil {
 		return fmt.Errorf("failed to start discovery services: %w", err)
 	}
 	
-	// Initialize pubsub if needed
-	if err := n.setupPubSub(); err != nil {
-		return fmt.Errorf("failed to set up pubsub: %w", err)
+	// Start protocol handlers
+	n.logger.Info("Starting protocol handlers")
+	if err := n.protocols.Start(); err != nil {
+		return fmt.Errorf("failed to start protocol handlers: %w", err)
 	}
 	
-	// Start a goroutine to periodically save discovered peers
+	// Set up pubsub if the node supports it
+	if err := n.setupPubSub(); err != nil {
+		n.logger.Warn("Failed to set up pubsub", zap.Error(err))
+	}
+	
+	// Set up periodic saving of discovered peers
 	if n.config.PersistDiscoveredPeers {
 		go n.savePeersRoutine()
 	}
 	
 	n.started = true
-	n.logger.Info("Node started", zap.String("peer_id", n.host.ID().String()))
+	n.logger.Info("Node started successfully")
 	return nil
 }
 
@@ -285,37 +313,36 @@ func (n *Node) Stop() error {
 		return nil
 	}
 	
-	// Stop discovery services
-	if err := n.discovery.Stop(); err != nil {
-		n.logger.Warn("Error stopping discovery services", zap.Error(err))
+	// Save peers before shutting down if configured
+	if n.config.PersistDiscoveredPeers {
+		if err := n.savePeers(); err != nil {
+			n.logger.Warn("Failed to save peers during shutdown", zap.Error(err))
+		}
 	}
 	
-	// Stop protocol manager
+	// Stop protocol handlers
+	n.logger.Info("Stopping protocol handlers")
 	if err := n.protocols.Stop(); err != nil {
-		n.logger.Warn("Error stopping protocol manager", zap.Error(err))
+		n.logger.Warn("Failed to stop protocol handlers", zap.Error(err))
 	}
 	
-	// Unsubscribe from all topics
-	for name, sub := range n.subscriptions {
+	// Stop discovery services
+	n.logger.Info("Stopping discovery services")
+	if err := n.discovery.Stop(); err != nil {
+		n.logger.Warn("Failed to stop discovery services", zap.Error(err))
+	}
+	
+	// Close all pubsub subscriptions
+	for group, sub := range n.subscriptions {
 		sub.Cancel()
-		delete(n.subscriptions, name)
+		delete(n.subscriptions, group)
 	}
 	
 	// Close all topics
-	for name := range n.topics {
-		delete(n.topics, name)
-	}
-	
-	// Cancel context to signal shutdown to any goroutines
-	n.cancel()
-	
-	// Close the host
-	if err := n.host.Close(); err != nil {
-		return fmt.Errorf("failed to close host: %w", err)
-	}
+	n.topics = make(map[string]*pubsub.Topic)
 	
 	n.started = false
-	n.logger.Info("Node stopped")
+	n.logger.Info("Node stopped successfully")
 	return nil
 }
 
@@ -339,52 +366,59 @@ func (n *Node) Pairing() *PairingManager {
 	return n.pairing
 }
 
-// AddPeer adds a peer to the peerstore
+// GetManualDiscoveryService returns the manual discovery service for direct peer connections
+func (n *Node) GetManualDiscoveryService() (*discovery.ManualDiscovery, error) {
+	return n.discovery.GetManualDiscovery()
+}
+
+// AddPeer adds a peer to the internal peer store
 func (n *Node) AddPeer(pi InternalPeerInfo) {
 	id, err := peer.Decode(pi.ID)
 	if err != nil {
-		n.logger.Warn("Failed to decode peer ID", zap.String("peer_id", pi.ID), zap.Error(err))
+		n.logger.Warn("Invalid peer ID", zap.String("peer_id", pi.ID), zap.Error(err))
 		return
 	}
 	n.peerStore[id] = pi
 }
 
-// RemovePeer removes a peer from the peerstore
+// RemovePeer removes a peer from the internal store
 func (n *Node) RemovePeer(id peer.ID) {
 	delete(n.peerStore, id)
 }
 
-// GetPeers returns all known peers
+// GetPeers returns all peers in the internal store
 func (n *Node) GetPeers() []InternalPeerInfo {
 	peers := make([]InternalPeerInfo, 0, len(n.peerStore))
-	for _, p := range n.peerStore {
-		peers = append(peers, p)
+	for _, peer := range n.peerStore {
+		peers = append(peers, peer)
 	}
 	return peers
 }
 
 // AddPeerByAddress adds a peer by its multiaddress string
 func (n *Node) AddPeerByAddress(addrStr string) error {
-	// Get the manual discovery service
-	manualDiscovery, err := n.discovery.GetManualDiscovery()
+	manualDiscovery, err := n.GetManualDiscoveryService()
 	if err != nil {
 		return fmt.Errorf("failed to get manual discovery service: %w", err)
 	}
 	
-	// Add the peer
 	return manualDiscovery.AddPeer(addrStr)
 }
 
-// RemovePeerByID removes a peer by its ID
+// RemovePeerByID removes a peer by its ID string
 func (n *Node) RemovePeerByID(peerID string) error {
-	// Get the manual discovery service
-	manualDiscovery, err := n.discovery.GetManualDiscovery()
+	id, err := peer.Decode(peerID)
 	if err != nil {
-		return fmt.Errorf("failed to get manual discovery service: %w", err)
+		return fmt.Errorf("invalid peer ID: %w", err)
 	}
 	
-	// Remove the peer
-	return manualDiscovery.RemovePeer(peerID)
+	// Remove from peerstore
+	n.RemovePeer(id)
+	
+	// Remove from host's peerstore
+	n.host.Peerstore().ClearAddrs(id)
+	
+	return nil
 }
 
 // DisconnectPeer disconnects from a peer but keeps it in the peerstore
@@ -394,108 +428,136 @@ func (n *Node) DisconnectPeer(peerID string) error {
 		return fmt.Errorf("invalid peer ID: %w", err)
 	}
 	
-	// Check if connected
-	if n.host.Network().Connectedness(id) != network.Connected {
-		return fmt.Errorf("not connected to peer %s", peerID)
-	}
-	
-	// Disconnect
-	return n.host.Network().ClosePeer(id)
-}
-
-// GetConnectedPeers returns a list of currently connected peers
-func (n *Node) GetConnectedPeers() []InternalPeerInfo {
-	peers := make([]InternalPeerInfo, 0)
-	
-	// Get all connections
-	for _, conn := range n.host.Network().Conns() {
-		pid := conn.RemotePeer()
-		
-		// Look up in our peerstore
-		if pi, ok := n.peerStore[pid]; ok {
-			// Update last seen time
-			pi.LastSeen = time.Now()
-			peers = append(peers, pi)
-		} else {
-			// Create a basic entry for this peer
-			addrs := make([]string, 0)
-			for _, addr := range n.host.Peerstore().Addrs(pid) {
-				addrs = append(addrs, addr.String())
-			}
-			
-			peers = append(peers, InternalPeerInfo{
-				ID:           pid.String(),
-				LastSeen:     time.Now(),
-				Addrs:        addrs,
-				Capabilities: make(map[string]string),
-				DeviceType:   "unknown",
-			})
+	// Disconnect all connections to this peer
+	for _, conn := range n.host.Network().ConnsToPeer(id) {
+		if err := conn.Close(); err != nil {
+			n.logger.Warn("Failed to close connection to peer", 
+				zap.String("peer_id", peerID), 
+				zap.Error(err))
 		}
 	}
 	
-	return peers
+	return nil
 }
 
-// JoinTopic joins a pubsub topic for group communication
-func (n *Node) JoinTopic(group string) (*pubsub.Topic, *pubsub.Subscription, error) {
-	if n.pubsub == nil {
-		return nil, nil, fmt.Errorf("pubsub not initialized")
+// GetConnectedPeers returns a list of connected peers
+func (n *Node) GetConnectedPeers() []InternalPeerInfo {
+	// Get all connected peers from the network
+	connectedPeers := n.host.Network().Peers()
+	result := make([]InternalPeerInfo, 0, len(connectedPeers))
+	
+	for _, id := range connectedPeers {
+		// Get from our internal store if available
+		if info, exists := n.peerStore[id]; exists {
+			// Update last seen time
+			info.LastSeen = time.Now()
+			// Add to result
+			result = append(result, info)
+		} else {
+			// Create a basic peer info for connected peers not in our store
+			info := InternalPeerInfo{
+				ID:       id.String(),
+				Name:     "Peer-" + id.ShortString(),
+				LastSeen: time.Now(),
+			}
+			
+			// Get addresses from peerstore
+			addrs := n.host.Peerstore().Addrs(id)
+			addrStrings := make([]string, 0, len(addrs))
+			for _, addr := range addrs {
+				addrStrings = append(addrStrings, addr.String())
+			}
+			info.Addrs = addrStrings
+			
+			// Add to result
+			result = append(result, info)
+		}
 	}
 	
-	// Check if we're already subscribed
-	if topic, ok := n.topics[group]; ok {
-		if sub, ok := n.subscriptions[group]; ok {
+	// Sort by last seen time (most recent first)
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].LastSeen.After(result[j].LastSeen)
+	})
+	
+	return result
+}
+
+// JoinTopic joins a pubsub topic for a group
+func (n *Node) JoinTopic(group string) (*pubsub.Topic, *pubsub.Subscription, error) {
+	if n.pubsub == nil {
+		return nil, nil, fmt.Errorf("pubsub not available")
+	}
+	
+	// Check if already joined
+	if topic, exists := n.topics[group]; exists {
+		if sub, exists := n.subscriptions[group]; exists {
 			return topic, sub, nil
 		}
 	}
 	
-	// Create or join the topic
-	topic, err := n.pubsub.Join(topicName(group))
+	// Join the topic
+	topicName := topicName(group)
+	topic, err := n.pubsub.Join(topicName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to join topic %s: %w", group, err)
+		return nil, nil, fmt.Errorf("failed to join topic %s: %w", topicName, err)
 	}
 	
-	// Subscribe to the topic
+	// Create subscription
 	sub, err := topic.Subscribe()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to subscribe to topic %s: %w", group, err)
+		return nil, nil, fmt.Errorf("failed to subscribe to topic %s: %w", topicName, err)
 	}
 	
-	// Store the topic and subscription
+	// Store topic and subscription
 	n.topics[group] = topic
 	n.subscriptions[group] = sub
 	
-	n.logger.Info("Joined group", zap.String("group", group))
+	n.logger.Info("Joined group topic", 
+		zap.String("group", group),
+		zap.String("topic", topicName))
+	
 	return topic, sub, nil
 }
 
-// LeaveTopic leaves a pubsub topic
+// LeaveTopic leaves a pubsub topic for a group
 func (n *Node) LeaveTopic(group string) error {
-	// Cancel subscription if it exists
-	if sub, ok := n.subscriptions[group]; ok {
-		sub.Cancel()
-		delete(n.subscriptions, group)
+	// Check if joined
+	sub, exists := n.subscriptions[group]
+	if !exists {
+		return nil
 	}
 	
-	// Remove topic
-	if _, ok := n.topics[group]; ok {
+	// Cancel subscription
+	sub.Cancel()
+	delete(n.subscriptions, group)
+	
+	// Close topic
+	topic, exists := n.topics[group]
+	if exists {
+		if err := topic.Close(); err != nil {
+			n.logger.Warn("Failed to close topic", 
+				zap.String("group", group),
+				zap.Error(err))
+		}
 		delete(n.topics, group)
 	}
 	
-	n.logger.Info("Left group", zap.String("group", group))
+	n.logger.Info("Left group topic", zap.String("group", group))
 	return nil
 }
 
-// PublishToTopic publishes a message to a topic
+// PublishToTopic publishes data to a topic
 func (n *Node) PublishToTopic(group string, data []byte) error {
-	topic, ok := n.topics[group]
-	if !ok {
+	// Get the topic
+	topic, exists := n.topics[group]
+	if !exists {
 		return fmt.Errorf("not subscribed to group %s", group)
 	}
 	
+	// Publish the data
 	err := topic.Publish(n.ctx, data)
 	if err != nil {
-		return fmt.Errorf("failed to publish to topic %s: %w", group, err)
+		return fmt.Errorf("failed to publish to group %s: %w", group, err)
 	}
 	
 	return nil
@@ -506,117 +568,116 @@ func (n *Node) GetConfig() *SyncConfig {
 	return n.config
 }
 
-// Close closes the node and releases resources
+// Close closes the node
 func (n *Node) Close() error {
-	return n.Stop()
+	if n.started {
+		if err := n.Stop(); err != nil {
+			return err
+		}
+	}
+	n.cancel()
+	return nil
 }
 
-// Setup functions
-
-// setupPubSub sets up the pubsub system for group messaging
+// setupPubSub initializes the pubsub system
 func (n *Node) setupPubSub() error {
-	// Create pubsub instance (using GossipSub)
+	// Create pubsub
 	ps, err := pubsub.NewGossipSub(n.ctx, n.host)
 	if err != nil {
 		return fmt.Errorf("failed to create pubsub: %w", err)
 	}
 	
 	n.pubsub = ps
-	n.logger.Info("Initialized pubsub system")
+	n.logger.Info("PubSub initialized")
 	return nil
 }
 
-// Helper functions
-
-// topicName returns the full topic name for a group
+// topicName converts a group name to a topic name
 func topicName(group string) string {
-	return fmt.Sprintf("clipman/%s", group)
+	return "clipman-" + group
 }
 
-// formatHostAddresses returns the host's addresses as strings
+// formatHostAddresses formats the host's addresses for logging
 func formatHostAddresses(h host.Host) []string {
-	hostAddr := make([]string, 0, len(h.Addrs()))
+	addrs := make([]string, 0, len(h.Addrs()))
 	for _, addr := range h.Addrs() {
-		hostAddr = append(hostAddr, fmt.Sprintf("%s/p2p/%s", addr.String(), h.ID().String()))
+		addrs = append(addrs, addr.String()+"/p2p/"+h.ID().String())
 	}
-	return hostAddr
+	return addrs
 }
 
-// savePeersRoutine periodically saves discovered peers to disk
+// savePeersRoutine periodically saves the discovered peers
 func (n *Node) savePeersRoutine() {
-	// Save peers every 5 minutes
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	
 	for {
 		select {
-		case <-n.ctx.Done():
-			// Context canceled, save peers one last time before exiting
-			n.savePeers()
-			return
 		case <-ticker.C:
-			// Time to save peers
-			n.savePeers()
+			if err := n.savePeers(); err != nil {
+				n.logger.Warn("Failed to save peers", zap.Error(err))
+			}
+		case <-n.ctx.Done():
+			return
 		}
 	}
 }
 
-// savePeers saves the current set of peers to disk
-func (n *Node) savePeers() {
-	n.logger.Debug("Saving discovered peers to disk")
+// savePeers saves the discovered peers to disk using the discovery manager
+func (n *Node) savePeers() error {
+	// Skip if there are no peers
+	if len(n.peerStore) == 0 {
+		return nil
+	}
 	
-	// Create a map of string ID to peer info for the discovery manager
-	peerMap := make(map[string]InternalPeerInfo)
+	// Skip if not configured to persist peers
+	if !n.config.PersistDiscoveredPeers {
+		return nil
+	}
 	
-	// Convert our peer store to the format expected by the discovery manager
+	// Convert internal peers to discovery peer info
+	discoveryPeers := make(map[string]types.DiscoveryPeerInfo, len(n.peerStore))
+	
 	for id, peerInfo := range n.peerStore {
-		// Only save if not too old (within the last 30 days)
-		cutoff := time.Now().Add(-30 * 24 * time.Hour)
-		if peerInfo.LastSeen.After(cutoff) {
-			peerMap[id.String()] = peerInfo
+		// Create discovery peer info from internal peer info
+		discoveryPeer := types.DiscoveryPeerInfo{
+			ID:           peerInfo.ID,
+			Name:         peerInfo.Name,
+			Addrs:        peerInfo.Addrs,
+			DeviceType:   peerInfo.DeviceType,
+			LastSeen:     peerInfo.LastSeen,
+			Version:      peerInfo.Version,
+			Groups:       peerInfo.Groups,
+			Capabilities: peerInfo.Capabilities,
 		}
+		
+		discoveryPeers[id.String()] = discoveryPeer
 	}
 	
-	// Limit the number of stored peers if needed
-	if len(peerMap) > n.config.MaxStoredPeers && n.config.MaxStoredPeers > 0 {
-		// Create a slice of peers sorted by last seen time
-		peers := make([]InternalPeerInfo, 0, len(peerMap))
-		for _, pi := range peerMap {
-			peers = append(peers, pi)
-		}
-		
-		// Sort by LastSeen, most recent first
-		sort.Slice(peers, func(i, j int) bool {
-			return peers[i].LastSeen.After(peers[j].LastSeen)
-		})
-		
-		// Create a new map with only the most recently seen peers
-		newMap := make(map[string]InternalPeerInfo)
-		for i := 0; i < n.config.MaxStoredPeers && i < len(peers); i++ {
-			newMap[peers[i].ID] = peers[i]
-		}
-		
-		peerMap = newMap
+	// Save to disk
+	if err := n.discovery.SaveDiscoveredPeers(discoveryPeers); err != nil {
+		return fmt.Errorf("failed to save peers: %w", err)
 	}
 	
-	// Save the peers
-	if err := n.discovery.SaveDiscoveredPeers(peerMap); err != nil {
-		n.logger.Warn("Failed to save discovered peers", zap.Error(err))
-	}
+	n.logger.Debug("Saved peers to disk", zap.Int("count", len(discoveryPeers)))
+	return nil
 }
 
 // peerInfoToAddrInfo converts an InternalPeerInfo to a peer.AddrInfo
 func peerInfoToAddrInfo(pi InternalPeerInfo) (peer.AddrInfo, error) {
+	// Parse peer ID
 	id, err := peer.Decode(pi.ID)
 	if err != nil {
 		return peer.AddrInfo{}, fmt.Errorf("invalid peer ID: %w", err)
 	}
 	
-	addrs := make([]peer.Multiaddr, 0, len(pi.Addrs))
+	// Parse addresses
+	addrs := make([]multiaddr.Multiaddr, 0, len(pi.Addrs))
 	for _, addrStr := range pi.Addrs {
 		addr, err := multiaddr.NewMultiaddr(addrStr)
 		if err != nil {
-			continue // Skip invalid addresses
+			// Just skip invalid addresses, don't fail
+			continue
 		}
 		addrs = append(addrs, addr)
 	}

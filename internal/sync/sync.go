@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
 )
@@ -75,8 +76,6 @@ func (m *Manager) Start() error {
 	if err := m.node.Start(); err != nil {
 		return fmt.Errorf("failed to start node: %w", err)
 	}
-	
-	// TODO: Initialize protocol handlers
 	
 	m.started = true
 	m.logger.Info("Sync manager started")
@@ -249,19 +248,8 @@ func (m *Manager) EnablePairing(handler types.PairingRequestCallback) (string, e
 		return "", fmt.Errorf("sync manager not started")
 	}
 	
-	// Wrap the callback to convert between types
-	wrappedHandler := func(request PairingRequest, remotePeerID string) (bool, error) {
-		// Convert to external type
-		extRequest := types.PairingRequest{
-			DeviceName: request.DeviceName,
-			DeviceType: request.DeviceType,
-			PeerID:     request.PeerID,
-		}
-		
-		return handler(extRequest, remotePeerID)
-	}
-	
-	return m.node.Pairing().EnablePairing(wrappedHandler)
+	// Enable pairing mode on the node
+	return m.node.pairing.EnablePairing(handler)
 }
 
 // DisablePairing disables pairing mode
@@ -270,70 +258,58 @@ func (m *Manager) DisablePairing() {
 		return
 	}
 	
-	m.node.Pairing().DisablePairing()
+	m.node.pairing.DisablePairing()
 }
 
-// RequestPairing sends a pairing request to a device
+// RequestPairing requests pairing with a device at the given address
 func (m *Manager) RequestPairing(address string) (*types.PairingResponse, error) {
 	if !m.started {
 		return nil, fmt.Errorf("sync manager not started")
 	}
 	
-	// Call the internal implementation
-	internalResponse, err := m.node.Pairing().RequestPairing(address)
-	if err != nil {
-		return nil, err
+	// First, try to establish a connection with the peer
+	if err := m.node.AddPeerByAddress(address); err != nil {
+		return nil, fmt.Errorf("failed to connect to peer: %w", err)
 	}
 	
-	// Convert to external type
-	response := &types.PairingResponse{
-		Accepted:     internalResponse.Accepted,
-		ErrorMessage: internalResponse.ErrorMessage,
-		PairingCode:  internalResponse.PairingCode,
-		DeviceName:   internalResponse.DeviceName,
-		DeviceType:   internalResponse.DeviceType,
-		PeerID:       internalResponse.PeerID,
-	}
-	
-	return response, nil
+	// Request pairing from the node's pairing manager
+	return m.node.pairing.RequestPairing(address)
 }
 
-// IsPairingEnabled returns whether pairing is enabled
+// IsPairingEnabled checks if pairing mode is enabled
 func (m *Manager) IsPairingEnabled() bool {
 	if !m.started {
 		return false
 	}
-	
-	return m.node.Pairing().IsPairingEnabled()
+	return m.node.pairing.IsPairingEnabled()
 }
 
-// IsPaired checks if a device is paired
+// IsPaired checks if a peer is paired
 func (m *Manager) IsPaired(peerID string) bool {
 	if !m.started {
 		return false
 	}
-	
-	return m.node.Pairing().IsPaired(peerID)
+	return m.node.pairing.IsPaired(peerID)
 }
 
-// GetPairedDevices returns all paired devices
+// GetPairedDevices returns a list of paired devices
 func (m *Manager) GetPairedDevices() []types.PairedDevice {
 	if !m.started {
 		return nil
 	}
 	
-	// Get internal paired devices
-	internalDevices := m.node.Pairing().GetPairedDevices()
+	// Get devices from the pairing manager
+	internalDevices := m.node.pairing.GetPairedDevices()
 	
-	// Convert to external type
+	// Convert to the external type
 	devices := make([]types.PairedDevice, 0, len(internalDevices))
 	for _, device := range internalDevices {
 		devices = append(devices, types.PairedDevice{
-			PeerID:     device.PeerID,
-			DeviceName: device.DeviceName,
+			ID:         device.ID,
+			Name:       device.Name,
 			DeviceType: device.DeviceType,
 			LastSeen:   device.LastSeen,
-			PairedAt:   device.PairedAt,
+			Addresses:  device.Addresses,
 		})
 	}
 	
@@ -346,44 +322,38 @@ func (m *Manager) RemovePairedDevice(peerID string) error {
 		return fmt.Errorf("sync manager not started")
 	}
 	
-	return m.node.Pairing().RemovePairedDevice(peerID)
+	return m.node.pairing.RemovePairedDevice(peerID)
 }
 
-// GetConfig returns the manager's configuration in the format expected by the SyncManager interface
+// GetConfig returns the sync configuration for application use
 func (m *Manager) GetConfig() *types.SyncConfig {
-	// Convert our internal SyncConfig to the external types.SyncConfig
 	if m.config == nil {
 		return nil
 	}
 	
 	return &types.SyncConfig{
-		// Core Settings
-		Enabled:           m.config.Enabled,
+		Enabled:           m.config.EnableSync,
 		SyncOverInternet:  m.config.SyncOverInternet,
 		UseRelayNodes:     m.config.UseRelayNodes,
 		ListenPort:        m.config.ListenPort,
 		DiscoveryMethod:   m.config.DiscoveryMethod,
 		
-		// Clipboard Options
 		ClipboardTypes:         m.config.ClipboardTypes,
 		AutoCopyFromPeers:      m.config.AutoCopyFromPeers,
 		MaxClipboardSizeKB:     m.config.MaxClipboardSizeKB,
 		ClipboardHistorySize:   m.config.ClipboardHistorySize,
 		ClipboardBlacklistApps: m.config.ClipboardBlacklistApps,
 		
-		// File Transfer Options
 		EnableFileSharing:       m.config.EnableFileSharing,
 		RequireFileConfirmation: m.config.RequireFileConfirmation,
 		DefaultDownloadFolder:   m.config.DefaultDownloadFolder,
 		MaxFileSizeMB:           m.config.MaxFileSizeMB,
 		
-		// Privacy & Security
 		AllowOnlyKnownPeers: m.config.AllowOnlyKnownPeers,
 		TrustedPeers:        m.config.TrustedPeers,
 		RequireApprovalPin:  m.config.RequireApprovalPin,
 		LogPeerActivity:     m.config.LogPeerActivity,
 		
-		// Developer & Debug Options
 		DebugLogging:              m.config.DebugLogging,
 		ShowPeerDebugInfo:         m.config.ShowPeerDebugInfo,
 		DisableMultiplexing:       m.config.DisableMultiplexing,
@@ -391,42 +361,24 @@ func (m *Manager) GetConfig() *types.SyncConfig {
 	}
 }
 
-// GetConfigFromGlobal retrieves sync configuration from the global config
+// GetConfigFromGlobal extracts sync configuration from the global config
 func GetConfigFromGlobal(cfg *config.Config) *types.SyncConfig {
-    // Map from the global config to our internal sync config
-    syncCfg := &types.SyncConfig{
-        // Core Sync Settings
-		Enabled:           cfg.Sync.Enabled,
-        SyncOverInternet:  cfg.Sync.SyncOverInternet,
-        UseRelayNodes:     cfg.Sync.UseRelayNodes,
-        ListenPort:        cfg.Sync.ListenPort,
-        DiscoveryMethod:   cfg.Sync.DiscoveryMethod,
-
-        // Clipboard Sync Options		
-        ClipboardTypes:    cfg.Sync.ClipboardTypes,
-        AutoCopyFromPeers: cfg.Sync.AutoCopyFromPeers,
-        MaxClipboardSizeKB: cfg.Sync.MaxClipboardSizeKB,
-        ClipboardHistorySize: cfg.Sync.ClipboardHistorySize,
-        ClipboardBlacklistApps: cfg.Sync.ClipboardBlacklistApps,
-
-        // File Transfer Options
-        EnableFileSharing: cfg.Sync.EnableFileSharing,
-        RequireFileConfirmation: cfg.Sync.RequireFileConfirmation,
-        DefaultDownloadFolder: cfg.Sync.DefaultDownloadFolder,
-        MaxFileSizeMB: cfg.Sync.MaxFileSizeMB,
-
-        // Privacy & Security
-        AllowOnlyKnownPeers: cfg.Sync.AllowOnlyKnownPeers,
-        TrustedPeers: cfg.Sync.TrustedPeers,
-        RequireApprovalPin: cfg.Sync.RequireApprovalPin,
-        LogPeerActivity: cfg.Sync.LogPeerActivity,
-
-        // Developer & Debug Options
-        DebugLogging: cfg.Sync.DebugLogging,
-        ShowPeerDebugInfo: cfg.Sync.ShowPeerDebugInfo,
-        DisableMultiplexing: cfg.Sync.DisableMultiplexing,
-        ForceDirectConnectionOnly: cfg.Sync.ForceDirectConnectionOnly,
-    }
-    
-    return syncCfg
+	if cfg == nil {
+		return nil
+	}
+	
+	// This should be replaced with actual configuration mapping
+	syncCfg := &types.SyncConfig{
+		Enabled:          true,
+		SyncOverInternet: cfg.GetBool("sync.sync_over_internet", false),
+		UseRelayNodes:    cfg.GetBool("sync.use_relay_nodes", true),
+		ListenPort:       cfg.GetInt("sync.listen_port", 0),
+		DiscoveryMethod:  cfg.GetString("sync.discovery_method", "paired"),
+		
+		// Add other fields from config
+		AllowOnlyKnownPeers: cfg.GetBool("sync.allow_only_known_peers", true),
+		RequireApprovalPin:  cfg.GetBool("sync.require_approval_pin", false),
+	}
+	
+	return syncCfg
 }

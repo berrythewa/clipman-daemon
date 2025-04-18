@@ -1,14 +1,15 @@
 # Clipman
 
-A cross-platform clipboard manager with history, cloud synchronization, and advanced features.
+A cross-platform clipboard manager with history, peer-to-peer synchronization, and advanced features.
 
 ## Features
 
 - **Clipboard History**: Keep track of your clipboard history and access past items
 - **Cross-Platform**: Works on Linux, macOS, and Windows with native implementations
-- **Cloud Sync**: Optionally sync clipboard across devices using MQTT
+- **Secure P2P Sync**: Sync clipboard across devices using secure libp2p connections
+- **Device Pairing**: Easily pair devices with a secure verification process
 - **Daemon Mode**: Runs in the background with minimal resource usage
-- **Secure**: Keeps your clipboard data private and local by default
+- **Secure**: End-to-end encrypted communication with paired devices
 - **Platform-Specific**: Optimized for each supported operating system
 - **Efficient Storage**: Uses BoltDB for efficient, persistent clipboard storage
 - **Extensible**: Modular architecture for easy enhancement
@@ -29,7 +30,11 @@ Clipman is built with a clean, modular architecture:
   - History viewing and filtering
   - Cache management
   - System service installation
-- **Sync Protocol**: MQTT-based synchronization for multi-device clipboard sharing
+- **Sync Package**: Peer-to-peer synchronization using libp2p
+  - Device discovery via mDNS, DHT, or manual configuration
+  - Secure device pairing with verification
+  - End-to-end encrypted communication
+  - Device-centric content synchronization
 
 ## Installation
 
@@ -97,6 +102,25 @@ clipman history --since "2023-06-01" --before "2023-06-30"
 clipman flush
 ```
 
+### Device Pairing and Sync
+
+```bash
+# Enable pairing mode on the first device
+clipman pair
+
+# Use the displayed address to pair from second device
+clipman pair --connect "address_from_first_device"
+
+# List paired devices
+clipman devices list
+
+# View clipboard history from a specific device
+clipman content --from-device "laptop-work"
+
+# Remove a paired device
+clipman devices remove "device_id"
+```
+
 ### Command-Line Options
 
 #### Global Options
@@ -112,7 +136,7 @@ clipman flush
 
 ```
 --detach           Run in the background
---no-broker        Disable MQTT broker even if configured
+--no-sync          Disable synchronization even if configured
 --max-size int64   Override max cache size in bytes
 ```
 
@@ -166,16 +190,21 @@ The clipboard database is stored in:
 {
   "log_level": "info",
   "device_id": "auto-generated-uuid",
+  "device_name": "my-laptop",
+  "device_type": "laptop",
   "polling_interval": 1000000000,
   "data_dir": "~/.clipman",
   "storage": {
     "max_size": 104857600,
     "keep_items": 10
   },
-  "broker": {
-    "url": "",
-    "username": "",
-    "password": ""
+  "sync": {
+    "enable_sync": true,
+    "sync_over_internet": false,
+    "discovery_method": "mdns",
+    "listen_port": 0,
+    "allow_only_known_peers": true,
+    "clipboard_types": ["text", "image"]
   },
   "log": {
     "enable_file_logging": true,
@@ -190,28 +219,36 @@ The clipboard database is stored in:
 }
 ```
 
-## Cloud Synchronization
+## Device Synchronization
 
-To enable clipboard synchronization across devices:
+Clipman uses a peer-to-peer approach for syncing clipboard content across devices:
 
-1. Set up an MQTT broker (like Mosquitto, HiveMQ, or a cloud broker)
-2. Configure the broker details in your config.json:
-   ```json
-   "broker": {
-     "url": "mqtt://broker.example.com:1883",
-     "username": "your_username",
-     "password": "your_password"
-   }
-   ```
-3. Run Clipman on each device with the same broker configuration
-4. Clipman will automatically synchronize clipboard content across devices
+1. **Device Pairing**: Securely pair devices using a verification code
+2. **Discovery**: Devices find each other using various methods:
+   - mDNS for local network discovery
+   - DHT for Internet-based discovery (when enabled)
+   - Manual connection using device addresses
+3. **Secure Communication**: All communications between devices are end-to-end encrypted
+4. **Device-Centric Model**: View and access clipboard content from specific paired devices
+5. **Selective Sync**: Control which content types are synchronized
 
-### Security Considerations
+### Pairing Process
 
-- Use TLS for broker connections (mqtts://)
-- Set strong, unique passwords
-- Consider using a private MQTT broker
-- Enable ACLs on your MQTT broker to limit access
+1. Enable pairing mode on the first device: `clipman pair`
+2. Note the displayed address and verification code
+3. On the second device, run: `clipman pair --connect "address_from_first_device"`
+4. Verify that both devices show the same verification code
+5. Confirm the pairing on both devices
+6. Devices are now paired and can sync clipboard content
+
+### Discovery Methods
+
+Clipman supports multiple methods for discovering paired devices:
+
+- **mDNS**: Local network discovery (default, works well on home/office networks)
+- **DHT**: Distributed Hash Table for Internet-based discovery
+- **Manual**: Direct connection using known addresses
+- **Paired**: Connect only to previously paired devices
 
 ## Platform-Specific Implementation Details
 
@@ -251,7 +288,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 
 ## License
 
-MIT License
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Contributing
 

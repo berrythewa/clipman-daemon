@@ -2,14 +2,19 @@
 package sync
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/p2p/security/noise"
+	"github.com/libp2p/go-libp2p/core/peer"
+	noise "github.com/libp2p/go-libp2p/p2p/security/noise"
 	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
 )
@@ -351,4 +356,20 @@ func ExpandPath(path string) string {
 		return filepath.Join(home, path[2:])
 	}
 	return path
+}
+
+// GetDiscoveryConfig converts SyncConfig to discovery.Config
+func GetDiscoveryConfig(cfg *SyncConfig) *discovery.Config {
+	return &discovery.Config{
+		EnableMDNS:           cfg.DiscoveryMethod == "mdns" || cfg.DiscoveryMethod == "all",
+		EnableDHT:            cfg.DiscoveryMethod == "dht" || cfg.DiscoveryMethod == "all" || cfg.SyncOverInternet,
+		BootstrapPeers:       cfg.BootstrapPeers,
+		PersistPeers:         cfg.PersistDiscoveredPeers,
+		PeersPath:            cfg.DiscoveredPeersPath,
+		MaxStoredPeers:       cfg.MaxStoredPeers,
+		AutoReconnect:        cfg.AutoReconnectToPeers,
+		DHTServerMode:        cfg.UseAsRelay,
+		DHTPersistentStorage: cfg.PersistDHTData,
+		DHTStoragePath:       cfg.DHTStoragePath,
+	}
 } 
