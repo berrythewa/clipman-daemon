@@ -15,6 +15,8 @@ const (
 	TypeFile     ContentType = "file"
 	TypeURL      ContentType = "url"
 	TypeFilePath ContentType = "filepath"
+	TypeHTML     ContentType = "html"
+	TypeRTF      ContentType = "rtf"
 )
 
 

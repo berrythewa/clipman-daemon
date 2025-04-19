@@ -131,7 +131,7 @@ func (m *ManualDiscovery) AddPeer(addrStr string) error {
 	return nil
 }
 
-// RemovePeer removes a peer by its ID
+// RemovePeer removes a peer from the peerstore
 func (m *ManualDiscovery) RemovePeer(peerID string) error {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
@@ -146,11 +146,11 @@ func (m *ManualDiscovery) RemovePeer(peerID string) error {
 		return fmt.Errorf("failed to parse peer ID: %w", err)
 	}
 	
-	// Create peer.AddrInfo with just the ID (no addresses)
-	info := peer.AddrInfo{
-		ID:    id,
-		Addrs: nil,
-	}
+	// // Create peer.AddrInfo with just the ID (no addresses)
+	// info := peer.AddrInfo{
+	// 	ID:    id,
+	// 	Addrs: nil,
+	// }
 	
 	// Remove peer from peerstore
 	m.host.Peerstore().ClearAddrs(id)

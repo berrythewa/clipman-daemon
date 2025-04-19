@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
-	"io/ioutil"
+	"io"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 )
@@ -52,7 +52,7 @@ func DecompressContent(content *types.ClipboardContent) (*types.ClipboardContent
 	}
 	defer zr.Close()
 
-	uncompressed, err := ioutil.ReadAll(zr)
+	uncompressed, err := io.ReadAll(zr)
 	if err != nil {
 		return nil, err
 	}
