@@ -242,14 +242,27 @@ func (m *Manager) GetConnectedPeers() []types.PeerInfo {
 	return result
 }
 
-// EnablePairing enables pairing mode for the device
+// EnablePairing enables pairing mode
 func (m *Manager) EnablePairing(handler types.PairingRequestCallback) (string, error) {
 	if !m.started {
 		return "", fmt.Errorf("sync manager not started")
 	}
 	
+	// Create a wrapper that adapts the types.PairingRequestCallback to our internal PairingRequestCallback
+	internalHandler := func(request PairingRequest, remotePeerId string) (bool, error) {
+		// Convert our internal PairingRequest to types.PairingRequest
+		externalRequest := types.PairingRequest{
+			DeviceName: request.DeviceName,
+			DeviceType: request.DeviceType,
+			PeerID:     request.PeerID,
+		}
+		
+		// Call the handler
+		return handler(externalRequest, remotePeerId)
+	}
+	
 	// Enable pairing mode on the node
-	return m.node.pairing.EnablePairing(handler)
+	return m.node.pairing.EnablePairing(internalHandler)
 }
 
 // DisablePairing disables pairing mode
@@ -273,7 +286,22 @@ func (m *Manager) RequestPairing(address string) (*types.PairingResponse, error)
 	}
 	
 	// Request pairing from the node's pairing manager
-	return m.node.pairing.RequestPairing(address)
+	internalResponse, err := m.node.pairing.RequestPairing(address)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Convert to external type
+	externalResponse := &types.PairingResponse{
+		Accepted:     internalResponse.Accepted,
+		ErrorMessage: internalResponse.ErrorMessage,
+		PairingCode:  internalResponse.PairingCode,
+		DeviceName:   internalResponse.DeviceName,
+		DeviceType:   internalResponse.DeviceType,
+		PeerID:       internalResponse.PeerID,
+	}
+	
+	return externalResponse, nil
 }
 
 // IsPairingEnabled checks if pairing mode is enabled
@@ -305,11 +333,11 @@ func (m *Manager) GetPairedDevices() []types.PairedDevice {
 	devices := make([]types.PairedDevice, 0, len(internalDevices))
 	for _, device := range internalDevices {
 		devices = append(devices, types.PairedDevice{
-			ID:         device.ID,
-			Name:       device.Name,
+			PeerID:     device.PeerID,
+			DeviceName: device.DeviceName,
 			DeviceType: device.DeviceType,
 			LastSeen:   device.LastSeen,
-			Addresses:  device.Addresses,
+			PairedAt:   device.PairedAt,
 		})
 	}
 	
@@ -332,7 +360,7 @@ func (m *Manager) GetConfig() *types.SyncConfig {
 	}
 	
 	return &types.SyncConfig{
-		Enabled:           m.config.EnableSync,
+		Enabled:           m.config.Enabled,
 		SyncOverInternet:  m.config.SyncOverInternet,
 		UseRelayNodes:     m.config.UseRelayNodes,
 		ListenPort:        m.config.ListenPort,
@@ -367,17 +395,17 @@ func GetConfigFromGlobal(cfg *config.Config) *types.SyncConfig {
 		return nil
 	}
 	
-	// This should be replaced with actual configuration mapping
+	// Map from global config to our external type
 	syncCfg := &types.SyncConfig{
-		Enabled:          true,
-		SyncOverInternet: cfg.GetBool("sync.sync_over_internet", false),
-		UseRelayNodes:    cfg.GetBool("sync.use_relay_nodes", true),
-		ListenPort:       cfg.GetInt("sync.listen_port", 0),
-		DiscoveryMethod:  cfg.GetString("sync.discovery_method", "paired"),
+		Enabled:          cfg.Sync.Enabled,
+		SyncOverInternet: cfg.Sync.SyncOverInternet,
+		UseRelayNodes:    cfg.Sync.UseRelayNodes,
+		ListenPort:       cfg.Sync.ListenPort,
+		DiscoveryMethod:  cfg.Sync.DiscoveryMethod,
 		
 		// Add other fields from config
-		AllowOnlyKnownPeers: cfg.GetBool("sync.allow_only_known_peers", true),
-		RequireApprovalPin:  cfg.GetBool("sync.require_approval_pin", false),
+		AllowOnlyKnownPeers: cfg.Sync.AllowOnlyKnownPeers,
+		RequireApprovalPin:  cfg.Sync.RequireApprovalPin,
 	}
 	
 	return syncCfg

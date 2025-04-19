@@ -4,12 +4,17 @@ package sync
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
+	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -131,7 +136,7 @@ func NewNode(ctx context.Context, cfg *config.Config, logger *zap.Logger, opts .
 	}
 	
 	// Create discovery manager with new discovery package
-	discoveryConfig := GetDiscoveryConfig(syncCfg)
+	discoveryConfig := ConvertToDiscoveryConfig(syncCfg)
 	node.discovery = discovery.NewManager(nodeCtx, h, discoveryConfig, nodeLogger)
 	
 	// Create protocol manager
@@ -178,7 +183,7 @@ func NewNode(ctx context.Context, cfg *config.Config, logger *zap.Logger, opts .
 		addrInfo := peer.AddrInfo{
 			ID: id,
 			// Convert string addresses back to multiaddrs
-			Addrs: make([]peer.Multiaddr, 0, len(peerInfo.Addrs)),
+			Addrs: make([]multiaddr.Multiaddr, 0, len(peerInfo.Addrs)),
 		}
 		
 		for _, addrStr := range peerInfo.Addrs {
@@ -366,7 +371,7 @@ func (n *Node) Pairing() *PairingManager {
 	return n.pairing
 }
 
-// GetManualDiscoveryService returns the manual discovery service for direct peer connections
+// GetManualDiscoveryService returns the manual discovery service
 func (n *Node) GetManualDiscoveryService() (*discovery.ManualDiscovery, error) {
 	return n.discovery.GetManualDiscovery()
 }

@@ -2,12 +2,8 @@
 package sync
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
@@ -29,6 +25,7 @@ type SyncConfig struct {
 	PeerIdentity      string   `json:"peer_identity"`
 	DiscoveryMethod   string   `json:"discovery_method"` // "mdns", "dht", or "manual"
 	DHTBootstrapPeers []string `json:"dht_bootstrap_peers"` // Bootstrap peers for DHT
+	BootstrapPeers    []string `json:"bootstrap_peers"`    // Bootstrap peers for the network
 	
 	// Peer Persistence
 	PersistDiscoveredPeers bool   `json:"persist_discovered_peers"` // Whether to save discovered peers to disk
@@ -66,6 +63,8 @@ type SyncConfig struct {
 	DHTPersistentStorage bool   `json:"dht_persistent_storage"` // Whether to store DHT data on disk
 	DHTStoragePath       string `json:"dht_storage_path"`      // Path to store DHT data
 	DHTServerMode        bool   `json:"dht_server_mode"`       // Whether to run DHT in server mode
+	UseAsRelay          bool   `json:"use_as_relay"`          // Whether to act as a relay for other peers
+	PersistDHTData      bool   `json:"persist_dht_data"`      // Whether to persist DHT data
 	
 	// Pairing Options
 	PairingEnabled bool   `json:"pairing_enabled"`
@@ -148,6 +147,9 @@ func LoadSyncConfig(cfg *config.Config) *SyncConfig {
 		DHTPersistentStorage: true, // Enable persistent storage by default
 		DHTStoragePath:       filepath.Join(paths.DataDir, "dht"),
 		DHTServerMode:        false, // Default to client mode for lower resource usage
+		UseAsRelay:          false, // Default to not act as a relay
+		PersistDHTData:      true,  // Default to persisting DHT data
+		BootstrapPeers:      []string{}, // Default to empty bootstrap peers list
 		
 		// Pairing Options - use device info from main config
 		PairingEnabled: true, // Enable pairing by default
@@ -359,7 +361,7 @@ func ExpandPath(path string) string {
 }
 
 // GetDiscoveryConfig converts SyncConfig to discovery.Config
-func GetDiscoveryConfig(cfg *SyncConfig) *discovery.Config {
+func ConvertToDiscoveryConfig(cfg *SyncConfig) *discovery.Config {
 	return &discovery.Config{
 		EnableMDNS:           cfg.DiscoveryMethod == "mdns" || cfg.DiscoveryMethod == "all",
 		EnableDHT:            cfg.DiscoveryMethod == "dht" || cfg.DiscoveryMethod == "all" || cfg.SyncOverInternet,

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -270,7 +271,7 @@ func (pm *PairingManager) RequestPairing(address string) (*PairingResponse, erro
 	pm.host.Peerstore().AddAddrs(addrInfo.ID, addrInfo.Addrs, PairingRequestTimeout)
 	
 	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(pm.ctx, 30*time.Second)
+	_, cancel := context.WithTimeout(pm.ctx, 30*time.Second)
 	defer cancel()
 	
 	// Open a stream to the peer
@@ -655,13 +656,18 @@ func (pm *PairingManager) loadPairedDevices() error {
 }
 
 // getDiscoveryService gets the manual discovery service
-func (pm *PairingManager) getDiscoveryService() (*ManualDiscovery, error) {
-	node, ok := pm.host.(*Node)
+func (pm *PairingManager) getDiscoveryService() (*discovery.ManualDiscovery, error) {
+	// Type check if the host implements the interface we need
+	// This is a simplified approach - a better design would be to have
+	// discovery service registration with the pairing manager
+	node, ok := pm.host.(interface {
+		GetManualDiscoveryService() (*discovery.ManualDiscovery, error)
+	})
 	if !ok {
-		return nil, errors.New("host is not a Node")
+		return nil, errors.New("host does not support GetManualDiscoveryService")
 	}
 	
-	return node.discovery.GetManualDiscovery()
+	return node.GetManualDiscoveryService()
 }
 
 // CreatePairingDiscoveryService creates a discovery service for paired devices
