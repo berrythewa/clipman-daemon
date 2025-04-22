@@ -9,10 +9,11 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/peer"
+	// "github.com/libp2p/go-libp2p/core/peer"
 	noise "github.com/libp2p/go-libp2p/p2p/security/noise"
 	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
+	"strings"
 )
 
 // SyncConfig holds all sync-related configuration

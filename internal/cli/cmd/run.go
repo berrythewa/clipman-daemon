@@ -5,7 +5,8 @@ import (
 	"context"
 
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
-	"github.com/berrythewa/clipman-daemon/internal/config"
+	// "github.com/berrythewa/clipman-daemon/internal/config"
+	// TODO: check why not needed
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/sync"

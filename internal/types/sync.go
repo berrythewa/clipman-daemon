@@ -57,6 +57,7 @@ type SyncManager interface {
 	// Core lifecycle methods
 	Start() error
 	Stop() error
+	GetConfig() *SyncConfig
 	
 	// Content operations
 	SendContent(content *ClipboardContent, group string) error
@@ -86,11 +87,13 @@ type SyncManager interface {
 // SyncConfig holds a subset of sync configuration for application use
 type SyncConfig struct {
 	// Core Settings
+	DeviceName		  string
 	Enabled           bool     
 	SyncOverInternet  bool     
 	UseRelayNodes     bool     
 	ListenPort        int      
-	DiscoveryMethod   string   
+	DiscoveryMethod   string
+	PairingEnabled	  bool
 	
 	// Clipboard Options
 	ClipboardTypes         []string 

@@ -5,14 +5,14 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
+	// "strconv"
 	"strings"
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/sync"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
+	// "go.uber.org/zap" TODO: no logging or Cobra does it ?/
 )
 
 var (
@@ -225,7 +225,7 @@ func ensurePairingEnabled(syncManager types.SyncManager) error {
 
 	// Check if we can enable pairing
 	config := syncManager.GetConfig()
-	if config == nil {
+	if config.DeviceName == "" {
 		return fmt.Errorf("unable to access sync configuration")
 	}
 

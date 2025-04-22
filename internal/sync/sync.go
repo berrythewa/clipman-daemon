@@ -7,7 +7,8 @@ import (
 	"sync"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
+	// "github.com/berrythewa/clipman-daemon/internal/sync/discovery"
+	// TODO: Discovery is done elsewhere ? through node ?
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
 )
@@ -360,11 +361,13 @@ func (m *Manager) GetConfig() *types.SyncConfig {
 	}
 	
 	return &types.SyncConfig{
+		DeviceName: 	   m.config.DeviceName,
 		Enabled:           m.config.Enabled,
 		SyncOverInternet:  m.config.SyncOverInternet,
 		UseRelayNodes:     m.config.UseRelayNodes,
 		ListenPort:        m.config.ListenPort,
 		DiscoveryMethod:   m.config.DiscoveryMethod,
+		PairingEnabled:	   m.config.PairingEnabled,
 		
 		ClipboardTypes:         m.config.ClipboardTypes,
 		AutoCopyFromPeers:      m.config.AutoCopyFromPeers,

@@ -12,7 +12,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/platform"
-	"github.com/berrythewa/clipman-daemon/internal/types"
+	// TODO: check if needed "github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/sync"
 
 	"github.com/spf13/cobra"

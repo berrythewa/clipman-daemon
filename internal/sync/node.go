@@ -4,12 +4,12 @@ package sync
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
+	// "encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	// "os"
+	// "path/filepath"
 	"sort"
-	"sync"
+	// "sync"
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
@@ -19,11 +19,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/p2p/host/eventbus"
+	// "github.com/libp2p/go-libp2p/p2p/host/eventbus"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"go.uber.org/zap"
 	"github.com/multiformats/go-multiaddr"
-	"github.com/libp2p/go-libp2p/core/network"
+	// "github.com/libp2p/go-libp2p/core/network"
 )
 
 // Node manages the libp2p host and core networking functionality
