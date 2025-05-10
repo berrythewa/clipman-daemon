@@ -227,8 +227,8 @@ func (c *LinuxClipboard) getCachedContent() *types.ClipboardContent {
 	
 	c.cacheMutex.RLock()
 	defer c.cacheMutex.RUnlock()
-	
-	// Clone the content to avoid race conditions
+
+	// cloning is supposed to be atomic and help avoid race conditions
 	cachedContent := &types.ClipboardContent{
 		Type:    c.contentCache.Content.Type,
 		Data:    make([]byte, len(c.contentCache.Content.Data)),
