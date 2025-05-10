@@ -236,12 +236,104 @@ func (c *DarwinClipboard) Read() (*types.ClipboardContent, error) {
 }
 
 func (c *DarwinClipboard) Write(content *types.ClipboardContent) error {
-	// TODO: Implement using helpers and cache clearing
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if content == nil || len(content.Data) == 0 {
+		return fmt.Errorf("no content to write to clipboard")
+	}
+
+	var err error
+
+	switch content.Type {
+	case types.TypeText, types.TypeString:
+		err = writeText(string(content.Data))
+		c.logger.Info("Wrote text to clipboard", zap.Int("size", len(content.Data)))
+	case types.TypeHTML:
+		err = writeHTML(string(content.Data))
+		c.logger.Info("Wrote HTML to clipboard", zap.Int("size", len(content.Data)))
+	case types.TypeRTF:
+		err = writeRTF(content.Data)
+		c.logger.Info("Wrote RTF to clipboard", zap.Int("size", len(content.Data)))
+	case types.TypeImage:
+		err = writeImage(content.Data)
+		c.logger.Info("Wrote image to clipboard", zap.Int("size", len(content.Data)))
+	case types.TypeFile:
+		// Expecting JSON-encoded file list
+		var files []string
+		if uerr := json.Unmarshal(content.Data, &files); uerr != nil {
+			err = fmt.Errorf("invalid file list data: %w", uerr)
+		} else {
+			err = writeFileList(files)
+			c.logger.Info("Wrote file list to clipboard", zap.Int("count", len(files)))
+		}
+	case types.TypeURL:
+		err = writeURL(string(content.Data))
+		c.logger.Info("Wrote URL to clipboard", zap.String("url", string(content.Data)))
+	default:
+		err = fmt.Errorf("unsupported content type: %s", content.Type)
+	}
+
+	// Always clear the cache after writing
+	c.clearCache()
+
+	if err != nil {
+		c.logger.Warn("Failed to write to clipboard", zap.Error(err), zap.String("type", string(content.Type)))
+		return err
+	}
+	
+	// update lastChangeCount to match system 
+	c.lastChangeCount = getChangeCount()
+	// update cache with just-written content
+	c.updateCache(content, hashContent(content.Data), []string{string(content.Type)})
+
 	return nil
 }
 
 func (c *DarwinClipboard) MonitorChanges(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
-	// TODO: Implement adaptive polling using getChangeCount and Read
+	go func() {
+		interval := c.baseInterval
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopCh:
+				c.logger.Info("Clipboard monitoring stopped")
+				return
+			case <-ticker.C:
+				currentChangeCount := getChangeCount()
+				if currentChangeCount != c.lastChangeCount {
+					c.logger.Debug("Clipboard change detected", zap.Uint64("old", c.lastChangeCount), zap.Uint64("new", currentChangeCount))
+					content, err := c.Read()
+					if err == nil && content != nil {
+						select {
+						case contentCh <- content:
+							c.logger.Info("New clipboard content sent to channel")
+						case <-stopCh:
+							c.logger.Info("Clipboard monitoring stopped during send")
+							return
+						}
+					} else if err != nil {
+						c.logger.Warn("Failed to read clipboard after change", zap.Error(err))
+					}
+					c.lastChangeCount = currentChangeCount
+					interval = c.baseInterval
+					ticker.Reset(interval)
+				} else {
+					// No change detected, increase interval up to maxInterval
+					if interval < c.maxInterval {
+						interval = time.Duration(float64(interval) * 1.5)
+						if interval > c.maxInterval {
+							interval = c.maxInterval
+						}
+						ticker.Reset(interval)
+						c.logger.Debug("Increased polling interval", zap.Duration("interval", interval))
+					}
+				}
+			}
+		}
+	}()
 }
 
 func (c *DarwinClipboard) FlushCache() {
@@ -275,14 +367,31 @@ func (c *DarwinClipboard) FlushCache() {
 	c.logger.Info("Clipboard cache flushed")
 }
 
-func (c *DarwinClipboard) Close() {
-	// Stop monitoring if you have a cancel function or stop channel
-	// if c.monitorCancel != nil {
-	//     c.monitorCancel()
-	// }
+func (c *DarwinClipboard) Close() error {
+	var closeErr error
 
-	// Clear the in-memory cache
+	// 1. Stop monitoring goroutine if applicable
+	if c.monitorCancel != nil {
+		c.monitorCancel()
+		c.logger.Info("Clipboard monitoring cancelled")
+	}
+
+	// 2. Close storage backend if present
+	if c.storage != nil {
+		if err := c.storage.Close(); err != nil {
+			c.logger.Warn("Failed to close clipboard storage", zap.Error(err))
+			closeErr = err
+		} else {
+			c.logger.Info("Clipboard storage closed")
+		}
+	}
+
+	// 3. Clear the in-memory cache
 	c.clearCache()
+	c.logger.Info("Clipboard cache cleared")
 
-	c.logger.Info("DarwinClipboard closed, cache cleared")
+	// 4. Log shutdown
+	c.logger.Info("DarwinClipboard closed")
+
+	return closeErr
 }
