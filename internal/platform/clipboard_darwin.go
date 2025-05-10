@@ -4,6 +4,8 @@
 package platform
 
 import (
+	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -161,14 +163,76 @@ func joinFormats(formats []string) string {
 
 // Clipboard interface methods (to be implemented)
 func (c *DarwinClipboard) Read() (*types.ClipboardContent, error) {
-	//1. Get cached content
-	
-	//2. If cached content is valid, return it
-	//3. If cached content is not valid, read from clipboard
-	//4. Update cache with new content
-	//5. Return new content
+	// 1. Check cache
+	if cached := c.getCachedContent(); cached != nil {
+		c.logger.Debug("Returning cached clipboard content")
+		return cached, nil
+	}
 
-	return nil, nil
+	// 2. Check for change
+	currentChangeCount := getChangeCount()
+	if currentChangeCount == c.lastChangeCount {
+		c.logger.Debug("Clipboard content unchanged (change count)")
+		return nil, fmt.Errorf("content unchanged")
+	}
+
+	// 3. Try to read each supported type (priority order)
+	// HTML
+	if html, err := readHTML(); err == nil && html != "" {
+		content := &types.ClipboardContent{Type: types.TypeHTML, Data: []byte(html), Created: time.Now()}
+		c.updateCache(content, hashContent(content.Data), []string{"html"})
+		c.lastChangeCount = currentChangeCount
+		c.logger.Info("Read HTML from clipboard", zap.Int("size", len(content.Data)))
+		return c.getCachedContent(), nil
+	}
+	// RTF
+	if rtf, err := readRTF(); err == nil && len(rtf) > 0 {
+		content := &types.ClipboardContent{Type: types.TypeRTF, Data: rtf, Created: time.Now()}
+		c.updateCache(content, hashContent(content.Data), []string{"rtf"})
+		c.lastChangeCount = currentChangeCount
+		c.logger.Info("Read RTF from clipboard", zap.Int("size", len(content.Data)))
+		return c.getCachedContent(), nil
+	}
+	// Image
+	if img, err := readImage(); err == nil && len(img) > 0 {
+		content := &types.ClipboardContent{Type: types.TypeImage, Data: img, Created: time.Now()}
+		c.updateCache(content, hashContent(content.Data), []string{"image"})
+		c.lastChangeCount = currentChangeCount
+		c.logger.Info("Read image from clipboard", zap.Int("size", len(content.Data)))
+		return c.getCachedContent(), nil
+	}
+	// File List
+	if files, err := readFileList(); err == nil && len(files) > 0 {
+		// Serialize as JSON
+		fileJSON, ferr := json.Marshal(files)
+		if ferr == nil {
+			content := &types.ClipboardContent{Type: types.TypeFile, Data: fileJSON, Created: time.Now()}
+			c.updateCache(content, hashContent(content.Data), []string{"file"})
+			c.lastChangeCount = currentChangeCount
+			c.logger.Info("Read file list from clipboard", zap.Int("count", len(files)))
+			return c.getCachedContent(), nil
+		}
+	}
+	// URL
+	if url, err := readURL(); err == nil && url != "" {
+		content := &types.ClipboardContent{Type: types.TypeURL, Data: []byte(url), Created: time.Now()}
+		c.updateCache(content, hashContent(content.Data), []string{"url"})
+		c.lastChangeCount = currentChangeCount
+		c.logger.Info("Read URL from clipboard", zap.String("url", url))
+		return c.getCachedContent(), nil
+	}
+	// Text (fallback)
+	if text, err := readText(); err == nil && text != "" {
+		// Optionally: Detect if it's a file path, URL, etc.
+		content := &types.ClipboardContent{Type: types.TypeText, Data: []byte(text), Created: time.Now()}
+		c.updateCache(content, hashContent(content.Data), []string{"text"})
+		c.lastChangeCount = currentChangeCount
+		c.logger.Info("Read text from clipboard", zap.Int("size", len(content.Data)))
+		return c.getCachedContent(), nil
+	}
+
+	c.logger.Warn("No supported content in clipboard")
+	return nil, fmt.Errorf("no supported content in clipboard")
 }
 
 func (c *DarwinClipboard) Write(content *types.ClipboardContent) error {
@@ -180,6 +244,45 @@ func (c *DarwinClipboard) MonitorChanges(contentCh chan<- *types.ClipboardConten
 	// TODO: Implement adaptive polling using getChangeCount and Read
 }
 
+func (c *DarwinClipboard) FlushCache() {
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
+
+	if c.cache != nil && c.cache.Content != nil && c.storage != nil {
+		latest, err := c.storage.GetLatestContent()
+		shouldSave := false
+
+		if err != nil || latest == nil {
+			// Nothing in storage, must save
+			shouldSave = true
+		} else if !latest.Equal(c.cache.Content) {
+			// Content differs, must update
+			shouldSave = true
+		}
+
+		if shouldSave {
+			if err := c.storage.SaveContent(c.cache.Content); err != nil {
+				c.logger.Warn("Failed to save clipboard content to storage before flush", zap.Error(err))
+			} else {
+				c.logger.Info("Clipboard content saved to storage before flush")
+			}
+		} else {
+			c.logger.Debug("Clipboard content already up to date in storage")
+		}
+	}
+
+	c.cache = nil
+	c.logger.Info("Clipboard cache flushed")
+}
+
 func (c *DarwinClipboard) Close() {
-	// Nothing to clean up for Darwin clipboard
+	// Stop monitoring if you have a cancel function or stop channel
+	// if c.monitorCancel != nil {
+	//     c.monitorCancel()
+	// }
+
+	// Clear the in-memory cache
+	c.clearCache()
+
+	c.logger.Info("DarwinClipboard closed, cache cleared")
 }
