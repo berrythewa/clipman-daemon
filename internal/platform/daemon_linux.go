@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"github.com/berrythewa/clipman-daemon/internal/config"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // LinuxDaemonizer implements platform-specific daemonization for Linux
@@ -20,8 +23,53 @@ func NewDaemonizer() *LinuxDaemonizer {
 	return &LinuxDaemonizer{}
 }
 
+// setupLogging initializes zap logger and log file for daemon output.
+func (d *LinuxDaemonizer) setupLogging(cfg *config.Config) (*zap.Logger, *os.File, error) {
+	logDir := cfg.SystemPaths.LogDir
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, nil, fmt.Errorf("failed to create log directory: %v", err)
+	}
+
+	logFile := filepath.Join(logDir, "clipman_daemon.log")
+	logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open log file: %v", err)
+	}
+
+	fileSyncer := zapcore.AddSync(logF)
+	encoderCfg := zap.NewProductionEncoderConfig()
+	encoderCfg.TimeKey = "ts"
+	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	core := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encoderCfg),
+		fileSyncer,
+		zap.InfoLevel,
+	)
+	logger := zap.New(core)
+
+	return logger, logF, nil
+}
+
 // Daemonize forks the current process and runs it in the background
 func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir string, dataDir string) (int, error) {
+	// Load config
+	cfg, err := config.Load("")
+	if err != nil {
+		return 0, fmt.Errorf("failed to load config: %v", err)
+	}
+
+	// Setup logging
+	logger, logF, err := d.setupLogging(cfg)
+	if err != nil {
+		return 0, fmt.Errorf("failed to setup logging: %v", err)
+	}
+	defer func() {
+		logF.Close()
+		logger.Sync()
+	}()
+
+	logger.Info("Starting daemonization", zap.String("executable", executable), zap.Strings("args", args))
+
 	// Remove the --detach flag to prevent infinite recursion
 	filteredArgs := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -29,86 +77,61 @@ func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir st
 			filteredArgs = append(filteredArgs, arg)
 		}
 	}
-	
-	// Create log files for the daemon's stdout and stderr
-	// This ensures that the output is captured even when running in the background
-	logDir := filepath.Join(dataDir, "logs")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return 0, fmt.Errorf("failed to create log directory: %v", err)
-	}
-	
-	stdoutPath := filepath.Join(logDir, "clipman-daemon.log")
-	stderrPath := filepath.Join(logDir, "clipman-daemon-error.log")
-	
-	// Open log files with append mode
-	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return 0, fmt.Errorf("failed to open stdout log file: %v", err)
-	}
-	defer stdout.Close()
-	
-	stderr, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return 0, fmt.Errorf("failed to open stderr log file: %v", err)
-	}
-	defer stderr.Close()
+	logger.Debug("Filtered args", zap.Strings("filteredArgs", filteredArgs))
 
 	// Prepare the command to run
 	cmd := exec.Command(executable, filteredArgs...)
 	cmd.Dir = workDir
-	
-	// Redirect standard file descriptors
+
+	// Redirect stdout and stderr to log file
+	cmd.Stdout = logF
+	cmd.Stderr = logF
 	cmd.Stdin = nil // No input
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	
+
 	// Set key environment variables to indicate we're running in daemon mode
 	newEnv := os.Environ()
 	newEnv = append(newEnv, "CLIPMAN_DAEMON=1")
 	cmd.Env = newEnv
-	
-	// Critical: Detach from process group and create a new session
-	// This is what allows the process to continue running after parent exits
+
+	// Detach from process group and create a new session
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:     true,       // Create a new session
-		Foreground: false,      // Run in background
-		// Prevent child from being killed when parent is
-		Pgid:    0,             // New process group
+		Setsid:     true,
+		Foreground: false,
+		Pgid:       0,
 	}
 
 	// Write PID file for the daemon
 	pidDir := filepath.Join(dataDir, "run")
+	logger.Info("Ensuring PID directory exists", zap.String("pidDir", pidDir))
 	if err := os.MkdirAll(pidDir, 0755); err != nil {
+		logger.Error("Failed to create pid directory", zap.Error(err))
 		return 0, fmt.Errorf("failed to create pid directory: %v", err)
 	}
-	
+
 	pidFile := filepath.Join(pidDir, "clipman.pid")
-	
+
 	// Start the process
+	logger.Info("Starting daemon process", zap.String("executable", executable), zap.Strings("args", filteredArgs))
 	if err := cmd.Start(); err != nil {
+		logger.Error("Failed to start daemon process", zap.Error(err))
 		return 0, fmt.Errorf("failed to start daemon process: %v", err)
 	}
-	
+
 	// Write the PID to the file
 	pid := cmd.Process.Pid
+	logger.Info("Writing PID file", zap.String("pidFile", pidFile), zap.Int("pid", pid))
 	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {
+		logger.Error("Failed to write pid file", zap.Error(err), zap.String("pidFile", pidFile))
 		return pid, fmt.Errorf("failed to write pid file: %v", err)
 	}
-	
+
 	// Detach the process - this is critical to prevent zombie processes
-	// We're explicitly NOT calling cmd.Wait() since we want the process to continue independently
 	if err := cmd.Process.Release(); err != nil {
+		logger.Error("Failed to release daemon process", zap.Error(err))
 		return pid, fmt.Errorf("failed to release daemon process: %v", err)
 	}
-	
-	// Give the daemon a moment to initialize
-	time.Sleep(100 * time.Millisecond)
-	
-	// Verify the process is still running
-	if err := syscall.Kill(pid, 0); err != nil {
-		return pid, fmt.Errorf("daemon process failed to start (PID: %d): %v", pid, err)
-	}
 
+	logger.Info("Daemon started successfully", zap.Int("pid", pid), zap.String("pidFile", pidFile))
 	return pid, nil
 }
 
