@@ -52,6 +52,34 @@ func RemoveAllTempFiles(tempDir, prefix, ext string) error {
 	return firstErr
 }
 
+// RemoveAllTempFiles removes all temp files in tempDir matching the given prefix and extension.
+// Returns a combined error if any files could not be deleted.
+func RemoveAllTempFiles_Aggregated(tempDir, prefix, ext string) error {
+	if _, err := os.Stat(tempDir); os.IsNotExist(err) {
+		return nil
+	}
+	pattern := filepath.Join(tempDir, fmt.Sprintf("%s_*%s", prefix, ext))
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("failed to glob temp files: %w", err)
+	}
+	if len(files) == 0 {
+		return nil
+	}
+
+	var errs []error
+	for _, file := range files {
+		if err := os.Remove(file); err != nil {
+			errs = append(errs, fmt.Errorf("failed to remove %s: %w", file, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...) // Go 1.20+; for older Go, join as a string
+	}
+	return nil
+}
+
+
 // TempFileExists checks if a temp file exists.
 func TempFileExists(path string) bool {
 	_, err := os.Stat(path)
