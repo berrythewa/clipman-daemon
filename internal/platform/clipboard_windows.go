@@ -6,14 +6,18 @@ package platform
 /*
 TODO: Clipboard Format Implementation Summary
 - [ ] File writing support (currently only reading is implemented)
-- [ ] HTML content support
 - [ ] RTF (Rich Text Format) support
 - [ ] Performance optimization for large clipboard content
-- [ ] Content CACHING to improve performance
 - [ ] Custom format registration and handling
 - [ ] Implement proper unit tests for all clipboard operations
 - [ ] Support for CF_BITMAP and CF_ENHMETAFILE formats
 - [ ] Implement better conversion between different image formats
+
+IMPORTANT: 
+- CF_BITMAP and CF_ENHMETAFILE are Windows-specific clipboard formats that use GDI handles (HBITMAP, HENHMETAFILE).
+- These handles are only valid in the originating Windows process/session and MUST NEVER be sent across platforms or stored for later use.
+- Always convert these handles to raw, portable data (PNG, JPEG, SVG, etc.) before using outside the process or sending to other platforms.
+- This file provides stubs and warnings for these formats. Implement conversion helpers as needed.
 */
 
 import (
@@ -301,6 +305,10 @@ func (c *WindowsClipboard) readFormat(format uint32) (*types.ClipboardContent, e
 		return c.readFileFormat()
 	case cfHTML:
 		return c.readHTMLFormat()
+	case windows.CF_BITMAP:
+		return c.readBitmapHandleFormat()
+	case windows.CF_ENHMETAFILE:
+		return c.readEnhMetafileFormat()
 	default:
 		return nil, fmt.Errorf("unsupported format: %d", format)
 	}
@@ -593,7 +601,7 @@ func (c *WindowsClipboard) Write(content *types.ClipboardContent) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
-	c.logger.Info("Writing to clipboard", zap.String("type", content.Type), zap.Int("size", len(content.Data)))
+	c.logger.Info("Writing to clipboard", zap.String("type", content.Type), zap.Int("size", len(content.Data)), zap.Uintptr("handle", uintptr(content.Handle)))
 	
 	switch content.Type {
 	case types.TypeText, types.TypeString, types.TypeURL:
@@ -602,6 +610,10 @@ func (c *WindowsClipboard) Write(content *types.ClipboardContent) error {
 		return c.writeImageFormat(content)
 	case types.TypeHTML:
 		return c.writeHTMLFormat(content)
+	case types.TypeBitmapHandle:
+		return c.writeBitmapHandle(content)
+	case types.TypeMetafileHandle:
+		return c.writeEnhMetafileHandle(content)
 	case types.TypeFilePath, types.TypeFile:
 		return fmt.Errorf("writing files to clipboard is not implemented yet")
 	default:
@@ -813,4 +825,97 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// readBitmapHandleFormat handles CF_BITMAP (HBITMAP) clipboard data
+// Populates ClipboardContent.Handle for local use only. Never send this handle across processes or platforms.
+func (c *WindowsClipboard) readBitmapHandleFormat() (*types.ClipboardContent, error) {
+	h, err := windows.GetClipboardData(windows.CF_BITMAP)
+	if err != nil {
+		c.logger.Warn("Failed to get HBITMAP from clipboard", zap.Error(err))
+		return nil, fmt.Errorf("failed to get HBITMAP from clipboard: %w", err)
+	}
+	c.logger.Info("Read HBITMAP handle from clipboard (local use only)", zap.Uintptr("handle", uintptr(h)))
+	return &types.ClipboardContent{
+		Type:   types.TypeBitmapHandle,
+		Handle: h,
+		Data:   nil,
+		Created: time.Now(),
+	}, nil
+}
+
+// readEnhMetafileFormat handles CF_ENHMETAFILE (HENHMETAFILE) clipboard data
+// Populates ClipboardContent.Handle for local use only. Never send this handle across processes or platforms.
+func (c *WindowsClipboard) readEnhMetafileFormat() (*types.ClipboardContent, error) {
+	h, err := windows.GetClipboardData(windows.CF_ENHMETAFILE)
+	if err != nil {
+		c.logger.Warn("Failed to get HENHMETAFILE from clipboard", zap.Error(err))
+		return nil, fmt.Errorf("failed to get HENHMETAFILE from clipboard: %w", err)
+	}
+	c.logger.Info("Read HENHMETAFILE handle from clipboard (local use only)", zap.Uintptr("handle", uintptr(h)))
+	return &types.ClipboardContent{
+		Type:   types.TypeMetafileHandle,
+		Handle: h,
+		Data:   nil,
+		Created: time.Now(),
+	}, nil
+}
+
+// writeBitmapHandle writes a HBITMAP handle to the clipboard (local use only)
+func (c *WindowsClipboard) writeBitmapHandle(content *types.ClipboardContent) error {
+	if content.Handle == 0 {
+		return fmt.Errorf("no HBITMAP handle provided")
+	}
+	c.logger.Info("Writing HBITMAP handle to clipboard (local use only)", zap.Uintptr("handle", uintptr(content.Handle)))
+	if err := windows.OpenClipboard(0); err != nil {
+		return fmt.Errorf("failed to open clipboard: %v", err)
+	}
+	defer windows.CloseClipboard()
+	if err := windows.EmptyClipboard(); err != nil {
+		return fmt.Errorf("failed to empty clipboard: %v", err)
+	}
+	if _, err := windows.SetClipboardData(windows.CF_BITMAP, content.Handle); err != nil {
+		return fmt.Errorf("failed to set HBITMAP to clipboard: %v", err)
+	}
+	return nil
+}
+
+// writeEnhMetafileHandle writes a HENHMETAFILE handle to the clipboard (local use only)
+func (c *WindowsClipboard) writeEnhMetafileHandle(content *types.ClipboardContent) error {
+	if content.Handle == 0 {
+		return fmt.Errorf("no HENHMETAFILE handle provided")
+	}
+	c.logger.Info("Writing HENHMETAFILE handle to clipboard (local use only)", zap.Uintptr("handle", uintptr(content.Handle)))
+	if err := windows.OpenClipboard(0); err != nil {
+		return fmt.Errorf("failed to open clipboard: %v", err)
+	}
+	defer windows.CloseClipboard()
+	if err := windows.EmptyClipboard(); err != nil {
+		return fmt.Errorf("failed to empty clipboard: %v", err)
+	}
+	if _, err := windows.SetClipboardData(windows.CF_ENHMETAFILE, content.Handle); err != nil {
+		return fmt.Errorf("failed to set HENHMETAFILE to clipboard: %v", err)
+	}
+	return nil
+}
+
+// Conversion helpers for cross-platform/GUI use
+// These must be called by higher-level code when you need to send or display the content.
+
+// ConvertBitmapHandleToPNG converts a HBITMAP handle to PNG bytes (for cross-platform use)
+func ConvertBitmapHandleToPNG(h windows.Handle) ([]byte, error) {
+	// TODO: Implement HBITMAP -> DIB -> PNG conversion using GDI APIs
+	return nil, fmt.Errorf("HBITMAP to PNG conversion not implemented")
+}
+
+// ConvertEnhMetafileToPNG converts a HENHMETAFILE handle to PNG bytes (for cross-platform use)
+func ConvertEnhMetafileToPNG(h windows.Handle) ([]byte, error) {
+	// TODO: Implement HENHMETAFILE -> PNG conversion using GDI APIs
+	return nil, fmt.Errorf("HENHMETAFILE to PNG conversion not implemented")
+}
+
+// ConvertEnhMetafileToSVG converts a HENHMETAFILE handle to SVG bytes (for cross-platform use)
+func ConvertEnhMetafileToSVG(h windows.Handle) ([]byte, error) {
+	// TODO: Implement HENHMETAFILE -> SVG conversion (advanced, may require third-party libs)
+	return nil, fmt.Errorf("HENHMETAFILE to SVG conversion not implemented")
 }

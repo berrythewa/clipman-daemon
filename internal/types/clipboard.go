@@ -20,11 +20,18 @@ const (
 )
 
 
+// type ClipboardContent struct {
+// 	Type		ContentType
+// 	Data		[]byte
+// 	Created		time.Time
+// 	Compressed	bool
+// }
+
 type ClipboardContent struct {
-	Type		ContentType
-	Data		[]byte
-	Created		time.Time
-	Compressed	bool
+    Type    string
+    Data    []byte // for raw data
+    Handle  windows.Handle // for local handle use only
+    Created time.Time
 }
 
 func (c1 *ClipboardContent) Equal(c2 *ClipboardContent) bool {
