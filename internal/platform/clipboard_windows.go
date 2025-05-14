@@ -11,7 +11,7 @@ TODO: Clipboard Format Implementation Summary
 - [ ] HTML content support
 - [ ] RTF (Rich Text Format) support
 - [ ] Performance optimization for large clipboard content
-- [ ] Content caching to improve performance
+- [ ] Content CACHING to improve performance
 - [ ] Custom format registration and handling
 - [ ] Implement proper unit tests for all clipboard operations
 - [ ] Support for CF_BITMAP and CF_ENHMETAFILE formats
@@ -31,6 +31,7 @@ import (
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"golang.org/x/sys/windows"
+	"go.uber.org/zap"
 )
 
 // ClipboardLogger defines the interface for clipboard logging
@@ -51,7 +52,7 @@ type WindowsClipboard struct {
 	hwnd           windows.Handle
 	lastClipFormat uint32
 	msgChan        chan uint32
-	logger         ClipboardLogger
+	logger         *zap.Logger
 	mu             sync.Mutex
 	isRunning      bool
 	windowThread   chan struct{}
@@ -96,7 +97,7 @@ var formatNames = map[uint32]string{
 func NewClipboard() *WindowsClipboard {
 	c := &WindowsClipboard{
 		msgChan:      make(chan uint32, 10),
-		logger:       &DefaultLogger{},
+		logger:       zap.NewNop(),
 		windowThread: make(chan struct{}),
 	}
 	
@@ -106,21 +107,23 @@ func NewClipboard() *WindowsClipboard {
 	return c
 }
 
-// SetLogger sets a custom logger
-func (c *WindowsClipboard) SetLogger(logger ClipboardLogger) {
-	c.logger = logger
+// SetLogger allows setting a custom zap logger
+func (c *WindowsClipboard) SetLogger(logger *zap.Logger) {
+	if logger != nil {
+		c.logger = logger
+	}
 }
 
 // createClipboardWindow creates a window to receive clipboard notifications
 func (c *WindowsClipboard) createClipboardWindow() {
 	defer close(c.windowThread)
 	
-	c.logger.Printf("Creating clipboard listener window")
+	c.logger.Info("Creating clipboard listener window")
 	
 	// Register window class
 	className, err := windows.UTF16PtrFromString(clipboardListenerClass)
 	if err != nil {
-		c.logger.Printf("Error creating UTF16 class name: %v", err)
+		c.logger.Error("Error creating UTF16 class name", zap.Error(err))
 		return
 	}
 	
@@ -133,10 +136,10 @@ func (c *WindowsClipboard) createClipboardWindow() {
 	
 	atom, err := windows.RegisterClassEx(&wndClass)
 	if err != nil {
-		c.logger.Printf("Error registering window class: %v", err)
+		c.logger.Error("Error registering window class", zap.Error(err))
 		return
 	}
-	c.logger.Printf("Window class registered with atom: %d", atom)
+	c.logger.Info("Window class registered", zap.Uint16("atom", atom))
 	
 	// Create window
 	hwnd, err := windows.CreateWindowEx(
@@ -152,7 +155,7 @@ func (c *WindowsClipboard) createClipboardWindow() {
 	)
 	
 	if err != nil {
-		c.logger.Printf("Error creating window: %v", err)
+		c.logger.Error("Error creating window", zap.Error(err))
 		return
 	}
 	
@@ -161,29 +164,29 @@ func (c *WindowsClipboard) createClipboardWindow() {
 	c.isRunning = true
 	c.mu.Unlock()
 	
-	c.logger.Printf("Clipboard listener window created: %v", hwnd)
+	c.logger.Info("Clipboard listener window created", zap.Any("hwnd", hwnd))
 	
 	// Register for clipboard updates
 	if err := windows.AddClipboardFormatListener(c.hwnd); err != nil {
-		c.logger.Printf("Error adding clipboard format listener: %v", err)
+		c.logger.Error("Error adding clipboard format listener", zap.Error(err))
 		windows.DestroyWindow(c.hwnd)
 		return
 	}
 	
-	c.logger.Printf("Clipboard format listener registered")
+	c.logger.Info("Clipboard format listener registered")
 	
 	// Message loop
 	var msg windows.MSG
 	for {
 		result, err := windows.GetMessage(&msg, 0, 0, 0)
 		if err != nil {
-			c.logger.Printf("Error getting message: %v", err)
+			c.logger.Error("Error getting message", zap.Error(err))
 			break
 		}
 		
 		if result == 0 {
 			// WM_QUIT message
-			c.logger.Printf("Received WM_QUIT, exiting message loop")
+			c.logger.Info("Received WM_QUIT, exiting message loop")
 			break
 		}
 		
@@ -195,7 +198,7 @@ func (c *WindowsClipboard) createClipboardWindow() {
 	c.isRunning = false
 	c.mu.Unlock()
 	
-	c.logger.Printf("Clipboard listener window thread exited")
+	c.logger.Info("Clipboard listener window thread exited")
 }
 
 // wndProc is the window procedure callback
@@ -214,19 +217,19 @@ func (c *WindowsClipboard) wndProc(hwnd windows.Handle, msg uint32, wparam, lpar
 			}
 		}
 		
-		c.logger.Printf("WM_CLIPBOARDUPDATE received, available formats: %v", formats)
+		c.logger.Info("WM_CLIPBOARDUPDATE received", zap.Strings("formats", formats))
 		
 		// Send notification through channel
 		select {
 		case c.msgChan <- msg:
-			c.logger.Printf("Clipboard update message sent to channel")
+			c.logger.Debug("Clipboard update message sent to channel")
 		default:
-			c.logger.Printf("Channel full, clipboard update message dropped")
+			c.logger.Warn("Channel full, clipboard update message dropped")
 		}
 		return 0
 		
 	case WM_DESTROY, WM_CLOSE:
-		c.logger.Printf("Window closing, posting quit message")
+		c.logger.Info("Window closing, posting quit message")
 		windows.PostQuitMessage(0)
 		return 0
 	}
@@ -242,12 +245,12 @@ func (c *WindowsClipboard) detectBestFormat() uint32 {
 			if name, ok := formatNames[format]; ok {
 				formatName = name
 			}
-			c.logger.Printf("Selected best available format: %s (0x%X)", formatName, format)
+			c.logger.Info("Selected best available format", zap.String("format", formatName), zap.Uint32("format_value", format))
 			return format
 		}
 	}
 	
-	c.logger.Printf("No supported clipboard format available")
+	c.logger.Info("No supported clipboard format available")
 	return 0 // No supported format available
 }
 
@@ -256,7 +259,7 @@ func (c *WindowsClipboard) Read() (*types.ClipboardContent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
-	c.logger.Printf("Reading clipboard content")
+	c.logger.Info("Reading clipboard content")
 	
 	err := windows.OpenClipboard(0)
 	if err != nil {
@@ -267,11 +270,11 @@ func (c *WindowsClipboard) Read() (*types.ClipboardContent, error) {
 	// Get current clipboard sequence number
 	format := windows.GetClipboardSequenceNumber()
 	if format == c.lastClipFormat {
-		c.logger.Printf("Clipboard content unchanged (sequence: %d)", format)
+		c.logger.Info("Clipboard content unchanged", zap.Uint32("sequence", format))
 		return nil, fmt.Errorf("content unchanged")
 	}
 	c.lastClipFormat = format
-	c.logger.Printf("New clipboard content detected (sequence: %d)", format)
+	c.logger.Info("New clipboard content detected", zap.Uint32("sequence", format))
 	
 	// Detect best available format
 	bestFormat := c.detectBestFormat()
@@ -285,8 +288,7 @@ func (c *WindowsClipboard) Read() (*types.ClipboardContent, error) {
 		return nil, err
 	}
 	
-	c.logger.Printf("Read clipboard content: type=%s, size=%d bytes", 
-		content.Type, len(content.Data))
+	c.logger.Info("Read clipboard content", zap.String("type", content.Type), zap.Int("size", len(content.Data)))
 	
 	return content, nil
 }
@@ -351,7 +353,7 @@ func (c *WindowsClipboard) readTextFormat(format uint32) (*types.ClipboardConten
 	
 	// Check if text is a URL
 	if isURL(textData) {
-		c.logger.Printf("Detected URL in clipboard: %s", truncateString(textData, 100))
+		c.logger.Info("Detected URL in clipboard", zap.String("url", truncateString(textData, 100)))
 		return &types.ClipboardContent{
 			Type:    types.TypeURL,
 			Data:    []byte(textData),
@@ -360,7 +362,7 @@ func (c *WindowsClipboard) readTextFormat(format uint32) (*types.ClipboardConten
 	}
 	
 	// Regular text
-	c.logger.Printf("Detected text in clipboard: %s", truncateString(textData, 100))
+	c.logger.Info("Detected text in clipboard", zap.String("text", truncateString(textData, 100)))
 	return &types.ClipboardContent{
 		Type:    types.TypeText,
 		Data:    []byte(textData),
@@ -383,13 +385,13 @@ func (c *WindowsClipboard) readImageFormat(format uint32) (*types.ClipboardConte
 	defer windows.GlobalUnlock(h)
 	
 	// Convert DIB to PNG
-	c.logger.Printf("Converting DIB image data to PNG")
+	c.logger.Info("Converting DIB image data to PNG")
 	imgData, err := c.convertDIBtoPNG(ptr, format)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert image: %v", err)
 	}
 	
-	c.logger.Printf("Converted image size: %d bytes", len(imgData))
+	c.logger.Info("Converted image size", zap.Int("size", len(imgData)))
 	return &types.ClipboardContent{
 		Type:    types.TypeImage,
 		Data:    imgData,
@@ -406,7 +408,7 @@ func (c *WindowsClipboard) readFileFormat() (*types.ClipboardContent, error) {
 	
 	// Get count of files in the drop
 	count := windows.DragQueryFile(h, 0xFFFFFFFF, nil, 0)
-	c.logger.Printf("File drop contains %d files", count)
+	c.logger.Info("File drop contains", zap.Int("count", count))
 	
 	// If there's just one file, treat it as FilePath
 	if count == 1 {
@@ -415,7 +417,7 @@ func (c *WindowsClipboard) readFileFormat() (*types.ClipboardContent, error) {
 		windows.DragQueryFile(h, 0, &buf[0], windows.MAX_PATH)
 		filePath := windows.UTF16ToString(buf)
 		
-		c.logger.Printf("Single file path detected: %s", filePath)
+		c.logger.Info("Single file path detected", zap.String("path", filePath))
 		return &types.ClipboardContent{
 			Type:    types.TypeFilePath,
 			Data:    []byte(filePath),
@@ -437,7 +439,7 @@ func (c *WindowsClipboard) readFileFormat() (*types.ClipboardContent, error) {
 			return nil, fmt.Errorf("failed to serialize file list: %v", err)
 		}
 		
-		c.logger.Printf("Multiple files detected, json size: %d bytes", len(fileData))
+		c.logger.Info("Multiple files detected", zap.Int("json_size", len(fileData)))
 		return &types.ClipboardContent{
 			Type:    types.TypeFile,
 			Data:    fileData,
@@ -455,7 +457,7 @@ func (c *WindowsClipboard) convertDIBtoPNG(dibPtr uintptr, format uint32) ([]byt
 	height := int(header.BiHeight)
 	bitCount := int(header.BiBitCount)
 	
-	c.logger.Printf("DIB image: %dx%d pixels, %d bits per pixel", width, height, bitCount)
+	c.logger.Info("DIB image", zap.Int("width", width), zap.Int("height", height), zap.Int("bits_per_pixel", bitCount))
 	
 	// Only support common bit depths
 	if bitCount != 24 && bitCount != 32 {
@@ -528,35 +530,34 @@ func (c *WindowsClipboard) convertDIBtoPNG(dibPtr uintptr, format uint32) ([]byt
 
 // MonitorChanges monitors for clipboard changes and sends updates to the channel
 func (c *WindowsClipboard) MonitorChanges(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
-	c.logger.Printf("Starting clipboard monitoring")
+	c.logger.Info("Starting clipboard monitoring")
 	
 	go func() {
 		for {
 			select {
 			case <-stopCh:
-				c.logger.Printf("Received stop signal, ending clipboard monitoring")
+				c.logger.Info("Received stop signal, ending clipboard monitoring")
 				return
 				
 			case <-c.msgChan:
 				// Clipboard changed, read the new content
-				c.logger.Printf("Processing clipboard change notification")
+				c.logger.Info("Processing clipboard change notification")
 				content, err := c.Read()
 				if err != nil {
 					if err.Error() == "content unchanged" {
-						c.logger.Printf("Content unchanged, skipping")
+						c.logger.Info("Content unchanged, skipping")
 						continue
 					}
-					c.logger.Printf("Error reading clipboard: %v", err)
+					c.logger.Error("Error reading clipboard", zap.Error(err))
 					continue
 				}
 				
 				// Send the content to the channel
 				select {
 				case contentCh <- content:
-					c.logger.Printf("Sent new clipboard content to channel: type=%s, size=%d bytes",
-						content.Type, len(content.Data))
+					c.logger.Info("Sent new clipboard content to channel", zap.String("type", content.Type), zap.Int("size", len(content.Data)))
 				case <-stopCh:
-					c.logger.Printf("Received stop signal while sending content")
+					c.logger.Info("Received stop signal while sending content")
 					return
 				}
 			}
@@ -571,7 +572,7 @@ func (c *WindowsClipboard) MonitorChanges(contentCh chan<- *types.ClipboardConte
 				return
 			case <-c.windowThread:
 				// Window thread exited unexpectedly
-				c.logger.Printf("Clipboard window thread exited, restarting")
+				c.logger.Info("Clipboard window thread exited, restarting")
 				
 				c.mu.Lock()
 				isRunning := c.isRunning
@@ -580,7 +581,7 @@ func (c *WindowsClipboard) MonitorChanges(contentCh chan<- *types.ClipboardConte
 				if !isRunning {
 					c.windowThread = make(chan struct{})
 					go c.createClipboardWindow()
-					c.logger.Printf("Clipboard window restarted")
+					c.logger.Info("Clipboard window restarted")
 				}
 			}
 		}
@@ -592,7 +593,7 @@ func (c *WindowsClipboard) Write(content *types.ClipboardContent) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
-	c.logger.Printf("Writing to clipboard: type=%s, size=%d bytes", content.Type, len(content.Data))
+	c.logger.Info("Writing to clipboard", zap.String("type", content.Type), zap.Int("size", len(content.Data)))
 	
 	switch content.Type {
 	case types.TypeText, types.TypeString, types.TypeURL:
@@ -608,7 +609,7 @@ func (c *WindowsClipboard) Write(content *types.ClipboardContent) error {
 
 // writeTextFormat writes text content to clipboard
 func (c *WindowsClipboard) writeTextFormat(content *types.ClipboardContent) error {
-	c.logger.Printf("Writing text to clipboard: %s", truncateString(string(content.Data), 100))
+	c.logger.Info("Writing text to clipboard", zap.String("text", truncateString(string(content.Data), 100)))
 	
 	err := windows.OpenClipboard(0)
 	if err != nil {
@@ -648,7 +649,7 @@ func (c *WindowsClipboard) writeTextFormat(content *types.ClipboardContent) erro
 		return fmt.Errorf("failed to set clipboard data: %v", err)
 	}
 	
-	c.logger.Printf("Successfully wrote text to clipboard")
+	c.logger.Info("Successfully wrote text to clipboard")
 	return nil
 }
 
@@ -657,10 +658,10 @@ func (c *WindowsClipboard) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
-	c.logger.Printf("Closing clipboard resources")
+	c.logger.Info("Closing clipboard resources")
 	
 	if c.hwnd != 0 {
-		c.logger.Printf("Removing clipboard format listener and destroying window")
+		c.logger.Info("Removing clipboard format listener and destroying window")
 		windows.RemoveClipboardFormatListener(c.hwnd)
 		windows.DestroyWindow(c.hwnd)
 		c.hwnd = 0
