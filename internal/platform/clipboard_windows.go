@@ -6,8 +6,6 @@ package platform
 /*
 TODO: Clipboard Format Implementation Summary
 - [ ] File writing support (currently only reading is implemented)
-- [ ] RTF (Rich Text Format) support
-- [ ] Performance optimization for large clipboard content
 - [ ] Custom format registration and handling
 - [ ] Implement proper unit tests for all clipboard operations
 - [ ] Implement better conversion between different image formats
