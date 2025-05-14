@@ -5,8 +5,6 @@ package platform
 
 /*
 TODO: Clipboard Format Implementation Summary
-
-- [ ] Image writing support (currently only reading is implemented)
 - [ ] File writing support (currently only reading is implemented)
 - [ ] HTML content support
 - [ ] RTF (Rich Text Format) support
@@ -78,6 +76,18 @@ var formatNames = map[uint32]string{
 	windows.CF_HTML:        "CF_HTML",
 	windows.CF_LOCALE:      "CF_LOCALE",
 	windows.CF_ENHMETAFILE: "CF_ENHMETAFILE",
+}
+
+// Add CF_HTML constant (register if not present)
+var cfHTML uint32
+
+func init() {
+	cf, err := windows.RegisterClipboardFormat(windows.StringToUTF16Ptr("HTML Format"))
+	if err == nil {
+		cfHTML = cf
+	} else {
+		cfHTML = 49349 // fallback to known value
+	}
 }
 
 // NewClipboard creates a new platform-specific clipboard implementation
@@ -289,6 +299,8 @@ func (c *WindowsClipboard) readFormat(format uint32) (*types.ClipboardContent, e
 		return c.readImageFormat(format)
 	case windows.CF_HDROP:
 		return c.readFileFormat()
+	case cfHTML:
+		return c.readHTMLFormat()
 	default:
 		return nil, fmt.Errorf("unsupported format: %d", format)
 	}
@@ -435,84 +447,85 @@ func (c *WindowsClipboard) readFileFormat() (*types.ClipboardContent, error) {
 	}
 }
 
-// convertDIBtoPNG converts DIB image data to PNG format
-func (c *WindowsClipboard) convertDIBtoPNG(dibPtr uintptr, format uint32) ([]byte, error) {
-	// Parse DIB header
-	header := (*windows.BITMAPINFOHEADER)(unsafe.Pointer(dibPtr))
-	
-	width := int(header.BiWidth)
-	height := int(header.BiHeight)
-	bitCount := int(header.BiBitCount)
-	
-	c.logger.Info("DIB image", zap.Int("width", width), zap.Int("height", height), zap.Int("bits_per_pixel", bitCount))
-	
-	// Only support common bit depths
-	if bitCount != 24 && bitCount != 32 {
-		return nil, fmt.Errorf("unsupported bit depth: %d", bitCount)
+// readHTMLFormat reads HTML content from the clipboard (CF_HTML)
+func (c *WindowsClipboard) readHTMLFormat() (*types.ClipboardContent, error) {
+	h, err := windows.GetClipboardData(cfHTML)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HTML clipboard data: %v", err)
 	}
-	
-	// Create a new RGBA image
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	
-	// Calculate stride (bytes per row, aligned to 4-byte boundary)
-	stride := (width*bitCount + 31) / 32 * 4
-	
-	// DIB data follows the header (and color table for <24 bpp, but we don't support those)
-	pixelDataOffset := uintptr(unsafe.Sizeof(*header))
-	if bitCount <= 8 {
-		// Color table size for <=8bpp: 2^bitCount entries, 4 bytes each
-		pixelDataOffset += uintptr(1<<bitCount) * 4
+	ptr, err := windows.GlobalLock(h)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lock HTML clipboard memory: %v", err)
 	}
-	
-	pixelData := dibPtr + pixelDataOffset
-	
-	// DIBs are stored bottom-up by default
-	isBottomUp := height > 0
-	absHeight := height
-	if !isBottomUp {
-		absHeight = -height
-	}
-	
-	// Copy pixel data
-	for y := 0; y < absHeight; y++ {
-		srcY := y
-		if isBottomUp {
-			srcY = absHeight - y - 1
+	defer windows.GlobalUnlock(h)
+	// Read the data as a byte slice
+	// Find the length (null-terminated)
+	var data []byte
+	for i := 0; ; i++ {
+		b := *(*byte)(unsafe.Pointer(uintptr(ptr) + uintptr(i)))
+		if b == 0 {
+			break
 		}
-		
-		srcRow := pixelData + uintptr(srcY*stride)
-		
-		for x := 0; x < width; x++ {
-			var offset uintptr
-			var r, g, b, a uint8
-			
-			if bitCount == 24 {
-				// 24-bit format: BGR (no alpha)
-				offset = uintptr(x * 3)
-				b = *(*uint8)(unsafe.Pointer(srcRow + offset))
-				g = *(*uint8)(unsafe.Pointer(srcRow + offset + 1))
-				r = *(*uint8)(unsafe.Pointer(srcRow + offset + 2))
-				a = 255 // Fully opaque
-			} else if bitCount == 32 {
-				// 32-bit format: BGRA
-				offset = uintptr(x * 4)
-				b = *(*uint8)(unsafe.Pointer(srcRow + offset))
-				g = *(*uint8)(unsafe.Pointer(srcRow + offset + 1))
-				r = *(*uint8)(unsafe.Pointer(srcRow + offset + 2))
-				a = *(*uint8)(unsafe.Pointer(srcRow + offset + 3))
-			}
-			
-			img.SetRGBA(x, y, image.RGBA{R: r, G: g, B: b, A: a})
-		}
+		data = append(data, b)
 	}
-	
-	// Encode as PNG
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, fmt.Errorf("failed to encode image as PNG: %v", err)
+	html, err := parseCFHTML(data)
+	if err != nil {
+		c.logger.Warn("Failed to parse CF_HTML", zap.Error(err))
+		return nil, err
 	}
-	
-	return buf.Bytes(), nil
+	c.logger.Info("Read HTML from clipboard", zap.Int("size", len(html)))
+	return &types.ClipboardContent{
+		Type:    types.TypeHTML,
+		Data:    []byte(html),
+		Created: time.Now(),
+	}, nil
+}
+
+// parseCFHTML extracts the HTML fragment from CF_HTML clipboard data
+func parseCFHTML(data []byte) (string, error) {
+	s := string(data)
+	startIdx := -1
+	endIdx := -1
+	// Look for StartHTML and EndHTML markers
+	startMarker := "StartHTML:"
+	endMarker := "EndHTML:"
+	startPos := regexp.MustCompile(`StartHTML:(\\d{10})`).FindStringSubmatch(s)
+	endPos := regexp.MustCompile(`EndHTML:(\\d{10})`).FindStringSubmatch(s)
+	if len(startPos) > 1 {
+		startIdx = atoiSafe(startPos[1])
+	}
+	if len(endPos) > 1 {
+		endIdx = atoiSafe(endPos[1])
+	}
+	if startIdx >= 0 && endIdx > startIdx && endIdx <= len(s) {
+		return s[startIdx:endIdx], nil
+	}
+	// Fallback: try to find <html>...</html>
+	htmlStart := regexp.MustCompile(`(?i)<html[\s\S]*?>`).FindStringIndex(s)
+	htmlEnd := regexp.MustCompile(`(?i)</html>`).FindStringIndex(s)
+	if htmlStart != nil && htmlEnd != nil && htmlEnd[1] > htmlStart[0] {
+		return s[htmlStart[0]:htmlEnd[1]], nil
+	}
+	return "", fmt.Errorf("could not extract HTML fragment from clipboard data")
+}
+
+func atoiSafe(s string) int {
+	if len(s) == 0 {
+		return -1
+	}
+	var n int
+	fmt.Sscanf(s, "%d", &n)
+	return n
+}
+
+// buildCFHTML constructs the HTML clipboard format for writing
+func buildCFHTML(html string) []byte {
+	// See: https://docs.microsoft.com/en-us/windows/win32/dataxchg/html-clipboard-format
+	const headerTpl = "Version:0.9\r\nStartHTML:%010d\r\nEndHTML:%010d\r\nStartFragment:%010d\r\nEndFragment:%010d\r\n"
+	fragmentStart := len(headerTpl) + 40 // 40 is the length of the header with all offsets
+	fragmentEnd := fragmentStart + len(html)
+	header := fmt.Sprintf(headerTpl, fragmentStart, fragmentEnd, fragmentStart, fragmentEnd)
+	return append([]byte(header), []byte(html)...)
 }
 
 // MonitorChanges monitors for clipboard changes and sends updates to the channel
@@ -587,6 +600,8 @@ func (c *WindowsClipboard) Write(content *types.ClipboardContent) error {
 		return c.writeTextFormat(content)
 	case types.TypeImage:
 		return c.writeImageFormat(content)
+	case types.TypeHTML:
+		return c.writeHTMLFormat(content)
 	case types.TypeFilePath, types.TypeFile:
 		return fmt.Errorf("writing files to clipboard is not implemented yet")
 	default:
@@ -640,7 +655,7 @@ func (c *WindowsClipboard) writeTextFormat(content *types.ClipboardContent) erro
 	return nil
 }
 
-// writeImageFormat writes image content to clipboard as DIB (CF_DIB)
+// writeImageFormat writes image content to clipboard
 func (c *WindowsClipboard) writeImageFormat(content *types.ClipboardContent) error {
 	c.logger.Info("Writing image to clipboard", zap.Int("size", len(content.Data)))
 	if len(content.Data) == 0 {
@@ -687,6 +702,46 @@ func (c *WindowsClipboard) writeImageFormat(content *types.ClipboardContent) err
 		return fmt.Errorf("failed to set clipboard data: %v", err)
 	}
 	c.logger.Info("Successfully wrote image to clipboard as DIB", zap.Int("size", len(dib)))
+	return nil
+}
+
+// writeHTMLFormat writes HTML content to the clipboard (CF_HTML)
+func (c *WindowsClipboard) writeHTMLFormat(content *types.ClipboardContent) error {
+	c.logger.Info("Writing HTML to clipboard", zap.Int("size", len(content.Data)))
+	if len(content.Data) == 0 {
+		return fmt.Errorf("no HTML data to write")
+	}
+	html := string(content.Data)
+	cfhtml := buildCFHTML(html)
+	// Open clipboard
+	err := windows.OpenClipboard(0)
+	if err != nil {
+		return fmt.Errorf("failed to open clipboard: %v", err)
+	}
+	defer windows.CloseClipboard()
+	// Empty clipboard
+	err = windows.EmptyClipboard()
+	if err != nil {
+		return fmt.Errorf("failed to empty clipboard: %v", err)
+	}
+	// Allocate global memory for HTML
+	h, err := windows.GlobalAlloc(windows.GMEM_MOVEABLE, uint32(len(cfhtml)))
+	if err != nil {
+		return fmt.Errorf("failed to allocate memory: %v", err)
+	}
+	ptr, err := windows.GlobalLock(h)
+	if err != nil {
+		windows.GlobalFree(h)
+		return fmt.Errorf("failed to lock memory: %v", err)
+	}
+	copy((*[1 << 30]byte)(unsafe.Pointer(ptr))[:len(cfhtml)], cfhtml)
+	windows.GlobalUnlock(h)
+	// Set clipboard data as CF_HTML
+	if _, err := windows.SetClipboardData(cfHTML, h); err != nil {
+		windows.GlobalFree(h)
+		return fmt.Errorf("failed to set clipboard data: %v", err)
+	}
+	c.logger.Info("Successfully wrote HTML to clipboard as CF_HTML", zap.Int("size", len(cfhtml)))
 	return nil
 }
 
