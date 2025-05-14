@@ -10,7 +10,6 @@ TODO: Clipboard Format Implementation Summary
 - [ ] Performance optimization for large clipboard content
 - [ ] Custom format registration and handling
 - [ ] Implement proper unit tests for all clipboard operations
-- [ ] Support for CF_BITMAP and CF_ENHMETAFILE formats
 - [ ] Implement better conversion between different image formats
 
 IMPORTANT: 
@@ -85,12 +84,21 @@ var formatNames = map[uint32]string{
 // Add CF_HTML constant (register if not present)
 var cfHTML uint32
 
+// Add CF_RTF constant (register if not present)
+var cfRTF uint32
+
 func init() {
 	cf, err := windows.RegisterClipboardFormat(windows.StringToUTF16Ptr("HTML Format"))
 	if err == nil {
 		cfHTML = cf
 	} else {
 		cfHTML = 49349 // fallback to known value
+	}
+	cf, err = windows.RegisterClipboardFormat(windows.StringToUTF16Ptr("Rich Text Format"))
+	if err == nil {
+		cfRTF = cf
+	} else {
+		cfRTF = 0 // fallback, but registration should always work
 	}
 }
 
@@ -305,6 +313,8 @@ func (c *WindowsClipboard) readFormat(format uint32) (*types.ClipboardContent, e
 		return c.readFileFormat()
 	case cfHTML:
 		return c.readHTMLFormat()
+	case cfRTF:
+		return c.readRTFFormat()
 	case windows.CF_BITMAP:
 		return c.readBitmapHandleFormat()
 	case windows.CF_ENHMETAFILE:
@@ -536,6 +546,34 @@ func buildCFHTML(html string) []byte {
 	return append([]byte(header), []byte(html)...)
 }
 
+// readRTFFormat reads RTF content from the clipboard (CF_RTF)
+func (c *WindowsClipboard) readRTFFormat() (*types.ClipboardContent, error) {
+	h, err := windows.GetClipboardData(cfRTF)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get RTF clipboard data: %v", err)
+	}
+	ptr, err := windows.GlobalLock(h)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lock RTF clipboard memory: %v", err)
+	}
+	defer windows.GlobalUnlock(h)
+	// Read the data as a byte slice (null-terminated)
+	var data []byte
+	for i := 0; ; i++ {
+		b := *(*byte)(unsafe.Pointer(uintptr(ptr) + uintptr(i)))
+		if b == 0 {
+			break
+		}
+		data = append(data, b)
+	}
+	c.logger.Info("Read RTF from clipboard", zap.Int("size", len(data)))
+	return &types.ClipboardContent{
+		Type:    types.TypeRTF,
+		Data:    data,
+		Created: time.Now(),
+	}, nil
+}
+
 // MonitorChanges monitors for clipboard changes and sends updates to the channel
 func (c *WindowsClipboard) MonitorChanges(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
 	c.logger.Info("Starting clipboard monitoring")
@@ -610,6 +648,8 @@ func (c *WindowsClipboard) Write(content *types.ClipboardContent) error {
 		return c.writeImageFormat(content)
 	case types.TypeHTML:
 		return c.writeHTMLFormat(content)
+	case types.TypeRTF:
+		return c.writeRTFFormat(content)
 	case types.TypeBitmapHandle:
 		return c.writeBitmapHandle(content)
 	case types.TypeMetafileHandle:
@@ -754,6 +794,44 @@ func (c *WindowsClipboard) writeHTMLFormat(content *types.ClipboardContent) erro
 		return fmt.Errorf("failed to set clipboard data: %v", err)
 	}
 	c.logger.Info("Successfully wrote HTML to clipboard as CF_HTML", zap.Int("size", len(cfhtml)))
+	return nil
+}
+
+// writeRTFFormat writes RTF content to the clipboard (CF_RTF)
+func (c *WindowsClipboard) writeRTFFormat(content *types.ClipboardContent) error {
+	c.logger.Info("Writing RTF to clipboard", zap.Int("size", len(content.Data)))
+	if len(content.Data) == 0 {
+		return fmt.Errorf("no RTF data to write")
+	}
+	// Open clipboard
+	err := windows.OpenClipboard(0)
+	if err != nil {
+		return fmt.Errorf("failed to open clipboard: %v", err)
+	}
+	defer windows.CloseClipboard()
+	// Empty clipboard
+	err = windows.EmptyClipboard()
+	if err != nil {
+		return fmt.Errorf("failed to empty clipboard: %v", err)
+	}
+	// Allocate global memory for RTF
+	h, err := windows.GlobalAlloc(windows.GMEM_MOVEABLE, uint32(len(content.Data)))
+	if err != nil {
+		return fmt.Errorf("failed to allocate memory: %v", err)
+	}
+	ptr, err := windows.GlobalLock(h)
+	if err != nil {
+		windows.GlobalFree(h)
+		return fmt.Errorf("failed to lock memory: %v", err)
+	}
+	copy((*[1 << 30]byte)(unsafe.Pointer(ptr))[:len(content.Data)], content.Data)
+	windows.GlobalUnlock(h)
+	// Set clipboard data as CF_RTF
+	if _, err := windows.SetClipboardData(cfRTF, h); err != nil {
+		windows.GlobalFree(h)
+		return fmt.Errorf("failed to set RTF clipboard data: %v", err)
+	}
+	c.logger.Info("Successfully wrote RTF to clipboard", zap.Int("size", len(content.Data)))
 	return nil
 }
 
