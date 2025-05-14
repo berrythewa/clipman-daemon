@@ -90,25 +90,6 @@ func (l DefaultLogger) Printf(format string, v ...interface{}) {
 	fmt.Printf(format+"\n", v...)
 }
 
-// ContentCache represents a cached clipboard content
-type ContentCache struct {
-	Content         *types.ClipboardContent
-	Hash            string
-	FormatsHash     string
-	Formats         []string
-	LastAccessTime  time.Time
-	ExpirationTime  time.Duration
-}
-
-// Custom MIME type registry for application-specific content
-type CustomMimeTypeHandler struct {
-	MimeType     string                                                      // MIME type identifier
-	TypeID       types.ContentType                                           // Internal content type
-	Description  string                                                      // Human-readable description
-	DetectFunc   func(data []byte) bool                                      // Function to detect if content matches this type
-	ConvertFunc  func(data []byte, sourceType types.ContentType) ([]byte, error) // Function to convert to this format
-}
-
 // LinuxClipboard is the Linux-specific clipboard implementation
 type LinuxClipboard struct {
 	lastContent    []byte
@@ -123,12 +104,6 @@ type LinuxClipboard struct {
 	stealthMode    bool               // Reduces clipboard access notifications
 	baseInterval   time.Duration      // Base polling interval
 	maxInterval    time.Duration      // Maximum polling interval
-	
-	// Content cache to reduce system calls
-	contentCache   *ContentCache
-	cacheMutex     sync.RWMutex
-	cacheEnabled   bool
-	cacheExpiry    time.Duration
 	
 	// Cleanup resources
 	tempFiles      []string
@@ -151,8 +126,6 @@ func NewClipboard() *LinuxClipboard {
 		stealthMode:    false,
 		baseInterval:   5 * time.Second,   // 5s default
 		maxInterval:    30 * time.Second,  // 30s default
-		cacheEnabled:   true,
-		cacheExpiry:    2 * time.Second,  // Default cache expiry is 2 seconds
 		tempFiles:      make([]string, 0),
 		customTypes:    make(map[string]CustomMimeTypeHandler),
 	}
@@ -182,279 +155,10 @@ func (c *LinuxClipboard) SetPollingIntervals(baseMs, maxMs int64) {
 	c.maxInterval = time.Duration(maxMs) * time.Millisecond
 }
 
-// EnableCache enables or disables the content cache
-func (c *LinuxClipboard) EnableCache(enabled bool) {
-	c.cacheMutex.Lock()
-	defer c.cacheMutex.Unlock()
-	c.cacheEnabled = enabled
-}
-
-// SetCacheExpiry sets the cache expiration time in milliseconds
-func (c *LinuxClipboard) SetCacheExpiry(expiryMs int64) {
-	if expiryMs < 100 {
-		expiryMs = 100 // Minimum 100ms
-	}
-	
-	c.cacheMutex.Lock()
-	defer c.cacheMutex.Unlock()
-	c.cacheExpiry = time.Duration(expiryMs) * time.Millisecond
-}
-
-// clearCache clears the content cache
-func (c *LinuxClipboard) clearCache() {
-	c.cacheMutex.Lock()
-	defer c.cacheMutex.Unlock()
-	c.contentCache = nil
-}
-
-// isCacheValid checks if the cache is valid
-func (c *LinuxClipboard) isCacheValid() bool {
-	c.cacheMutex.RLock()
-	defer c.cacheMutex.RUnlock()
-	
-	if !c.cacheEnabled || c.contentCache == nil {
-		return false
-	}
-	
-	return time.Since(c.contentCache.LastAccessTime) < c.cacheExpiry
-}
-
-// getCachedContent gets the cached content if valid
-func (c *LinuxClipboard) getCachedContent() *types.ClipboardContent {
-	if !c.isCacheValid() {
-		return nil
-	}
-	
-	c.cacheMutex.RLock()
-	defer c.cacheMutex.RUnlock()
-
-	// cloning is supposed to be atomic and help avoid race conditions
-	cachedContent := &types.ClipboardContent{
-		Type:    c.contentCache.Content.Type,
-		Data:    make([]byte, len(c.contentCache.Content.Data)),
-		Created: c.contentCache.Content.Created,
-	}
-	copy(cachedContent.Data, c.contentCache.Content.Data)
-	
-	return cachedContent
-}
-
-// updateCache updates the cache with new content
-func (c *LinuxClipboard) updateCache(content *types.ClipboardContent, contentHash string, formats []string) {
-	if !c.cacheEnabled {
-		return
-	}
-	
-	c.cacheMutex.Lock()
-	defer c.cacheMutex.Unlock()
-	
-	// Create a formats hash
-	formatsHash := ""
-	if len(formats) > 0 {
-		formatsHash = strings.Join(formats, ",")
-	}
-	
-	// Create or update the cache
-	c.contentCache = &ContentCache{
-		Content:        content,
-		Hash:           contentHash,
-		FormatsHash:    formatsHash,
-		Formats:        formats,
-		LastAccessTime: time.Now(),
-		ExpirationTime: c.cacheExpiry,
-	}
-}
-
-// detectContentType tries to determine the content type from the data
-func (c *LinuxClipboard) detectContentType(data []byte, formats []string) types.ContentType {
-	// Empty data
-	if len(data) == 0 {
-		return types.TypeText
-	}
-	
-	// Check for custom content types first
-	c.customTypesMu.RLock()
-	for _, handler := range c.customTypes {
-		if handler.DetectFunc != nil && handler.DetectFunc(data) {
-			c.customTypesMu.RUnlock()
-			c.logger.Printf("Detected custom content type: %s", handler.MimeType)
-			return handler.TypeID
-		}
-	}
-	c.customTypesMu.RUnlock()
-	
-	// Check formats first if available
-	if len(formats) > 0 {
-		if contains(formats, mimeHTML) {
-			return types.TypeHTML
-		}
-		if contains(formats, mimeRTF) {
-			return types.TypeRTF
-		}
-		if contains(formats, mimeImage) || 
-		   contains(formats, mimeBMP) || 
-		   contains(formats, mimeJPEG) || 
-		   contains(formats, mimeGIF) {
-			return types.TypeImage
-		}
-		if contains(formats, mimeURI) || contains(formats, mimeFilenames) {
-			// Might be files, need to parse the content to be sure
-			if hasFileURI(data) {
-				return types.TypeFile
-			}
-		}
-	}
-
-	// Try to detect URL
-	if isURL(string(data)) {
-		c.logger.Printf("Detected URL in clipboard content")
-		return types.TypeURL
-	}
-
-	// Check if it looks like a file path
-	if isFilePath(string(data)) {
-		c.logger.Printf("Detected file path in clipboard content")
-		return types.TypeFilePath
-	}
-
-	// Check if it's a JSON array of file paths
-	if isFileList(data) {
-		c.logger.Printf("Detected file list in clipboard content")
-		return types.TypeFile
-	}
-	
-	// Check for HTML content (simple detection)
-	if isHTML(data) {
-		c.logger.Printf("Detected HTML content")
-		return types.TypeHTML
-	}
-	
-	// Check for RTF content (simple detection)
-	if isRTF(data) {
-		c.logger.Printf("Detected RTF content")
-		return types.TypeRTF
-	}
-
-	// If we can't determine anything else, assume it's text
-	return types.TypeText
-}
-
-// isHTML checks if content is likely HTML
-func isHTML(data []byte) bool {
-	content := string(data)
-	
-	// Simple check for common HTML tags
-	htmlPattern := regexp.MustCompile(`(?i)<html|<body|<div|<span|<p>|<h[1-6]|<table|<!DOCTYPE html|<script|<style`)
-	return htmlPattern.MatchString(content)
-}
-
-// isRTF checks if content is likely RTF
-func isRTF(data []byte) bool {
-	// Check for RTF signature at the beginning of the data
-	// RTF files start with "{\rtf"
-	if len(data) >= 5 && bytes.HasPrefix(data, []byte("{\\rtf")) {
-		return true
-	}
-	return false
-}
-
-// hasFileURI checks if data contains file:// URIs
-func hasFileURI(data []byte) bool {
-	return bytes.Contains(data, []byte("file://"))
-}
-
-// isURL checks if a string is a URL
-func isURL(text string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return false
-	}
-
-	// Use a more permissive URL pattern than Windows
-	urlPattern := regexp.MustCompile(`^(https?|ftp)://\S+$`)
-	if urlPattern.MatchString(text) {
-		// Double check with Go's URL parser
-		_, err := url.Parse(text)
-		return err == nil
-	}
-	return false
-}
-
-// isFilePath checks if text looks like a file path
-func isFilePath(text string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return false
-	}
-
-	// Check if it starts with / (Unix path) or has a drive letter (Windows path)
-	if strings.HasPrefix(text, "/") {
-		// Check if the file exists
-		_, err := os.Stat(text)
-		return err == nil
-	}
-
-	return false
-}
-
-// isFileList checks if data is a JSON array of file paths
-func isFileList(data []byte) bool {
-	var filePaths []string
-	if err := json.Unmarshal(data, &filePaths); err != nil {
-		return false
-	}
-
-	// Must have at least one path
-	if len(filePaths) == 0 {
-		return false
-	}
-
-	// Check if at least the first path exists
-	_, err := os.Stat(filePaths[0])
-	return err == nil
-}
-
-// truncateString truncates a string to the specified length
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
-// withRetry attempts an operation with retries
-func (c *LinuxClipboard) withRetry(operation func() (interface{}, error)) (interface{}, error) {
-	var lastErr error
-	
-	for attempt := 0; attempt < maxRetryAttempts; attempt++ {
-		if attempt > 0 {
-			// Add increasing delay between retries
-			delay := time.Duration(attempt * retryDelayMs) * time.Millisecond
-			time.Sleep(delay)
-			c.logger.Printf("Retrying operation (attempt %d of %d)", attempt+1, maxRetryAttempts)
-		}
-		
-		result, err := operation()
-		if err == nil {
-			return result, nil
-		}
-		
-		lastErr = err
-		c.logger.Printf("Operation failed with error (attempt %d): %v", attempt+1, err)
-	}
-	
-	return nil, fmt.Errorf("operation failed after %d attempts: %w", maxRetryAttempts, lastErr)
-}
-
 // Read gets the current clipboard content
 func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Check cache first if enabled
-	if cachedContent := c.getCachedContent(); cachedContent != nil {
-		return cachedContent, nil
-	}
 
 	// Get available formats
 	formats, _ := c.getAvailableFormats()
@@ -463,9 +167,6 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 	if content, err := c.readCustomFormat(formats); err == nil {
 		// Create content hash
 		contentHash := hashContent(content.Data)
-		
-		// Update cache
-		c.updateCache(content, contentHash, formats)
 		
 		// Check if content has changed
 		if bytes.Equal(content.Data, c.lastContent) {
@@ -483,12 +184,6 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 	if contains(formats, mimeHTML) {
 		htmlContent, err := c.readHtmlFormat(formats)
 		if err == nil {
-			// Create content hash
-			contentHash := hashContent(htmlContent.Data)
-			
-			// Update cache
-			c.updateCache(htmlContent, contentHash, formats)
-			
 			// Check if content has changed
 			if bytes.Equal(htmlContent.Data, c.lastContent) {
 				return nil, fmt.Errorf("content unchanged")
@@ -507,12 +202,6 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 	if contains(formats, mimeRTF) {
 		rtfContent, err := c.readRtfFormat(formats)
 		if err == nil {
-			// Create content hash
-			contentHash := hashContent(rtfContent.Data)
-			
-			// Update cache
-			c.updateCache(rtfContent, contentHash, formats)
-			
 			// Check if content has changed
 			if bytes.Equal(rtfContent.Data, c.lastContent) {
 				return nil, fmt.Errorf("content unchanged")
@@ -532,12 +221,6 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 		// Try to read image format
 		imgContent, err := c.readImageFormat(formats)
 		if err == nil {
-			// Create content hash
-			contentHash := hashContent(imgContent.Data)
-			
-			// Update cache
-			c.updateCache(imgContent, contentHash, formats)
-			
 			// Check if content has changed
 			if bytes.Equal(imgContent.Data, c.lastContent) {
 				return nil, fmt.Errorf("content unchanged")
@@ -556,12 +239,6 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 	if contains(formats, mimeURI) || contains(formats, mimeFilenames) {
 		content, err := c.readFileFormat(formats)
 		if err == nil {
-			// Create content hash
-			contentHash := hashContent(content.Data)
-			
-			// Update cache
-			c.updateCache(content, contentHash, formats)
-			
 			// Check if content has changed
 			if bytes.Equal(content.Data, c.lastContent) {
 				return nil, fmt.Errorf("content unchanged")
@@ -606,21 +283,15 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 		Created: time.Now(),
 	}
 	
-	// Create content hash and update cache
-	contentHash := hashContent(contentBytes)
-	c.updateCache(content, contentHash, formats)
-	
 	return content, nil
 }
 
 // getAvailableFormats returns a list of MIME types available in the clipboard
 func (c *LinuxClipboard) getAvailableFormats() ([]string, error) {
 	// Check if we have cached formats
-	if c.isCacheValid() && c.contentCache != nil && len(c.contentCache.Formats) > 0 {
-		c.cacheMutex.RLock()
+	if len(c.contentCache.Formats) > 0 {
 		formats := make([]string, len(c.contentCache.Formats))
 		copy(formats, c.contentCache.Formats)
-		c.cacheMutex.RUnlock()
 		return formats, nil
 	}
 	
@@ -1852,9 +1523,6 @@ func (c *LinuxClipboard) Write(content *types.ClipboardContent) error {
 	c.lastContent = make([]byte, len(content.Data))
 	copy(c.lastContent, content.Data)
 	
-	// Clear cache when writing
-	c.clearCache()
-	
 	return nil
 }
 
@@ -2276,9 +1944,6 @@ func (c *LinuxClipboard) Close() {
 		c.mirProc.Kill()
 		c.mirProc = nil
 	}
-	
-	// Clear cache
-	c.clearCache()
 	
 	// Clean up any temporary files
 	c.cleanupTempFiles()

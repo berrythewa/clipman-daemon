@@ -34,19 +34,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// ClipboardLogger defines the interface for clipboard logging
-type ClipboardLogger interface {
-	Printf(format string, v ...interface{})
-}
-
-// DefaultLogger provides a basic implementation of the ClipboardLogger
-type DefaultLogger struct{}
-
-// Printf implements the ClipboardLogger interface
-func (l DefaultLogger) Printf(format string, v ...interface{}) {
-	fmt.Printf(format+"\n", v...)
-}
-
 // WindowsClipboard is the Windows-specific clipboard implementation
 type WindowsClipboard struct {
 	hwnd           windows.Handle
@@ -599,7 +586,7 @@ func (c *WindowsClipboard) Write(content *types.ClipboardContent) error {
 	case types.TypeText, types.TypeString, types.TypeURL:
 		return c.writeTextFormat(content)
 	case types.TypeImage:
-		return fmt.Errorf("writing image to clipboard is not implemented yet")
+		return c.writeImageFormat(content)
 	case types.TypeFilePath, types.TypeFile:
 		return fmt.Errorf("writing files to clipboard is not implemented yet")
 	default:
@@ -651,6 +638,95 @@ func (c *WindowsClipboard) writeTextFormat(content *types.ClipboardContent) erro
 	
 	c.logger.Info("Successfully wrote text to clipboard")
 	return nil
+}
+
+// writeImageFormat writes image content to clipboard as DIB (CF_DIB)
+func (c *WindowsClipboard) writeImageFormat(content *types.ClipboardContent) error {
+	c.logger.Info("Writing image to clipboard", zap.Int("size", len(content.Data)))
+	if len(content.Data) == 0 {
+		return fmt.Errorf("no image data to write")
+	}
+	// Decode image (support PNG, JPEG, etc.)
+	img, _, err := image.Decode(bytes.NewReader(content.Data))
+	if err != nil {
+		c.logger.Error("Failed to decode image", zap.Error(err))
+		return fmt.Errorf("failed to decode image: %w", err)
+	}
+	// Convert to DIB format (BGRA, bottom-up)
+	dib, err := encodeToDIB(img)
+	if err != nil {
+		c.logger.Error("Failed to encode image to DIB", zap.Error(err))
+		return fmt.Errorf("failed to encode image to DIB: %w", err)
+	}
+	// Open clipboard
+	err = windows.OpenClipboard(0)
+	if err != nil {
+		return fmt.Errorf("failed to open clipboard: %v", err)
+	}
+	defer windows.CloseClipboard()
+	// Empty clipboard
+	err = windows.EmptyClipboard()
+	if err != nil {
+		return fmt.Errorf("failed to empty clipboard: %v", err)
+	}
+	// Allocate global memory for DIB
+	h, err := windows.GlobalAlloc(windows.GMEM_MOVEABLE, uint32(len(dib)))
+	if err != nil {
+		return fmt.Errorf("failed to allocate memory: %v", err)
+	}
+	ptr, err := windows.GlobalLock(h)
+	if err != nil {
+		windows.GlobalFree(h)
+		return fmt.Errorf("failed to lock memory: %v", err)
+	}
+	copy((*[1 << 30]byte)(unsafe.Pointer(ptr))[:len(dib)], dib)
+	windows.GlobalUnlock(h)
+	// Set clipboard data as CF_DIB
+	if _, err := windows.SetClipboardData(windows.CF_DIB, h); err != nil {
+		windows.GlobalFree(h)
+		return fmt.Errorf("failed to set clipboard data: %v", err)
+	}
+	c.logger.Info("Successfully wrote image to clipboard as DIB", zap.Int("size", len(dib)))
+	return nil
+}
+
+// encodeToDIB encodes a Go image.Image to DIB (BGRA, bottom-up, uncompressed)
+func encodeToDIB(img image.Image) ([]byte, error) {
+	// Only support RGBA images for now
+	b := img.Bounds()
+	width := b.Dx()
+	height := b.Dy()
+	bitCount := 32 // BGRA
+	rowSize := ((width*bitCount + 31) / 32) * 4
+	imgSize := rowSize * height
+	headerSize := int(unsafe.Sizeof(windows.BITMAPINFOHEADER{}))
+	dib := make([]byte, headerSize+imgSize)
+	// Fill BITMAPINFOHEADER
+	header := (*windows.BITMAPINFOHEADER)(unsafe.Pointer(&dib[0]))
+	header.BiSize = uint32(headerSize)
+	header.BiWidth = int32(width)
+	header.BiHeight = int32(height) // bottom-up
+	header.BiPlanes = 1
+	header.BiBitCount = uint16(bitCount)
+	header.BiCompression = 0 // BI_RGB
+	header.BiSizeImage = uint32(imgSize)
+	header.BiXPelsPerMeter = 0
+	header.BiYPelsPerMeter = 0
+	header.BiClrUsed = 0
+	header.BiClrImportant = 0
+	// Write pixel data (bottom-up, BGRA)
+	offset := headerSize
+	for y := height - 1; y >= 0; y-- {
+		for x := 0; x < width; x++ {
+			r, g, b, a := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			dib[offset+0] = byte(b >> 8)
+			dib[offset+1] = byte(g >> 8)
+			dib[offset+2] = byte(r >> 8)
+			dib[offset+3] = byte(a >> 8)
+			offset += 4
+		}
+	}
+	return dib, nil
 }
 
 // Close releases any resources
