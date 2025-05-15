@@ -74,8 +74,16 @@ func RemoveAllTempFiles_Aggregated(tempDir, prefix, ext string) error {
 		}
 	}
 	if len(errs) > 0 {
-		return errors.Join(errs...) // Go 1.20+; for older Go, join as a string
+		return errors.Join(errs...) // Go 1.20+
 	}
+	// for older Go, join as a string
+	// if len(errs) > 0 {
+	// 	var msg string
+	// 	for _, e := range errs {
+	// 		msg += e.Error() + "; "
+	// 	}
+	// 	return fmt.Errorf("multiple errors: %s", msg)
+	// }
 	return nil
 }
 
