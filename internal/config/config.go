@@ -87,6 +87,12 @@ type Config struct {
 	// Clipboard monitoring options
 	StealthMode     bool  `json:"stealth_mode"`     // Minimize clipboard access notifications
 	PollingInterval int64 `json:"polling_interval"` // Base polling interval in milliseconds
+
+	// Launch at startup
+	LaunchAtStartup bool `json:"launch_at_startup"`
+
+	// Launch on login
+	LaunchOnLogin bool `json:"launch_on_login"`
 }
 
 // DefaultSystemPaths returns default system paths
@@ -161,6 +167,8 @@ func DefaultConfig() *Config {
 		StealthMode:   true,            // Enabled by default
 		PollingInterval: 10000,         // 10 seconds by default for less frequent clipboard checks
 		Sync:          DefaultSyncConfig(),
+		LaunchAtStartup: false,
+		LaunchOnLogin: false,
 	}
 	return config
 }
