@@ -1,7 +1,7 @@
 //go:build windows
 // +build windows
 
-package platform
+package daemon
 
 import (
 	"fmt"

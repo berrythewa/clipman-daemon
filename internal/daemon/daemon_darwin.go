@@ -1,7 +1,7 @@
-//go:build linux
-// +build linux
+//go:build darwin
+// +build darwin
 
-package platform
+package daemon
 
 import (
 	"fmt"
@@ -9,33 +9,37 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
-	"time"
-	"github.com/berrythewa/clipman-daemon/internal/config"
+    "github.com/berrythewa/clipman-daemon/internal/config"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-// LinuxDaemonizer implements platform-specific daemonization for Linux
-type LinuxDaemonizer struct{}
+// DarwinDaemonizer implements platform-specific daemonization for macOS
+type DarwinDaemonizer struct{}
 
 // NewDaemonizer creates a new platform-specific daemonizer implementation
-func NewDaemonizer() *LinuxDaemonizer {
-	return &LinuxDaemonizer{}
+func NewDaemonizer() *DarwinDaemonizer {
+	return &DarwinDaemonizer{}
 }
 
 // setupLogging initializes zap logger and log file for daemon output.
-func (d *LinuxDaemonizer) setupLogging(cfg *config.Config) (*zap.Logger, *os.File, error) {
+func (d *DarwinDaemonizer) setupLogging(cfg *config.Config) (*zap.Logger, *os.File, error) {
+	// 1. Get log directory and ensure it exists
 	logDir := cfg.SystemPaths.LogDir
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create log directory: %v", err)
 	}
 
+	// 2. Build log file path
 	logFile := filepath.Join(logDir, "clipman_daemon.log")
+
+	// 3. Open log file for append/write
 	logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %v", err)
 	}
 
+	// 4. Initialize zap logger to log file
 	fileSyncer := zapcore.AddSync(logF)
 	encoderCfg := zap.NewProductionEncoderConfig()
 	encoderCfg.TimeKey = "ts"
@@ -51,7 +55,7 @@ func (d *LinuxDaemonizer) setupLogging(cfg *config.Config) (*zap.Logger, *os.Fil
 }
 
 // Daemonize forks the current process and runs it in the background
-func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir string, dataDir string) (int, error) {
+func (d *DarwinDaemonizer) Daemonize(executable string, args []string, workDir string, dataDir string) (int, error) {
 	// Load config
 	cfg, err := config.Load("")
 	if err != nil {
@@ -86,18 +90,19 @@ func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir st
 	// Redirect stdout and stderr to log file
 	cmd.Stdout = logF
 	cmd.Stderr = logF
-	cmd.Stdin = nil // No input
 
-	// Set key environment variables to indicate we're running in daemon mode
-	newEnv := os.Environ()
-	newEnv = append(newEnv, "CLIPMAN_DAEMON=1")
-	cmd.Env = newEnv
+	// Redirect stdin to /dev/null
+	nullDev, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+	if err != nil {
+		logger.Error("Failed to open /dev/null", zap.Error(err))
+		return 0, fmt.Errorf("failed to open /dev/null: %v", err)
+	}
+	defer nullDev.Close()
+	cmd.Stdin = nullDev
 
-	// Detach from process group and create a new session
+	// Detach from process group (Unix-specific)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:     true,
-		Foreground: false,
-		Pgid:       0,
+		Setsid: true,
 	}
 
 	// Write PID file for the daemon
@@ -125,20 +130,13 @@ func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir st
 		return pid, fmt.Errorf("failed to write pid file: %v", err)
 	}
 
-	// Detach the process - this is critical to prevent zombie processes
-	if err := cmd.Process.Release(); err != nil {
-		logger.Error("Failed to release daemon process", zap.Error(err))
-		return pid, fmt.Errorf("failed to release daemon process: %v", err)
-	}
-
 	logger.Info("Daemon started successfully", zap.Int("pid", pid), zap.String("pidFile", pidFile))
 	return pid, nil
 }
 
 // IsRunningAsDaemon returns true if the current process is running as a daemon
-func (d *LinuxDaemonizer) IsRunningAsDaemon() bool {
+func (d *DarwinDaemonizer) IsRunningAsDaemon() bool {
 	// Check if we're a session leader (setsid was called)
-	// In Linux, if the process is a session leader, its process group ID equals its PID
 	pid := os.Getpid()
 	pgid, err := syscall.Getpgid(pid)
 	if err != nil {
@@ -150,7 +148,7 @@ func (d *LinuxDaemonizer) IsRunningAsDaemon() bool {
 		return false
 	}
 	
-	// Check if our ppid is 1 (init) or systemd
+	// Check if our ppid is 1 (launchd on macOS)
 	ppid := os.Getppid()
-	return ppid == 1 || ppid == 0
+	return ppid == 1
 } 
