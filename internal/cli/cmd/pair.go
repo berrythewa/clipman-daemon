@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	// "strconv"
@@ -11,64 +12,78 @@ import (
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/sync"
+	"github.com/berrythewa/clipman-daemon/internal/ipc"
 	"github.com/spf13/cobra"
 	// "go.uber.org/zap" TODO: no logging or Cobra does it ?/
 )
 
 var (
 	// Pair command flags
-	pairRequest string
-	listPaired  bool
-	removePair  string
-	acceptAll   bool
-	timeout     int
+	pairDeviceID string
+	pairKey      string
+	pairRoom     string
+	pairJSON     bool
+	listPaired   bool
+	removePair   string
+	acceptAll    bool
+	timeout      int
 )
+
+// TODO   clipman pair --show-qr
+// TODO   clipman pair --scan-qr "<payload string>"
+
+// TODO   clipman pair --show-qr --json
+// TODO   clipman pair --show-qr --json --device-id DEVICE_ID
+// TODO   clipman pair --show-qr --json --device-id DEVICE_ID --key PAIR_KEY
+// TODO   clipman pair --show-qr --json --device-id DEVICE_ID --key PAIR_KEY --room ROOM_NAME
 
 // pairCmd represents the pair command for device pairing
 var pairCmd = &cobra.Command{
 	Use:   "pair",
-	Short: "Manage secure device pairing",
-	Long: `Manage secure device pairing for clipboard sync.
-
-The pairing process establishes a trusted connection between devices
-and is the RECOMMENDED way to set up clipboard syncing between your devices.
-
-This command allows you to:
-- Enable pairing mode to receive pairing requests
-- Initiate pairing with another device
-- List paired devices
-- Remove paired devices
-
-Pairing is the most secure approach for device discovery, as it requires
-explicit user confirmation and verification codes to establish trust.
+	Short: "Pair this device with another trusted device via the daemon",
+	Long: `Pair this device with another trusted device for clipboard sync.
+Supports specifying a device ID, pairing key, and (future) room name/ID.
 
 Examples:
-  # Enable pairing mode (waits for incoming requests):
-  clipman pair
-
-  # Request pairing with another device:
-  clipman pair --request "/ip4/192.168.1.100/tcp/45678/p2p/QmHashOfThePeer"
-
-  # List paired devices:
-  clipman pair --list
-
-  # Remove a paired device:
-  clipman pair --remove "QmHashOfThePeer"`,
+  clipman pair --device-id DEVICE_ID --key PAIR_KEY
+  clipman pair --device-id DEVICE_ID --key PAIR_KEY --room ROOM_NAME
+  clipman pair --json
+`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if listPaired {
-			return listPairedDevices()
+		// Build the pair request
+		req := &ipc.Request{
+			Command: "pair",
+			Args: map[string]interface{}{
+				"device_id": pairDeviceID,
+				"key":       pairKey,
+				"room":      pairRoom,
+				"json":      pairJSON,
+			},
 		}
 
-		if removePair != "" {
-			return removePairedDevice(removePair)
+		// Send the request to the daemon
+		resp, err := ipc.SendRequest("", req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to contact daemon: %v\n", err)
+			return err
 		}
 
-		if pairRequest != "" {
-			return requestPairing(pairRequest)
+		if resp.Status != "ok" {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Message)
+			return fmt.Errorf(resp.Message)
 		}
 
-		// If no other flags, enable pairing mode
-		return enablePairingMode()
+		if pairJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(resp.Data)
+		}
+
+		fmt.Println("Pairing successful.")
+		if resp.Data != nil {
+			fmt.Printf("Pairing info: %v\n", resp.Data)
+		}
+		return nil
 	},
 }
 
@@ -430,7 +445,10 @@ func plural(count int) string {
 
 func init() {
 	// Define flags for the pair command
-	pairCmd.Flags().StringVar(&pairRequest, "request", "", "Request secure pairing with the device at the specified address")
+	pairCmd.Flags().StringVar(&pairDeviceID, "device-id", "", "Device ID to pair with")
+	pairCmd.Flags().StringVar(&pairKey, "key", "", "Pairing key")
+	pairCmd.Flags().StringVar(&pairRoom, "room", "", "Room name/ID (optional, for future use)")
+	pairCmd.Flags().BoolVar(&pairJSON, "json", false, "Output pairing result as JSON")
 	pairCmd.Flags().BoolVar(&listPaired, "list", false, "List all securely paired devices")
 	pairCmd.Flags().StringVar(&removePair, "remove", "", "Remove a securely paired device by Peer ID")
 	pairCmd.Flags().BoolVar(&acceptAll, "auto-accept", false, "Automatically accept all pairing requests (use with caution)")
