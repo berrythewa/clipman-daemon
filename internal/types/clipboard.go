@@ -19,19 +19,11 @@ const (
 	TypeRTF      ContentType = "rtf"
 )
 
-
-// type ClipboardContent struct {
-// 	Type		ContentType
-// 	Data		[]byte
-// 	Created		time.Time
-// 	Compressed	bool
-// }
-
 type ClipboardContent struct {
-    Type    string
-    Data    []byte // for raw data
-    Handle  windows.Handle // for local handle use only
-    Created time.Time
+	Type		ContentType
+	Data		[]byte
+	Created		time.Time
+	Compressed	bool
 }
 
 func (c1 *ClipboardContent) Equal(c2 *ClipboardContent) bool {

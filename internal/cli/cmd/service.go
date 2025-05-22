@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
-	"github.com/your-project/platform"
+	"github.com/berrythewa/clipman-daemon/internal/platform"
 )
 
 var (

@@ -42,6 +42,7 @@ type WindowsClipboard struct {
 	mu             sync.Mutex
 	isRunning      bool
 	windowThread   chan struct{}
+
 }
 
 // Window class name for the clipboard listener
