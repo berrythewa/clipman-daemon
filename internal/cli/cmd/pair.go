@@ -19,14 +19,9 @@ import (
 
 var (
 	// Pair command flags
-	pairDeviceID string
-	pairKey      string
-	pairRoom     string
-	pairJSON     bool
+	pairAddress string
 	listPaired   bool
 	removePair   string
-	acceptAll    bool
-	timeout      int
 )
 
 // TODO   clipman pair --show-qr
@@ -42,48 +37,25 @@ var pairCmd = &cobra.Command{
 	Use:   "pair",
 	Short: "Pair this device with another trusted device via the daemon",
 	Long: `Pair this device with another trusted device for clipboard sync.
-Supports specifying a device ID, pairing key, and (future) room name/ID.
 
 Examples:
-  clipman pair --device-id DEVICE_ID --key PAIR_KEY
-  clipman pair --device-id DEVICE_ID --key PAIR_KEY --room ROOM_NAME
-  clipman pair --json
+  clipman pair                # Enable pairing mode, print address, wait for requests
+  clipman pair --address <address>  # Initiate pairing with given address
+  clipman pair --list         # List paired devices
+  clipman pair --remove <peerID> # Remove a paired device
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Build the pair request
-		req := &ipc.Request{
-			Command: "pair",
-			Args: map[string]interface{}{
-				"device_id": pairDeviceID,
-				"key":       pairKey,
-				"room":      pairRoom,
-				"json":      pairJSON,
-			},
+		if listPaired {
+			return listPairedDevices()
 		}
-
-		// Send the request to the daemon
-		resp, err := ipc.SendRequest("", req)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: failed to contact daemon: %v\n", err)
-			return err
+		if removePair != "" {
+			return removePairedDevice(removePair)
 		}
-
-		if resp.Status != "ok" {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Message)
-			return fmt.Errorf(resp.Message)
+		if pairAddress != "" {
+			return requestPairing(pairAddress)
 		}
-
-		if pairJSON {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(resp.Data)
-		}
-
-		fmt.Println("Pairing successful.")
-		if resp.Data != nil {
-			fmt.Printf("Pairing info: %v\n", resp.Data)
-		}
-		return nil
+		// Default: enable pairing mode and print address, prompt for each request
+		return enablePairingModeInteractive()
 	},
 }
 
@@ -149,85 +121,44 @@ func requestPairing(address string) error {
 	return nil
 }
 
-// enablePairingMode puts the device in pairing mode to receive requests
-func enablePairingMode() error {
-	// Get sync manager
+// enablePairingModeInteractive enables pairing mode and prompts for each incoming request
+func enablePairingModeInteractive() error {
 	syncManager, err := getSyncManager()
 	if err != nil {
 		return err
 	}
-
-	// Check if pairing is enabled in the config and try to enable it if not
 	if err := ensurePairingEnabled(syncManager); err != nil {
 		return err
 	}
-
-	// Start the sync manager if needed
 	if err := syncManager.Start(); err != nil {
 		return fmt.Errorf("failed to start sync manager: %w", err)
 	}
 	defer syncManager.Stop()
 
-	// Create the pairing callback
 	pairingCallback := func(request types.PairingRequest, remotePeerID string) (bool, error) {
-		if acceptAll {
-			fmt.Println("✅ Automatically accepting pairing request from:", request.DeviceName)
-			return true, nil
-		}
-
-		// Display pairing request information
 		fmt.Println("\n🔄 Incoming pairing request:")
 		fmt.Println("Device Name:", request.DeviceName)
 		fmt.Println("Device Type:", request.DeviceType)
 		fmt.Println("Peer ID:", request.PeerID)
 		fmt.Println()
-		
-		// Prompt for confirmation
 		fmt.Print("Accept pairing request? (y/n): ")
 		reader := bufio.NewReader(os.Stdin)
 		response, err := reader.ReadString('\n')
 		if err != nil {
 			return false, fmt.Errorf("failed to read input: %w", err)
 		}
-
 		response = strings.TrimSpace(strings.ToLower(response))
 		return response == "y" || response == "yes", nil
 	}
 
-	// Enable pairing mode
 	address, err := syncManager.EnablePairing(pairingCallback)
 	if err != nil {
 		return fmt.Errorf("failed to enable pairing: %w", err)
 	}
-
-	// Set up timeout if specified
-	var timeoutChan <-chan time.Time
-	if timeout > 0 {
-		timeoutChan = time.After(time.Duration(timeout) * time.Second)
-		fmt.Printf("Pairing mode enabled for %d seconds\n", timeout)
-	} else {
-		fmt.Println("Pairing mode enabled indefinitely (Press Ctrl+C to cancel)")
-	}
-
 	fmt.Println("\n📱 Share this address with the device you want to pair with:")
 	fmt.Println(address)
-	
-	if acceptAll {
-		fmt.Println("\n⚠️ WARNING: Auto-accept mode is enabled! All incoming pairing requests will be accepted.")
-	}
-	
-	fmt.Println("\nWaiting for pairing requests...")
-
-	// Wait for timeout or user interruption
-	select {
-	case <-timeoutChan:
-		fmt.Println("\nPairing mode timed out")
-	case <-make(chan struct{}): // This channel is never closed, just for blocking
-		// Will be interrupted by Ctrl+C
-	}
-
-	syncManager.DisablePairing()
-	return nil
+	fmt.Println("\nWaiting for pairing requests... (Press Ctrl+C to cancel)")
+	select {} // Block forever; user can Ctrl+C to exit
 }
 
 // ensurePairingEnabled checks if pairing is enabled in the config
@@ -444,13 +375,7 @@ func plural(count int) string {
 }
 
 func init() {
-	// Define flags for the pair command
-	pairCmd.Flags().StringVar(&pairDeviceID, "device-id", "", "Device ID to pair with")
-	pairCmd.Flags().StringVar(&pairKey, "key", "", "Pairing key")
-	pairCmd.Flags().StringVar(&pairRoom, "room", "", "Room name/ID (optional, for future use)")
-	pairCmd.Flags().BoolVar(&pairJSON, "json", false, "Output pairing result as JSON")
+	pairCmd.Flags().StringVar(&pairAddress, "address", "", "Address of the device to pair with (manual entry)")
 	pairCmd.Flags().BoolVar(&listPaired, "list", false, "List all securely paired devices")
 	pairCmd.Flags().StringVar(&removePair, "remove", "", "Remove a securely paired device by Peer ID")
-	pairCmd.Flags().BoolVar(&acceptAll, "auto-accept", false, "Automatically accept all pairing requests (use with caution)")
-	pairCmd.Flags().IntVar(&timeout, "timeout", 0, "Timeout in seconds for pairing mode (0 = no timeout)")
 } 
