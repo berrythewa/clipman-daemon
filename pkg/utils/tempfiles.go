@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
+	"errors"
 )
 
 // CreateTempFile creates a temp file in the given dataDir with a unique name and extension.
 // Returns the full path and the open file handle.
 func CreateTempFile(dataDir, prefix, ext string) (string, *os.File, error) {
 	// Use UUID for uniqueness, or timestamp if you prefer
-	id := utils.NewUUID() // or time.Now().Format("20060102_150405.000")
+	id := GenerateUUID() 
 	name := fmt.Sprintf("%s_%s%s", prefix, id, ext)
 	fullPath := filepath.Join(dataDir, name)
 	f, err := os.Create(fullPath)
