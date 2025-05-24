@@ -24,6 +24,7 @@ import (
 	cliplib "github.com/atotto/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"bufio"
+	"github.com/berrythewa/clipman-daemon/pkg/utils"
 )
 
 // Available monitoring modes
@@ -153,7 +154,7 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 	// Try to detect custom content first
 	if content, err := c.readCustomFormat(formats); err == nil {
 		// Create content hash
-		contentHash := hashContent(content.Data)
+		contentHash := utils.hashContent(content.Data)
 		
 		// Check if content has changed
 		if bytes.Equal(content.Data, c.lastContent) {
@@ -367,11 +368,7 @@ func (c *LinuxClipboard) readHtmlFormat(formats []string) (*types.ClipboardConte
 		}
 
 		c.logger.Printf("Read HTML data: %d bytes", len(output))
-		return &types.ClipboardContent{
-			Type:    types.TypeHTML,
-			Data:    output,
-			Created: time.Now(),
-		}, nil
+		return newClipboardContent(types.TypeHTML, output), nil
 	}
 
 	// Try Wayland
@@ -384,11 +381,7 @@ func (c *LinuxClipboard) readHtmlFormat(formats []string) (*types.ClipboardConte
 		}
 
 		c.logger.Printf("Read HTML data: %d bytes", len(output))
-		return &types.ClipboardContent{
-			Type:    types.TypeHTML,
-			Data:    output,
-			Created: time.Now(),
-		}, nil
+		return newClipboardContent(types.TypeHTML, output), nil
 	}
 
 	return nil, fmt.Errorf("HTML clipboard access not available")
@@ -410,11 +403,7 @@ func (c *LinuxClipboard) readRtfFormat(formats []string) (*types.ClipboardConten
 		}
 
 		c.logger.Printf("Read RTF data: %d bytes", len(output))
-		return &types.ClipboardContent{
-			Type:    types.TypeRTF,
-			Data:    output,
-			Created: time.Now(),
-		}, nil
+		return newClipboardContent(types.TypeRTF, output), nil
 	}
 
 	// Try Wayland
@@ -427,11 +416,7 @@ func (c *LinuxClipboard) readRtfFormat(formats []string) (*types.ClipboardConten
 		}
 
 		c.logger.Printf("Read RTF data: %d bytes", len(output))
-		return &types.ClipboardContent{
-			Type:    types.TypeRTF,
-			Data:    output,
-			Created: time.Now(),
-		}, nil
+		return newClipboardContent(types.TypeRTF, output), nil
 	}
 
 	return nil, fmt.Errorf("RTF clipboard access not available")
@@ -463,11 +448,7 @@ func (c *LinuxClipboard) readImageFormat(formats []string) (*types.ClipboardCont
 		}
 
 		c.logger.Printf("Read image data: %d bytes", len(output))
-		return &types.ClipboardContent{
-			Type:    types.TypeImage,
-			Data:    output,
-			Created: time.Now(),
-		}, nil
+		return newClipboardContent(types.TypeImage, output), nil
 	}
 
 	// Try Wayland
@@ -480,11 +461,7 @@ func (c *LinuxClipboard) readImageFormat(formats []string) (*types.ClipboardCont
 		}
 
 		c.logger.Printf("Read image data: %d bytes", len(output))
-		return &types.ClipboardContent{
-			Type:    types.TypeImage,
-			Data:    output,
-			Created: time.Now(),
-		}, nil
+		return newClipboardContent(types.TypeImage, output), nil
 	}
 
 	return nil, fmt.Errorf("image clipboard access not available")
@@ -547,11 +524,7 @@ func (c *LinuxClipboard) parseURIData(data []byte) (*types.ClipboardContent, err
 
 		if len(files) == 1 {
 			c.logger.Printf("Single file path: %s", files[0])
-			return &types.ClipboardContent{
-				Type:    types.TypeFilePath,
-				Data:    []byte(files[0]),
-				Created: time.Now(),
-			}, nil
+			return newClipboardContent(types.TypeFilePath, []byte(files[0])), nil
 		} else if len(files) > 1 {
 			// Serialize multiple files
 			fileJSON, err := json.Marshal(files)
@@ -559,11 +532,7 @@ func (c *LinuxClipboard) parseURIData(data []byte) (*types.ClipboardContent, err
 				return nil, fmt.Errorf("failed to serialize file list: %v", err)
 			}
 			c.logger.Printf("Multiple file paths: %d files", len(files))
-			return &types.ClipboardContent{
-				Type:    types.TypeFile,
-				Data:    fileJSON,
-				Created: time.Now(),
-			}, nil
+			return newClipboardContent(types.TypeFile, fileJSON), nil
 		}
 	}
 
@@ -587,11 +556,7 @@ func (c *LinuxClipboard) parseURIData(data []byte) (*types.ClipboardContent, err
 
 	if len(files) == 1 {
 		c.logger.Printf("Single file path (URI): %s", files[0])
-		return &types.ClipboardContent{
-			Type:    types.TypeFilePath,
-			Data:    []byte(files[0]),
-			Created: time.Now(),
-		}, nil
+		return newClipboardContent(types.TypeFilePath, []byte(files[0])), nil
 	} else if len(files) > 1 {
 		// Serialize multiple files
 		fileJSON, err := json.Marshal(files)
@@ -599,11 +564,7 @@ func (c *LinuxClipboard) parseURIData(data []byte) (*types.ClipboardContent, err
 			return nil, fmt.Errorf("failed to serialize file list: %v", err)
 		}
 		c.logger.Printf("Multiple file paths (URI): %d files", len(files))
-		return &types.ClipboardContent{
-			Type:    types.TypeFile,
-			Data:    fileJSON,
-			Created: time.Now(),
-		}, nil
+		return newClipboardContent(types.TypeFile, fileJSON), nil
 	}
 
 	return nil, fmt.Errorf("no valid file paths found in URI data")
@@ -1387,7 +1348,7 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 				}
 				
 				// Create simple hash of content to detect changes
-				currentHash := hashContent(content.Data)
+				currentHash := utils.hashContent(content.Data)
 				
 				// If content hash is the same, continue
 				if currentHash == lastContentHash {
@@ -1420,23 +1381,7 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 	}()
 }
 
-// hashContent creates a simple hash string of content for change detection
-func hashContent(data []byte) string {
-	if len(data) == 0 {
-		return ""
-	}
-	
-	// Simple checksum-based hash that doesn't need to access clipboard again
-	var hash uint32
-	for i, b := range data {
-		hash = (hash << 5) + hash + uint32(b)
-		// Only use first 4KB for hashing large content
-		if i > 4096 {
-			break
-		}
-	}
-	return fmt.Sprintf("%x", hash)
-}
+
 
 // formatsEqual checks if two string slices contain the same elements (order independent)
 func formatsEqual(a, b []string) bool {
@@ -2170,11 +2115,7 @@ func (c *LinuxClipboard) readCustomFormat(formats []string) (*types.ClipboardCon
 	}
 	
 	// Return the content
-	return &types.ClipboardContent{
-		Type:    matchedHandler.TypeID,
-		Data:    data,
-		Created: time.Now(),
-	}, nil
+	return newClipboardContent(matchedHandler.TypeID, data), nil
 }
 
 // writeCustomContent writes data using a custom format handler
@@ -2265,3 +2206,15 @@ This clipboard implementation for Linux has been significantly enhanced with the
 The implementation is designed to be robust, efficient, and provide a consistent experience
 across different Linux desktop environments while minimizing resource usage.
 */
+
+// Helper to create a new ClipboardContent with hash and occurrences
+func newClipboardContent(contentType types.ContentType, data []byte) *types.ClipboardContent {
+	now := time.Now()
+	return &types.ClipboardContent{
+		Type:        contentType,
+		Data:        data,
+		Hash:        utils.HashContent(data),
+		Created:     now,
+		Occurrences: []time.Time{now},
+	}
+}
