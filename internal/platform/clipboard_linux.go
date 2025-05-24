@@ -2061,7 +2061,6 @@ func (c *LinuxClipboard) GetRegisteredCustomMimeTypes() []string {
 	for mimeType := range c.customTypes {
 		types = append(types, mimeType)
 	}
-	
 	return types
 }
 
@@ -2115,7 +2114,7 @@ func (c *LinuxClipboard) readCustomFormat(formats []string) (*types.ClipboardCon
 	}
 	
 	// Return the content
-	return newClipboardContent(matchedHandler.TypeID, data), nil
+	return utils.newClipboardContent(matchedHandler.TypeID, data), nil
 }
 
 // writeCustomContent writes data using a custom format handler
@@ -2161,60 +2160,4 @@ func (c *LinuxClipboard) writeCustomContent(data []byte, handler types.CustomMim
 	}
 	
 	return fmt.Errorf("custom format clipboard writing not available")
-}
-
-/*
-IMPLEMENTATION SUMMARY:
-
-This clipboard implementation for Linux has been significantly enhanced with the following features:
-
-1. Content Caching System
-   - In-memory caching of clipboard content
-   - Configurable cache expiration times
-   - Content type and format hashing for quick comparison
-
-2. Content Type Support
-   - Text/plain (with UTF-8 handling)
-   - HTML (text/html)
-   - RTF (text/rtf) with plaintext extraction
-   - Images (PNG, JPEG, GIF, BMP) with format detection and conversion
-   - File paths and URI lists
-   - Custom MIME types with extensible registration system
-
-3. Platform Support
-   - X11 clipboard access using xclip and xsel
-   - Wayland clipboard access using wl-paste and wl-copy
-   - Mir display server support
-   - Fallback mechanisms when primary tools aren't available
-
-4. Monitoring Methods
-   - Efficient event-based monitoring with XFixes (X11)
-   - Wayland-specific monitoring with wl-paste
-   - Adaptive polling with sleep optimization for lower CPU usage
-
-5. Optimizations
-   - Image format conversion for broader compatibility
-   - Resource tracking and cleanup for temporary files
-   - Retry mechanisms for transient clipboard failures
-   - Format detection before content reading to reduce clipboard operations
-
-6. Extensibility
-   - Custom MIME type registration system
-   - Pluggable content detection and conversion
-   - Platform abstraction for future Linux variations
-
-The implementation is designed to be robust, efficient, and provide a consistent experience
-across different Linux desktop environments while minimizing resource usage.
-*/
-
-// Helper to create a new ClipboardContent with hash and occurrences
-func newClipboardContent(contentType types.ContentType, data []byte) *types.ClipboardContent {
-	now := time.Now()
-	return &types.ClipboardContent{
-		Type:        contentType,
-		Data:        data,
-		Hash:        utils.HashContent(data),
-		Created:     now,
-		Occurrences: []time.Time{now},
-	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
+	"github.com/berrythewa/clipman-daemon/pkg/utils"
 	"go.uber.org/zap"
 )
 
@@ -60,6 +61,8 @@ func (c *DarwinClipboard) SetPollingIntervals(baseMs, maxMs int64) {
 	c.maxInterval = time.Duration(maxMs) * time.Millisecond
 }
 
+
+
 // Clipboard interface methods (to be implemented)
 func (c *DarwinClipboard) Read() (*types.ClipboardContent, error) {
 	// 1. Check for change
@@ -72,19 +75,19 @@ func (c *DarwinClipboard) Read() (*types.ClipboardContent, error) {
 	// 3. Try to read each supported type (priority order)
 	// HTML
 	if html, err := readHTML(); err == nil && html != "" {
-		content := &types.ClipboardContent{Type: types.TypeHTML, Data: []byte(html), Created: time.Now()}
+		content := utils.newClipboardContent(types.TypeHTML, []byte(html))
 		c.logger.Info("Read HTML from clipboard", zap.Int("size", len(content.Data)))
 		return content, nil
 	}
 	// RTF
 	if rtf, err := readRTF(); err == nil && len(rtf) > 0 {
-		content := &types.ClipboardContent{Type: types.TypeRTF, Data: rtf, Created: time.Now()}
+		content := utils.newClipboardContent(types.TypeRTF, rtf)
 		c.logger.Info("Read RTF from clipboard", zap.Int("size", len(content.Data)))
 		return content, nil
 	}
 	// Image
 	if img, err := readImage(); err == nil && len(img) > 0 {
-		content := &types.ClipboardContent{Type: types.TypeImage, Data: img, Created: time.Now()}
+		content := utils.newClipboardContent(types.TypeImage, img)
 		c.logger.Info("Read image from clipboard", zap.Int("size", len(content.Data)))
 		return content, nil
 	}
@@ -93,21 +96,21 @@ func (c *DarwinClipboard) Read() (*types.ClipboardContent, error) {
 		// Serialize as JSON
 		fileJSON, ferr := json.Marshal(files)
 		if ferr == nil {
-			content := &types.ClipboardContent{Type: types.TypeFile, Data: fileJSON, Created: time.Now()}
+			content := utils.newClipboardContent(types.TypeFile, fileJSON)
 			c.logger.Info("Read file list from clipboard", zap.Int("count", len(files)))
 			return content, nil
 		}
 	}
 	// URL
 	if url, err := readURL(); err == nil && url != "" {
-		content := &types.ClipboardContent{Type: types.TypeURL, Data: []byte(url), Created: time.Now()}
+		content := utils.newClipboardContent(types.TypeURL, []byte(url))
 		c.logger.Info("Read URL from clipboard", zap.String("url", url))
 		return content, nil
 	}
 	// Text (fallback)
 	if text, err := readText(); err == nil && text != "" {
 		// Optionally: Detect if it's a file path, URL, etc.
-		content := &types.ClipboardContent{Type: types.TypeText, Data: []byte(text), Created: time.Now()}
+		content := utils.newClipboardContent(types.TypeText, []byte(text))
 		c.logger.Info("Read text from clipboard", zap.Int("size", len(content.Data)))
 		return content, nil
 	}

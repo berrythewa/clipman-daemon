@@ -29,6 +29,7 @@ import (
 	"unsafe"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
+	"github.com/berrythewa/clipman-daemon/pkg/utils"
 	"golang.org/x/sys/windows"
 	"go.uber.org/zap"
 )
@@ -370,20 +371,12 @@ func (c *WindowsClipboard) readTextFormat(format uint32) (*types.ClipboardConten
 	// Check if text is a URL
 	if isURL(textData) {
 		c.logger.Info("Detected URL in clipboard", zap.String("url", truncateString(textData, 100)))
-		return &types.ClipboardContent{
-			Type:    types.TypeURL,
-			Data:    []byte(textData),
-			Created: time.Now(),
-		}, nil
+		return utils.newClipboardContent(types.TypeURL, []byte(textData)), nil
 	}
 	
 	// Regular text
 	c.logger.Info("Detected text in clipboard", zap.String("text", truncateString(textData, 100)))
-	return &types.ClipboardContent{
-		Type:    types.TypeText,
-		Data:    []byte(textData),
-		Created: time.Now(),
-	}, nil
+	return utils.newClipboardContent(types.TypeText, []byte(textData)), nil
 }
 
 // readImageFormat reads image content from clipboard
@@ -408,11 +401,7 @@ func (c *WindowsClipboard) readImageFormat(format uint32) (*types.ClipboardConte
 	}
 	
 	c.logger.Info("Converted image size", zap.Int("size", len(imgData)))
-	return &types.ClipboardContent{
-		Type:    types.TypeImage,
-		Data:    imgData,
-		Created: time.Now(),
-	}, nil
+	return utils.newClipboardContent(types.TypeImage, imgData), nil
 }
 
 // readFileFormat reads file list from clipboard
@@ -434,11 +423,7 @@ func (c *WindowsClipboard) readFileFormat() (*types.ClipboardContent, error) {
 		filePath := windows.UTF16ToString(buf)
 		
 		c.logger.Info("Single file path detected", zap.String("path", filePath))
-		return &types.ClipboardContent{
-			Type:    types.TypeFilePath,
-			Data:    []byte(filePath),
-			Created: time.Now(),
-		}, nil
+		return utils.newClipboardContent(types.TypeFilePath, []byte(filePath)), nil
 	} else {
 		// Multiple files - serialize as JSON
 		files := make([]string, 0, count)
@@ -456,11 +441,7 @@ func (c *WindowsClipboard) readFileFormat() (*types.ClipboardContent, error) {
 		}
 		
 		c.logger.Info("Multiple files detected", zap.Int("json_size", len(fileData)))
-		return &types.ClipboardContent{
-			Type:    types.TypeFile,
-			Data:    fileData,
-			Created: time.Now(),
-		}, nil
+		return utils.newClipboardContent(types.TypeFile, fileData), nil
 	}
 }
 
@@ -491,11 +472,7 @@ func (c *WindowsClipboard) readHTMLFormat() (*types.ClipboardContent, error) {
 		return nil, err
 	}
 	c.logger.Info("Read HTML from clipboard", zap.Int("size", len(html)))
-	return &types.ClipboardContent{
-		Type:    types.TypeHTML,
-		Data:    []byte(html),
-		Created: time.Now(),
-	}, nil
+	return utils.newClipboardContent(types.TypeHTML, []byte(html)), nil
 }
 
 // parseCFHTML extracts the HTML fragment from CF_HTML clipboard data
@@ -566,11 +543,7 @@ func (c *WindowsClipboard) readRTFFormat() (*types.ClipboardContent, error) {
 		data = append(data, b)
 	}
 	c.logger.Info("Read RTF from clipboard", zap.Int("size", len(data)))
-	return &types.ClipboardContent{
-		Type:    types.TypeRTF,
-		Data:    data,
-		Created: time.Now(),
-	}, nil
+	return utils.newClipboardContent(types.TypeRTF, data), nil
 }
 
 // MonitorChanges monitors for clipboard changes and sends updates to the channel
@@ -913,12 +886,7 @@ func (c *WindowsClipboard) readBitmapHandleFormat() (*types.ClipboardContent, er
 		return nil, fmt.Errorf("failed to get HBITMAP from clipboard: %w", err)
 	}
 	c.logger.Info("Read HBITMAP handle from clipboard (local use only)", zap.Uintptr("handle", uintptr(h)))
-	return &types.ClipboardContent{
-		Type:   types.TypeBitmapHandle,
-		Handle: h,
-		Data:   nil,
-		Created: time.Now(),
-	}, nil
+	return utils.newClipboardContent(types.TypeBitmapHandle, nil), nil
 }
 
 // readEnhMetafileFormat handles CF_ENHMETAFILE (HENHMETAFILE) clipboard data
@@ -930,12 +898,7 @@ func (c *WindowsClipboard) readEnhMetafileFormat() (*types.ClipboardContent, err
 		return nil, fmt.Errorf("failed to get HENHMETAFILE from clipboard: %w", err)
 	}
 	c.logger.Info("Read HENHMETAFILE handle from clipboard (local use only)", zap.Uintptr("handle", uintptr(h)))
-	return &types.ClipboardContent{
-		Type:   types.TypeMetafileHandle,
-		Handle: h,
-		Data:   nil,
-		Created: time.Now(),
-	}, nil
+	return utils.newClipboardContent(types.TypeMetafileHandle, nil), nil
 }
 
 // writeBitmapHandle writes a HBITMAP handle to the clipboard (local use only)

@@ -3,6 +3,7 @@ package utils
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 )
 
 func Min(a, b int) int {
@@ -40,4 +41,15 @@ func hashContentBis(data []byte) string {
 		}
 	}
 	return fmt.Sprintf("%x", hash)
+}
+
+func newClipboardContent(contentType types.ContentType, data []byte) *types.ClipboardContent {
+	now := time.Now()
+	return &types.ClipboardContent{
+		Type:        contentType,
+		Data:        data,
+		Hash:        utils.HashContent(data),
+		Created:     now,
+		Occurrences: []time.Time{now},
+	}
 }
