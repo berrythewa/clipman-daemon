@@ -1,6 +1,9 @@
 package clipboard
 
-import "github.com/berrythewa/clipman-daemon/internal/types"
+import (
+	"github.com/berrythewa/clipman-daemon/internal/types"
+	"github.com/berrythewa/clipman-daemon/internal/platform"
+)
 
 // Defines interface for clipboard operations.
 type Clipboard interface {

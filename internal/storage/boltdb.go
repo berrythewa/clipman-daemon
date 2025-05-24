@@ -23,6 +23,7 @@ const (
 	clipboardBucket = "clipboard"
 	defaultMaxSize  = 100 * 1024 * 1024 // 100MB default cache size
 	keepItems       = 10                // Number of items to keep when flushing
+	maxOccurrences  = 1000             // Maximum number of occurrences to store per item
 )
 
 // BoltStorageInterface defines the methods for BoltStorage
@@ -38,6 +39,8 @@ type BoltStorageInterface interface {
 	FlushCache() error
 	GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error)
 	LogCompleteHistory(options config.HistoryOptions) error
+	GetOccurrenceStats(hash string) (*types.OccurrenceStats, error)
+	GetFrequentContent(limit int) ([]*types.ClipboardContent, error)
 }
 
 // BoltStorage implements persistent storage for clipboard contents using BoltDB
@@ -128,25 +131,65 @@ func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
 // SaveContent saves a clipboard content item to the database with hash-based deduplication and occurrence tracking
 func (s *BoltStorage) SaveContent(content *types.ClipboardContent) error {
 	now := time.Now()
-	content.Hash = utils.HashContent(content.Data)
+	
+	// Generate hash based on content size
+	if len(content.Data) > 1024*1024 { // 1MB threshold
+		content.Hash = utils.HashContentBis(content.Data) // Use faster hash for large content
+	} else {
+		content.Hash = utils.HashContent(content.Data) // Use SHA-256 for normal content
+	}
 
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
+		
+		// Use hash as the key
 		v := b.Get([]byte(content.Hash))
 		if v != nil {
 			// Existing entry: update occurrences
 			var existing types.ClipboardContent
 			if err := json.Unmarshal(v, &existing); err == nil {
+				// Add new occurrence
 				existing.Occurrences = append(existing.Occurrences, now)
-				existing.Created = now // Optionally update Created to latest
-				encoded, _ := json.Marshal(existing)
+				
+				// Sort occurrences in descending order (newest first)
+				sort.Slice(existing.Occurrences, func(i, j int) bool {
+					return existing.Occurrences[i].After(existing.Occurrences[j])
+				})
+				
+				// Limit number of stored occurrences
+				if len(existing.Occurrences) > maxOccurrences {
+					existing.Occurrences = existing.Occurrences[:maxOccurrences]
+				}
+				
+				// Update metadata
+				existing.Created = existing.Occurrences[0] // Most recent occurrence
+				
+				s.logger.Debug("Updated content occurrences",
+					zap.String("hash", existing.Hash),
+					zap.Int("occurrence_count", len(existing.Occurrences)),
+					zap.Time("latest", existing.Created))
+				
+				encoded, err := json.Marshal(existing)
+				if err != nil {
+					return fmt.Errorf("failed to marshal updated content: %w", err)
+				}
 				return b.Put([]byte(content.Hash), encoded)
 			}
 		}
+
 		// New entry
 		content.Created = now
 		content.Occurrences = []time.Time{now}
-		encoded, _ := json.Marshal(content)
+		
+		s.logger.Debug("New content added",
+			zap.String("hash", content.Hash),
+			zap.Time("created", content.Created),
+			zap.String("type", string(content.Type)))
+		
+		encoded, err := json.Marshal(content)
+		if err != nil {
+			return fmt.Errorf("failed to marshal new content: %w", err)
+		}
 		return b.Put([]byte(content.Hash), encoded)
 	})
 }
@@ -158,25 +201,30 @@ func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
-		return b.ForEach(func(_, v []byte) error {
+		return b.ForEach(func(k, v []byte) error {
 			var content types.ClipboardContent
 			if err := json.Unmarshal(v, &content); err != nil {
-				return nil // skip invalid
+				s.logger.Warn("Failed to unmarshal content", zap.Error(err), zap.Binary("hash", k))
+				return nil // skip invalid entries
 			}
+			
+			// Find latest occurrence
 			for _, occ := range content.Occurrences {
 				if occ.After(latestTime) {
 					latestTime = occ
 					copyContent := content
-					copyContent.Created = occ
+					copyContent.Created = occ // Use occurrence time as creation time
 					latestContent = &copyContent
 				}
 			}
 			return nil
 		})
 	})
+
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get latest content: %w", err)
 	}
+
 	if latestContent != nil && latestContent.Compressed {
 		decompressed, err := compression.DecompressContent(latestContent)
 		if err != nil {
@@ -184,6 +232,7 @@ func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 		}
 		latestContent = decompressed
 	}
+
 	return latestContent, nil
 }
 
@@ -193,13 +242,17 @@ func (s *BoltStorage) GetContentSince(since time.Time) ([]*types.ClipboardConten
 		Content *types.ClipboardContent
 		Time    time.Time
 	}
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
-		return b.ForEach(func(_, v []byte) error {
+		return b.ForEach(func(k, v []byte) error {
 			var content types.ClipboardContent
 			if err := json.Unmarshal(v, &content); err != nil {
-				return nil // skip invalid
+				s.logger.Warn("Failed to unmarshal content", zap.Error(err), zap.Binary("hash", k))
+				return nil // skip invalid entries
 			}
+
+			// Check each occurrence
 			for _, occ := range content.Occurrences {
 				if occ.After(since) || occ.Equal(since) {
 					copyContent := content
@@ -213,24 +266,32 @@ func (s *BoltStorage) GetContentSince(since time.Time) ([]*types.ClipboardConten
 			return nil
 		})
 	})
+
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get content since %v: %w", since, err)
 	}
+
 	// Sort by occurrence time ascending
 	sort.Slice(occurrences, func(i, j int) bool {
 		return occurrences[i].Time.Before(occurrences[j].Time)
 	})
-	// Flatten to []*ClipboardContent
-	var result []*types.ClipboardContent
+
+	// Flatten to []*ClipboardContent and handle compression
+	result := make([]*types.ClipboardContent, 0, len(occurrences))
 	for _, occ := range occurrences {
 		if occ.Content.Compressed {
 			decompressed, err := compression.DecompressContent(occ.Content)
-			if err == nil {
-				occ.Content = decompressed
+			if err != nil {
+				s.logger.Error("Failed to decompress content", 
+					zap.Error(err),
+					zap.String("hash", occ.Content.Hash))
+				continue
 			}
+			occ.Content = decompressed
 		}
 		result = append(result, occ.Content)
 	}
+
 	return result, nil
 }
 
@@ -738,4 +799,105 @@ func optionOrDefault(value interface{}, defaultText string) string {
 	default:
 		return fmt.Sprintf("%v", value)
 	}
+}
+
+// GetOccurrenceStats returns statistics about content occurrences
+func (s *BoltStorage) GetOccurrenceStats(hash string) (*types.OccurrenceStats, error) {
+	var stats *types.OccurrenceStats
+	
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(clipboardBucket))
+		v := b.Get([]byte(hash))
+		if v == nil {
+			return fmt.Errorf("content not found")
+		}
+		
+		var content types.ClipboardContent
+		if err := json.Unmarshal(v, &content); err != nil {
+			return fmt.Errorf("failed to unmarshal content: %w", err)
+		}
+		
+		// Calculate statistics
+		stats = &types.OccurrenceStats{
+			Hash:            hash,
+			TotalOccurrences: len(content.Occurrences),
+			FirstSeen:       content.Occurrences[len(content.Occurrences)-1],
+			LastSeen:        content.Occurrences[0],
+			ContentType:     content.Type,
+		}
+		
+		// Calculate frequency if we have multiple occurrences
+		if len(content.Occurrences) > 1 {
+			duration := content.Occurrences[0].Sub(content.Occurrences[len(content.Occurrences)-1])
+			stats.AverageFrequency = duration / time.Duration(len(content.Occurrences)-1)
+		}
+		
+		return nil
+	})
+	
+	if err != nil {
+		return nil, fmt.Errorf("failed to get occurrence stats: %w", err)
+	}
+	
+	return stats, nil
+}
+
+// GetFrequentContent returns the most frequently occurring content
+func (s *BoltStorage) GetFrequentContent(limit int) ([]*types.ClipboardContent, error) {
+	type contentWithFreq struct {
+		content *types.ClipboardContent
+		freq    int
+	}
+	
+	var items []contentWithFreq
+	
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(clipboardBucket))
+		return b.ForEach(func(k, v []byte) error {
+			var content types.ClipboardContent
+			if err := json.Unmarshal(v, &content); err != nil {
+				s.logger.Warn("Failed to unmarshal content", zap.Error(err), zap.Binary("hash", k))
+				return nil // skip invalid entries
+			}
+			
+			items = append(items, contentWithFreq{
+				content: &content,
+				freq:    len(content.Occurrences),
+			})
+			return nil
+		})
+	})
+	
+	if err != nil {
+		return nil, fmt.Errorf("failed to get frequent content: %w", err)
+	}
+	
+	// Sort by frequency descending
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].freq > items[j].freq
+	})
+	
+	// Take top N items
+	if limit > 0 && limit < len(items) {
+		items = items[:limit]
+	}
+	
+	// Convert to result format
+	result := make([]*types.ClipboardContent, len(items))
+	for i, item := range items {
+		if item.content.Compressed {
+			decompressed, err := compression.DecompressContent(item.content)
+			if err != nil {
+				s.logger.Error("Failed to decompress content",
+					zap.Error(err),
+					zap.String("hash", item.content.Hash))
+				continue
+			}
+			result[i] = decompressed
+		} else {
+			result[i] = item.content
+		}
+	}
+	
+	return result, nil
 }

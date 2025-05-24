@@ -1,9 +1,14 @@
+// pkg/utils/misc.go
+
 package utils
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
+
+	"github.com/berrythewa/clipman-daemon/internal/types"
 )
 
 func Min(a, b int) int {
@@ -20,22 +25,20 @@ func Max(a, b int) int {
 	return b
 }
 
-func hashContent(data []byte) string {
-    h := sha256.Sum256(data)
-    return hex.EncodeToString(h[:])
+// HashContent creates a SHA-256 hash string of content for change detection
+func HashContent(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
 }
 
-// hashContent creates a simple hash string of content for change detection
-func hashContentBis(data []byte) string {
+// HashContentBis creates a simple checksum-based hash for large content
+func HashContentBis(data []byte) string {
 	if len(data) == 0 {
 		return ""
 	}
-	
-	// Simple checksum-based hash that doesn't need to access clipboard again
 	var hash uint32
 	for i, b := range data {
 		hash = (hash << 5) + hash + uint32(b)
-		// Only use first 4KB for hashing large content
 		if i > 4096 {
 			break
 		}
@@ -43,12 +46,13 @@ func hashContentBis(data []byte) string {
 	return fmt.Sprintf("%x", hash)
 }
 
-func newClipboardContent(contentType types.ContentType, data []byte) *types.ClipboardContent {
+// NewClipboardContent creates a new ClipboardContent with hash and occurrences
+func NewClipboardContent(contentType types.ContentType, data []byte) *types.ClipboardContent {
 	now := time.Now()
 	return &types.ClipboardContent{
 		Type:        contentType,
 		Data:        data,
-		Hash:        utils.HashContent(data),
+		Hash:        HashContent(data),
 		Created:     now,
 		Occurrences: []time.Time{now},
 	}

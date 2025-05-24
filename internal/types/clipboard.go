@@ -24,6 +24,8 @@ type ClipboardContent struct {
 	Data		[]byte
 	Created		time.Time
 	Compressed	bool
+	Hash		string
+	Occurrences	[]time.Time
 }
 
 func (c1 *ClipboardContent) Equal(c2 *ClipboardContent) bool {
@@ -39,4 +41,14 @@ type CustomMimeTypeHandler struct {
     Description string
     DetectFunc  func([]byte) bool
     ConvertFunc func([]byte, string) ([]byte, error) // optional: convert to another type
+}
+
+// OccurrenceStats provides statistics about clipboard content occurrences
+type OccurrenceStats struct {
+	Hash             string
+	TotalOccurrences int
+	FirstSeen        time.Time
+	LastSeen         time.Time
+	ContentType      ContentType
+	AverageFrequency time.Duration
 }
