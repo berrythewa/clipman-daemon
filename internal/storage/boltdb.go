@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -150,68 +151,92 @@ func (s *BoltStorage) SaveContent(content *types.ClipboardContent) error {
 	})
 }
 
-// GetLatestContent retrieves the most recent clipboard content
+// GetLatestContent retrieves the most recent clipboard content (by occurrence)
 func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
-	var content *types.ClipboardContent
+	var latestContent *types.ClipboardContent
+	var latestTime time.Time
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
-		c := b.Cursor()
-		_, v := c.Last()
-		if v == nil {
+		return b.ForEach(func(_, v []byte) error {
+			var content types.ClipboardContent
+			if err := json.Unmarshal(v, &content); err != nil {
+				return nil // skip invalid
+			}
+			for _, occ := range content.Occurrences {
+				if occ.After(latestTime) {
+					latestTime = occ
+					copyContent := content
+					copyContent.Created = occ
+					latestContent = &copyContent
+				}
+			}
 			return nil
-		}
-		content = &types.ClipboardContent{}
-		return json.Unmarshal(v, content)
+		})
 	})
-
 	if err != nil {
 		return nil, err
 	}
-
-	if content != nil && content.Compressed {
-		decompressed, err := compression.DecompressContent(content)
+	if latestContent != nil && latestContent.Compressed {
+		decompressed, err := compression.DecompressContent(latestContent)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decompress content: %w", err)
 		}
-		content = decompressed
+		latestContent = decompressed
 	}
-
-	return content, nil
+	return latestContent, nil
 }
 
-// GetContentSince retrieves all clipboard content since the specified time
+// GetContentSince retrieves all clipboard content occurrences since the specified time
 func (s *BoltStorage) GetContentSince(since time.Time) ([]*types.ClipboardContent, error) {
-	var contents []*types.ClipboardContent
+	var occurrences []struct {
+		Content *types.ClipboardContent
+		Time    time.Time
+	}
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
-		c := b.Cursor()
-		min := []byte(since.Format(time.RFC3339Nano))
-
-		for k, v := c.Seek(min); k != nil; k, v = c.Next() {
+		return b.ForEach(func(_, v []byte) error {
 			var content types.ClipboardContent
 			if err := json.Unmarshal(v, &content); err != nil {
-				return fmt.Errorf("failed to decode content: %w", err)
+				return nil // skip invalid
 			}
-
-			if content.Compressed {
-				decompressed, err := compression.DecompressContent(&content)
-				if err != nil {
-					return fmt.Errorf("failed to decompress content: %w", err)
+			for _, occ := range content.Occurrences {
+				if occ.After(since) || occ.Equal(since) {
+					copyContent := content
+					copyContent.Created = occ
+					occurrences = append(occurrences, struct {
+						Content *types.ClipboardContent
+						Time    time.Time
+					}{&copyContent, occ})
 				}
-				contents = append(contents, decompressed)
-			} else {
-				contents = append(contents, &content)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Sort by occurrence time ascending
+	sort.Slice(occurrences, func(i, j int) bool {
+		return occurrences[i].Time.Before(occurrences[j].Time)
+	})
+	// Flatten to []*ClipboardContent
+	var result []*types.ClipboardContent
+	for _, occ := range occurrences {
+		if occ.Content.Compressed {
+			decompressed, err := compression.DecompressContent(occ.Content)
+			if err == nil {
+				occ.Content = decompressed
 			}
 		}
-		return nil
-	})
-
-	return contents, err
+		result = append(result, occ.Content)
+	}
+	return result, nil
 }
 
-// GetAllContents retrieves all clipboard content in the database
+// GetAllContents retrieves all clipboard content occurrences in the database
 func (s *BoltStorage) GetAllContents() ([]*types.ClipboardContent, error) {
-	return s.GetContentSince(time.Time{}) // Empty time means get everything
+	return s.GetContentSince(time.Time{}) // All occurrences
 }
 
 // GetContentToFlush identifies content that should be flushed from storage
