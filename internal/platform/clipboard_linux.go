@@ -3,19 +3,6 @@
 
 package platform
 
-/*
-TODO: Clipboard Format Implementation Summary
-
-- [x] HTML content support (text/html MIME type)
-- [x] Rich text format support (text/rtf MIME type)
-- [x] Performance optimization for large clipboard contents
-- [x] Image format conversion for broader compatibility
-- [x] In-memory caching to reduce disk I/O
-- [x] Implement proper cleanup for temporary files in edge cases
-- [x] Add more robust error recovery for environment changes
-- [x] Support custom MIME type registration and handling
-- [ ] Implement proper unit tests for all clipboard operations
-*/
 
 import (
 	"bytes"
@@ -110,7 +97,7 @@ type LinuxClipboard struct {
 	tempFilesMutex sync.Mutex
 	
 	// Custom MIME type support
-	customTypes    map[string]CustomMimeTypeHandler
+	customTypes    map[string]types.CustomMimeTypeHandler
 	customTypesMu  sync.RWMutex
 }
 
@@ -127,7 +114,7 @@ func NewClipboard() *LinuxClipboard {
 		baseInterval:   5 * time.Second,   // 5s default
 		maxInterval:    30 * time.Second,  // 30s default
 		tempFiles:      make([]string, 0),
-		customTypes:    make(map[string]CustomMimeTypeHandler),
+		customTypes:    make(map[string]types.CustomMimeTypeHandler),
 	}
 }
 
@@ -2081,7 +2068,7 @@ func createTempImageFile(data []byte) (string, error) {
 }
 
 // RegisterCustomMimeType registers a handler for a custom MIME type
-func (c *LinuxClipboard) RegisterCustomMimeType(handler CustomMimeTypeHandler) error {
+func (c *LinuxClipboard) RegisterCustomMimeType(handler types.CustomMimeTypeHandler) error {
 	if handler.MimeType == "" {
 		return fmt.Errorf("MIME type cannot be empty")
 	}
@@ -2143,7 +2130,7 @@ func (c *LinuxClipboard) readCustomFormat(formats []string) (*types.ClipboardCon
 	}
 	
 	// Check if any of our custom types is in the available formats
-	var matchedHandler *CustomMimeTypeHandler
+	var matchedHandler *types.CustomMimeTypeHandler
 	for _, format := range formats {
 		if handler, exists := c.customTypes[format]; exists {
 			matchedHandler = &handler
@@ -2191,7 +2178,7 @@ func (c *LinuxClipboard) readCustomFormat(formats []string) (*types.ClipboardCon
 }
 
 // writeCustomContent writes data using a custom format handler
-func (c *LinuxClipboard) writeCustomContent(data []byte, handler CustomMimeTypeHandler) error {
+func (c *LinuxClipboard) writeCustomContent(data []byte, handler types.CustomMimeTypeHandler) error {
 	// Try X11 environment first
 	if isX11Session() && hasCommand("xclip") {
 		cmd := exec.Command("xclip", "-selection", "clipboard", "-t", handler.MimeType)

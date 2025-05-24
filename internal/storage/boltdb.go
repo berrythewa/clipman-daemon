@@ -12,6 +12,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/compression"
+	"github.com/berrythewa/clipman-daemon/pkg/utils"
 
 	"go.etcd.io/bbolt"
 	"go.uber.org/zap"
@@ -123,25 +124,29 @@ func NewBoltStorage(config StorageConfig) (*BoltStorage, error) {
 	return storage, nil
 }
 
-// SaveContent saves a clipboard content item to the database
+// SaveContent saves a clipboard content item to the database with hash-based deduplication and occurrence tracking
 func (s *BoltStorage) SaveContent(content *types.ClipboardContent) error {
+	now := time.Now()
+	content.Hash = utils.HashContent(content.Data)
+
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
-
-		encoded, err := json.Marshal(content)
-		if err != nil {
-			return fmt.Errorf("failed to encode content: %w", err)
-		}
-
-		// Check cache size before adding
-		newSize := atomic.AddInt64(&s.cacheSize, int64(len(encoded)))
-		if newSize > s.maxSize {
-			if err := s.flushOldestContent(tx); err != nil {
-				s.logger.Error("Failed to flush cache", zap.Error(err))
+		v := b.Get([]byte(content.Hash))
+		if v != nil {
+			// Existing entry: update occurrences
+			var existing types.ClipboardContent
+			if err := json.Unmarshal(v, &existing); err == nil {
+				existing.Occurrences = append(existing.Occurrences, now)
+				existing.Created = now // Optionally update Created to latest
+				encoded, _ := json.Marshal(existing)
+				return b.Put([]byte(content.Hash), encoded)
 			}
 		}
-
-		return b.Put([]byte(content.Created.Format(time.RFC3339Nano)), encoded)
+		// New entry
+		content.Created = now
+		content.Occurrences = []time.Time{now}
+		encoded, _ := json.Marshal(content)
+		return b.Put([]byte(content.Hash), encoded)
 	})
 }
 
