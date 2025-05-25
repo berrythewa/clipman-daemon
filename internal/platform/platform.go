@@ -32,14 +32,20 @@ type Daemonizer interface {
 	IsRunningAsDaemon() bool
 }
 
+// Package variables to hold the platform-specific implementations
+var (
+	defaultClipboard  Clipboard
+	defaultDaemonizer Daemonizer
+)
+
 // GetPlatformClipboard returns the appropriate clipboard implementation for the current platform
 // The actual implementation is selected at compile time through build tags
 func GetPlatformClipboard() Clipboard {
-	return NewClipboard()
+	return defaultClipboard
 }
 
 // GetPlatformDaemonizer returns the appropriate daemonizer implementation for the current platform
 // The actual implementation is selected at compile time through build tags
 func GetPlatformDaemonizer() Daemonizer {
-	return NewDaemonizer()
+	return defaultDaemonizer
 } 

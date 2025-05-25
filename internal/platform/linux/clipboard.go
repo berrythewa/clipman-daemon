@@ -40,7 +40,7 @@ type LinuxClipboard struct {
 }
 
 // NewClipboard creates a new LinuxClipboard instance
-func NewClipboard(logger *zap.Logger) *LinuxClipboard {
+func NewClipboard(logger *zap.Logger) Clipboard {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -121,4 +121,22 @@ func (c *LinuxClipboard) Close() {
 		c.cancel()
 		c.isRunning = false
 	}
+}
+
+// NewDaemonizer creates a new Linux daemonizer instance
+func NewDaemonizer() Daemonizer {
+	return &LinuxDaemonizer{}
+}
+
+// LinuxDaemonizer implements the Daemonizer interface for Linux
+type LinuxDaemonizer struct{}
+
+func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir string, dataDir string) (int, error) {
+	// TODO: Implement Linux daemonization
+	return 0, fmt.Errorf("daemonization not implemented yet")
+}
+
+func (d *LinuxDaemonizer) IsRunningAsDaemon() bool {
+	// TODO: Implement daemon check
+	return false
 } 

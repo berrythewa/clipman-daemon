@@ -1,62 +1,142 @@
 # Clipman
 
-A secure, cross-platform clipboard manager and sync suite for power users, developers, and privacy-conscious individuals. Clipman goes beyond basic clipboard history by offering encrypted synchronization, file sharing, a secret vault, and more.
+A secure, cross-platform clipboard manager and sync suite for power users, developers, and privacy-conscious individuals. Clipman goes beyond basic clipboard history by offering encrypted synchronization, file sharing, and a modern CLI interface.
 
 ## Features
 
-### Core Functionality
+### Core Functionality (Implemented)
 
-* **Clipboard History**: Automatically stores and organizes clipboard entries with support for text, images, and more.
-* **Cross-Platform**: Available for Linux, macOS, Windows (desktop) — with mobile support in development (Android/iOS).
-* **Secure P2P Sync**: End-to-end encrypted peer-to-peer synchronization powered by libp2p and optional DHT/mDNS discovery.
-* **Device Pairing**: Seamless and secure pairing process using verifiable device addresses and shared secrets.
-* **Daemon Mode**: Runs quietly in the background, optimized for system resources.
-* **History Filtering**: View history by type, time, device, or size with advanced filtering options.
+* **Modern CLI Interface**: Intuitive command structure for daemon management, clipboard operations, history, and configuration.
+* **Cross-Platform Support**: Native implementations for Linux (X11), macOS (NSPasteboard), and Windows (Clipboard API).
+* **Clipboard History**: Stores and organizes clipboard entries with content type detection and metadata.
+* **Efficient Storage**: Uses BoltDB for persistent storage with automatic pruning and size management.
+* **Content Types**: Support for text, images, files, URLs, HTML, and RTF content.
+* **Daemon Mode**: Runs quietly in the background with platform-specific implementations.
+* **Advanced History Management**: Filter by type, time, size, with support for JSON output.
 
-### Advanced Security Features
+### Platform-Specific Features
 
-* **End-to-End Encryption**: All communications and data storage are zero-knowledge encrypted using secure cryptographic standards.
-* **Secret Vault** (Work in Progress): A built-in password and secrets manager with per-item encryption and optional biometrics.
-* **Selective Sync**: Choose what gets synced (e.g., only text, only a specific room, only from/to trusted devices).
-* **Zero Metadata Mode**: Optionally strips all metadata from shared content.
+#### Linux Implementation
+* X11 clipboard integration using `github.com/atotto/clipboard`
+* Polling-based monitoring with adaptive intervals (500ms - 2s)
+* Systemd service integration for daemon management
 
-### Device Collaboration & Sharing
+#### macOS Implementation
+* NSPasteboard integration for native clipboard access
+* Change count monitoring for efficient updates
+* Launchd service integration for daemon management
 
-* **Rooms**: Create temporary or persistent sharing spaces between devices or users.
-* **Secure File Sharing**: Drop-in support for file clipboard sync and drag-and-drop between devices.
-* **Chat in Rooms** (Planned): Lightweight secure chat between paired devices within rooms.
+#### Windows Implementation
+* Windows Clipboard API integration
+* Event-based monitoring using `WM_CLIPBOARDUPDATE`
+* Windows Service support for daemon management
 
-### Local-first Philosophy
+### Storage & Caching
 
-* **Offline Mode**: Full access to clipboard history and vault without internet access.
-* **LAN-only Sync**: Sync across devices on the same local network without touching the internet.
-* **Private Storage**: Uses BoltDB for local storage with pruning, compression, and customizable retention.
-
-## Optional Growth Features (Planned)
-
-* **Clipboard Actions**: Automatic actions triggered by copied content (e.g., open link, beautify JSON, detect emails).
-* **Secure Share Links**: Generate time-limited encrypted links for sharing history items or files.
-* **Search & Tagging**: Powerful local search across history with custom tags.
-* **API / CLI Tooling**: Programmatic access to clipboard, vault, and file sync via REST or CLI.
-* **Biometric Unlock**: Unlock secret vaults using Face ID, Touch ID, or YubiKey.
-* **Self-hosted Version**: Docker-based deployable instance for total control in team or enterprise environments.
-* **Browser Extensions**: Integration for autofill, password insertion, and clipboard sync from the browser.
-* **Encrypted Audit Logs**: User-controlled logs of access and operations (stored locally, optional).
-
----
+* **Persistent Storage**: BoltDB-based storage with:
+  - Configurable size limits (default 100MB)
+  - Automatic pruning of old content
+  - Content deduplication
+  - Occurrence tracking
+* **Memory Management**: 
+  - Atomic size tracking
+  - Configurable retention policies
+  - Efficient content retrieval
 
 ## Installation & Usage
 
-Install, configure, and run Clipman on your platform with ease. Refer to the installation and command sections below for full details.
+### Command Line Interface
 
-> For detailed CLI usage, daemon options, auto-start configuration, and device pairing, see the full documentation inside the repo.
+```bash
+clipman [global flags] <command> [command flags] [arguments]
+```
+
+#### Global Flags
+- `--config`: Config file path
+- `--verbose`: Enable verbose output
+- `--quiet`: Minimize output
+- `--json`: Output in JSON format
+
+#### Core Commands
+
+1. **Daemon Management**
+```bash
+clipman daemon start [--background]
+clipman daemon stop [--force]
+clipman daemon status
+clipman daemon restart [--force]
+```
+
+2. **Clipboard Operations**
+```bash
+clipman clip get [--raw] [--json]
+clipman clip set [--type=<type>] <content>
+clipman clip watch [--timeout=<duration>]
+clipman clip flush [--keep=<n>]
+```
+
+3. **History Management**
+```bash
+clipman history list [--limit=N] [--type=TYPE] [--since=DURATION]
+clipman history show <hash> [--raw]
+clipman history delete [--all] [--older=DURATION]
+clipman history stats [--json]
+```
+
+4. **Configuration Management**
+```bash
+clipman config show [--json]
+clipman config edit
+clipman config reset [--force]
+```
+
+### Configuration
+
+Default configuration paths:
+- Linux: `~/.config/clipman/config.yaml`
+- macOS: `~/Library/Application Support/Clipman/config.yaml`
+- Windows: `%APPDATA%\Clipman\config.yaml`
+
+## Development Status
+
+### Implemented
+- ✅ Modern CLI framework with consistent command structure
+- ✅ Cross-platform clipboard monitoring
+- ✅ Efficient storage engine with BoltDB
+- ✅ Content type detection and handling
+- ✅ Platform-specific daemon management
+- ✅ History management with filtering
+- ✅ Configuration management
+
+### In Progress
+- 🔄 Platform-specific clipboard implementations
+  - Linux: Basic implementation complete
+  - macOS: Structure ready, NSPasteboard integration pending
+  - Windows: Structure ready, Win32 API integration pending
+- 🔄 Daemon process management
+  - Linux: Basic implementation with systemd
+  - macOS: Launchd integration pending
+  - Windows: Service integration pending
+
+### Planned
+- 📋 Secure P2P sync with libp2p
+- 📋 Device pairing and room management
+- 📋 End-to-end encryption
+- 📋 Secret vault integration
+- 📋 Mobile platform support (Android/iOS)
+
+## Contributing
+
+Contributions are welcome! Please check the issues page for current tasks or create a new issue to discuss proposed changes.
+
+## License
+
+Licensed under MIT. See LICENSE file for details.
 
 ---
 
-Clipman is designed to give you complete control over your data without sacrificing usability. Whether you're syncing secrets, sharing files, or just want to search your clipboard from last week, Clipman has your back.
-
----
-
-> ⚡ Powered by Go, libp2p, BoltDB, and a user-focused privacy-first design.
-
-Licensed under MIT. Contributions welcome!
+> ⚡ Built with Go, BoltDB, and platform-native clipboard APIs.
+> 
+> 📦 Zero external dependencies for core clipboard functionality.
+> 
+> 🔒 Privacy-first design with local-first architecture.

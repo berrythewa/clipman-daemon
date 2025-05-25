@@ -3,67 +3,86 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
-	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 )
 
-// RootCmd represents the base command when called without any subcommands
-var RootCmd = &cobra.Command{
+var (
+	// Global flags
+	configFile string
+	verbose    bool
+	quiet      bool
+	json       bool
+
+	// Shared resources
+	logger *zap.Logger
+)
+
+// rootCmd represents the base command when called without any subcommands
+var rootCmd = &cobra.Command{
 	Use:   "clipman",
-	Short: "A clipboard manager for the command line",
-	Long: `Clipman is a cross-platform clipboard manager daemon
-that runs in the background and syncs clipboard contents between devices.`,
-}
-
-func init() {
-	cobra.OnInitialize(initConfig)
-
-	// Add flags
-	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.clipman/config.json)")
-	RootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable verbose output")
-}
-
-// initConfig initializes the configuration
-func initConfig() {
-	var err error
-
-	// Initialize logger
-	if verbose {
-		zapLogger, err = zap.NewDevelopment()
-	} else {
-		zapLogger, err = zap.NewProduction()
-	}
-	defer zapLogger.Sync() // Will flush before main exits
-	
-	if err != nil {
-		fmt.Println("Error initializing logger:", err)
-		os.Exit(1)
-	}
-	
-	// Load configuration
-	cfg, err = config.Load(cfgFile)
-	if err != nil {
-		
-		zapLogger.Error("Failed to load configuration", zap.Error(err))
-		fmt.Println("Error loading configuration:", err)
-		os.Exit(1)
-	}
-	
-	// Override config with command line flags
-	if verbose {
-		cfg.EnableLogging = true
-	}
-	
-	// Initialize root commands
-	// Child commands are added in their respective init() functions
+	Short: "A modern clipboard manager with history and sync capabilities",
+	Long: `Clipman is a modern clipboard manager that provides:
+  • Clipboard history with content type detection
+  • Secure clipboard sync between devices
+  • Efficient storage and retrieval of clipboard content
+  • Cross-platform support (Linux, macOS, Windows)`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		setupLogger()
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
-	if err := RootCmd.Execute(); err != nil {
-		fmt.Println(err)
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func init() {
+	// Global flags
+	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "config file (default is $HOME/.config/clipman/config.yaml)")
+	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable verbose output")
+	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false, "minimize output")
+	rootCmd.PersistentFlags().BoolVar(&json, "json", false, "output in JSON format")
+
+	// Add commands
+	rootCmd.AddCommand(newDaemonCmd())
+	rootCmd.AddCommand(newClipCmd())
+	rootCmd.AddCommand(newHistoryCmd())
+	rootCmd.AddCommand(newConfigCmd())
+}
+
+func setupLogger() {
+	var err error
+	var cfg zap.Config
+
+	switch {
+	case verbose:
+		cfg = zap.NewDevelopmentConfig()
+	case quiet:
+		cfg = zap.NewProductionConfig()
+		cfg.Level = zap.NewAtomicLevelAt(zap.WarnLevel)
+	default:
+		cfg = zap.NewProductionConfig()
+		cfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	}
+
+	// Set log file if not in verbose mode
+	if !verbose {
+		logDir := filepath.Join(os.Getenv("HOME"), ".local/share/clipman/logs")
+		os.MkdirAll(logDir, 0755)
+		cfg.OutputPaths = []string{
+			filepath.Join(logDir, "clipman.log"),
+		}
+	}
+
+	logger, err = cfg.Build()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing logger: %v\n", err)
 		os.Exit(1)
 	}
 } 
