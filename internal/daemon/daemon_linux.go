@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
-	"time"
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"

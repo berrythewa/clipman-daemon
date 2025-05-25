@@ -17,7 +17,6 @@ import (
 var (
 	limit     int
 	offset    int
-	jsonOut   bool
 	loadMore  bool
 )
 
@@ -35,9 +34,8 @@ var historyCmd = &cobra.Command{
 		req := &ipc.Request{
 			Command: "history",
 			Args: map[string]interface{}{
-				"limit":    limit,
-				"offset":   offset,
-				"json":     jsonOut,
+				"limit":     limit,
+				"offset":    offset,
 				"load_more": loadMore,
 			},
 		}
@@ -55,7 +53,7 @@ var historyCmd = &cobra.Command{
 		}
 
 		// Print the history
-		if jsonOut {
+		if useJSON {
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(resp.Data)
@@ -77,7 +75,7 @@ var historyCmd = &cobra.Command{
 func init() {
 	historyCmd.Flags().IntVarP(&limit, "limit", "n", 10, "Number of items to display")
 	historyCmd.Flags().IntVar(&offset, "offset", 0, "Offset for pagination (start at this item)")
-	historyCmd.Flags().BoolVar(&jsonOut, "json", false, "Output history as JSON")
+	historyCmd.Flags().BoolVar(&useJSON, "json", false, "Output history as JSON")
 	historyCmd.Flags().BoolVar(&loadMore, "load-more", false, "Load more items from DB after cache is exhausted")
 }
 
@@ -155,7 +153,7 @@ func newHistoryListCmd() *cobra.Command {
 				return fmt.Errorf("invalid response data type")
 			}
 
-			if jsonOut {
+			if useJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(entries)
@@ -197,7 +195,7 @@ func newHistoryShowCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			hash := args[0]
 
-			resp, err := ipc.SendRequest(&ipc.Request{
+			resp, err := ipc.SendRequest("", &ipc.Request{
 				Command: "history.show",
 				Args: map[string]interface{}{
 					"hash": hash,
@@ -221,7 +219,7 @@ func newHistoryShowCmd() *cobra.Command {
 				return nil
 			}
 
-			if jsonOut {
+			if useJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(entry)
@@ -305,7 +303,7 @@ func newHistoryStatsCmd() *cobra.Command {
 		Use:   "stats",
 		Short: "Show history statistics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := ipc.SendRequest(&ipc.Request{
+			resp, err := ipc.SendRequest("", &ipc.Request{
 				Command: "history.stats",
 			})
 			if err != nil {
@@ -321,7 +319,7 @@ func newHistoryStatsCmd() *cobra.Command {
 				return fmt.Errorf("invalid response data type")
 			}
 
-			if jsonOut {
+			if useJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(stats)

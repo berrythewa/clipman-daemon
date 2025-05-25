@@ -43,7 +43,7 @@ func newClipGetCmd() *cobra.Command {
 		Use:   "get",
 		Short: "Get current clipboard content",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := ipc.SendRequest(&ipc.Request{
+			resp, err := ipc.SendRequest("", &ipc.Request{
 				Command: "clip.get",
 			})
 			if err != nil {
@@ -64,7 +64,7 @@ func newClipGetCmd() *cobra.Command {
 				return nil
 			}
 
-			if json {
+			if useJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(content)
@@ -108,7 +108,7 @@ func newClipSetCmd() *cobra.Command {
 				Created: time.Now(),
 			}
 
-			resp, err := ipc.SendRequest(&ipc.Request{
+			resp, err := ipc.SendRequest("", &ipc.Request{
 				Command: "clip.set",
 				Args: map[string]interface{}{
 					"content": content,
@@ -140,7 +140,7 @@ func newClipWatchCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger.Info("Starting clipboard watch")
 
-			resp, err := ipc.SendRequest(&ipc.Request{
+			resp, err := ipc.SendRequest("", &ipc.Request{
 				Command: "clip.watch",
 				Args: map[string]interface{}{
 					"timeout": timeout,
@@ -150,10 +150,14 @@ func newClipWatchCmd() *cobra.Command {
 				return fmt.Errorf("failed to watch clipboard: %w", err)
 			}
 
+			if resp.Status != "ok" {
+				return fmt.Errorf("failed to watch clipboard: %s", resp.Message)
+			}
+
 			changes := make(chan *types.ClipboardContent)
 			go func() {
 				for content := range changes {
-					if json {
+					if useJSON {
 						enc := json.NewEncoder(os.Stdout)
 						enc.SetIndent("", "  ")
 						enc.Encode(content)
@@ -185,7 +189,7 @@ func newClipFlushCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger.Info("Flushing clipboard history", zap.Int("keep_last", keepLast))
 
-			resp, err := ipc.SendRequest(&ipc.Request{
+			resp, err := ipc.SendRequest("", &ipc.Request{
 				Command: "clip.flush",
 				Args: map[string]interface{}{
 					"keep_last": keepLast,

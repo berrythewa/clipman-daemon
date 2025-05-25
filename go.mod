@@ -6,7 +6,6 @@ toolchain go1.24.2
 
 require (
 	github.com/atotto/clipboard v0.1.4
-	github.com/golang/mock v1.6.0
 	github.com/google/uuid v1.6.0
 	github.com/ipfs/go-cid v0.5.0
 	github.com/libp2p/go-libp2p v0.41.1
@@ -15,10 +14,10 @@ require (
 	github.com/multiformats/go-multiaddr v0.15.0
 	github.com/multiformats/go-multihash v0.2.3
 	github.com/spf13/cobra v1.9.1
-	github.com/zyedidia/clipboard v1.0.4
 	go.etcd.io/bbolt v1.3.11
 	go.uber.org/zap v1.27.0
 	golang.org/x/sys v0.31.0
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (

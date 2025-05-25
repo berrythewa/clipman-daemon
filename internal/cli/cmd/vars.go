@@ -7,14 +7,9 @@ import (
 
 // Shared variables across all commands
 var (
-	cfg *config.Config
+	cfg       *config.Config
 	zapLogger *zap.Logger
-
-	cfgFile string
-	verbose bool
-	quiet bool
 )
-
 
 // SetConfig sets the configuration for commands
 func SetConfig(config *config.Config) {

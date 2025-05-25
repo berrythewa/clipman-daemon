@@ -14,7 +14,7 @@ var (
 	configFile string
 	verbose    bool
 	quiet      bool
-	json       bool
+	useJSON    bool
 
 	// Shared resources
 	logger *zap.Logger
@@ -47,7 +47,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "config file (default is $HOME/.config/clipman/config.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable verbose output")
 	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false, "minimize output")
-	rootCmd.PersistentFlags().BoolVar(&json, "json", false, "output in JSON format")
+	rootCmd.PersistentFlags().BoolVar(&useJSON, "json", false, "output in JSON format")
 
 	// Add commands
 	rootCmd.AddCommand(newDaemonCmd())
