@@ -1,44 +1,94 @@
-.PHONY: build test clean install-local install uninstall release scripts
+.PHONY: build build-all test clean install-local install uninstall release scripts lint deps
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE    ?= $(shell date +%FT%T%z)
 LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTime=$(DATE)"
 
-build:
-	@echo "Building Clipman v$(VERSION)..."
-	@go build $(LDFLAGS) -o bin/clipman cmd/clipmand/main.go
+# Build both CLI and daemon
+build-all: build-cli build-daemon
 
-install: build
+# Build the CLI tool
+build-cli:
+	@echo "Building Clipman CLI v$(VERSION)..."
+	@go build $(LDFLAGS) -o bin/clipman cmd/clipman/main.go
+
+# Build the daemon
+build-daemon:
+	@echo "Building Clipman Daemon v$(VERSION)..."
+	@go build $(LDFLAGS) -o bin/clipmand cmd/clipmand/main.go
+
+# Default build target (builds daemon)
+build: build-daemon
+
+# Install locally (no root required)
+install-local: build-all
+	@echo "Installing Clipman locally..."
+	@mkdir -p $(HOME)/.local/bin
+	@cp bin/clipman $(HOME)/.local/bin/
+	@cp bin/clipmand $(HOME)/.local/bin/
+	@echo "Installed to $(HOME)/.local/bin/"
+
+# System-wide installation
+install: build-all
 	@echo "Installing Clipman v$(VERSION)..."
 	@scripts/install.sh
 
+# Install using Go
 install-go:
 	@echo "Installing Clipman using Go install..."
-	@go install $(LDFLAGS) -o $(GOPATH)/bin/clipman ./cmd/clipmand
+	@go install $(LDFLAGS) ./cmd/clipman
+	@go install $(LDFLAGS) ./cmd/clipmand
 
+# Uninstall
 uninstall:
 	@echo "Uninstalling Clipman..."
 	@scripts/uninstall.sh
 
+# Run tests
 test:
 	@echo "Running tests..."
-	@go test ./...
+	@go test -v ./...
 
+# Run linters
+lint:
+	@echo "Running linters..."
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not found. Installing..."; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.55.2; \
+		golangci-lint run ./...; \
+	fi
+
+# Update dependencies
+deps:
+	@echo "Updating dependencies..."
+	@go mod tidy
+	@go mod verify
+
+# Clean build artifacts
 clean:
 	@echo "Cleaning up..."
 	@rm -rf bin release
 
+# Build release packages
 release:
 	@echo "Building release packages for Clipman v$(VERSION)..."
 	@mkdir -p release
-	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o release/clipman-linux-amd64 cmd/clipmand/main.go
-	@GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o release/clipman-linux-arm64 cmd/clipmand/main.go
-	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o release/clipman-darwin-amd64 cmd/clipmand/main.go
-	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o release/clipman-darwin-arm64 cmd/clipmand/main.go
-	@GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o release/clipman-windows-amd64.exe cmd/clipmand/main.go
+	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o release/clipman-linux-amd64 cmd/clipman/main.go
+	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o release/clipmand-linux-amd64 cmd/clipmand/main.go
+	@GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o release/clipman-linux-arm64 cmd/clipman/main.go
+	@GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o release/clipmand-linux-arm64 cmd/clipmand/main.go
+	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o release/clipman-darwin-amd64 cmd/clipman/main.go
+	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o release/clipmand-darwin-amd64 cmd/clipman/main.go
+	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o release/clipman-darwin-arm64 cmd/clipman/main.go
+	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o release/clipmand-darwin-arm64 cmd/clipman/main.go
+	@GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o release/clipman-windows-amd64.exe cmd/clipman/main.go
+	@GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o release/clipmand-windows-amd64.exe cmd/clipmand/main.go
 	@echo "Release packages built in ./release/"
 
+# Make scripts executable
 scripts:
 	@echo "Setting execute permissions for scripts..."
 	@chmod +x scripts/*.sh

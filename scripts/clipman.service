@@ -1,0 +1,15 @@
+[Unit]
+Description=Clipman Clipboard Manager Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/%i/.Xauthority
+ExecStart=/usr/local/bin/clipmand
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target 
