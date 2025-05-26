@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -65,7 +63,7 @@ func newDaemonStopCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger.Info("Stopping Clipman daemon", zap.Bool("force", force))
 			
-			if err := daemon.Stop(); err != nil {
+			if err := daemon.Kill(); err != nil {
 				if !force {
 					return fmt.Errorf("failed to stop daemon: %w", err)
 				}
@@ -87,22 +85,15 @@ func newDaemonStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show daemon status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			status, err := daemon.Status()
+			isRunning, err := daemon.Status()
 			if err != nil {
 				return fmt.Errorf("failed to get daemon status: %w", err)
 			}
 
-			if json {
-				// Output JSON format
-				fmt.Printf(`{"status":"%s","pid":%d,"uptime":"%s"}`, 
-					status.State, status.PID, status.Uptime)
+			if isRunning {
+				fmt.Println("Clipman daemon is running.")
 			} else {
-				// Output human readable format
-				fmt.Printf("Status: %s\n", status.State)
-				if status.PID > 0 {
-					fmt.Printf("PID: %d\n", status.PID)
-					fmt.Printf("Uptime: %s\n", status.Uptime)
-				}
+				fmt.Println("Clipman daemon is not running.")
 			}
 			return nil
 		},
@@ -119,7 +110,7 @@ func newDaemonRestartCmd() *cobra.Command {
 			logger.Info("Restarting Clipman daemon")
 
 			// Stop the daemon
-			if err := daemon.Stop(); err != nil {
+			if err := daemon.Kill(); err != nil {
 				if !force {
 					return fmt.Errorf("failed to stop daemon: %w", err)
 				}
@@ -144,4 +135,16 @@ func newDaemonRestartCmd() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "force restart if graceful shutdown fails")
 	return cmd
+}
+
+func RunForeground() error {
+	return daemon.Start()
+}
+
+func Kill() error {
+	return daemon.Kill()
+}
+
+func Status() (bool, error) {
+	return daemon.Status()
 } 

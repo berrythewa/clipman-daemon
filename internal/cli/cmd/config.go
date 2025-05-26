@@ -1,22 +1,16 @@
 package cmd
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
 )
-
-//go:embed default_config.yaml
-var defaultConfig embed.FS
 
 // newConfigCmd creates the config command
 func newConfigCmd() *cobra.Command {

@@ -3,7 +3,6 @@ package cmd
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	// "strconv"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/sync"
-	"github.com/berrythewa/clipman-daemon/internal/ipc"
 	"github.com/spf13/cobra"
 	// "go.uber.org/zap" TODO: no logging or Cobra does it ?/
 )

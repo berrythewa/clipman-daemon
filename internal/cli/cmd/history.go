@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/ipc"
@@ -41,7 +40,7 @@ var historyCmd = &cobra.Command{
 		}
 
 		// Send the request to the daemon
-		resp, err := ipc.SendRequest("", req)
+		resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to contact daemon: %v\n", err)
 			return err
@@ -139,7 +138,7 @@ func newHistoryListCmd() *cobra.Command {
 				req.Args["max_size"] = maxSize
 			}
 
-			resp, err := ipc.SendRequest(req)
+			resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 			if err != nil {
 				return fmt.Errorf("failed to get history: %w", err)
 			}
@@ -195,7 +194,7 @@ func newHistoryShowCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			hash := args[0]
 
-			resp, err := ipc.SendRequest("", &ipc.Request{
+			resp, err := ipc.SendRequest(ipc.DefaultSocketPath, &ipc.Request{
 				Command: "history.show",
 				Args: map[string]interface{}{
 					"hash": hash,
@@ -272,7 +271,7 @@ func newHistoryDeleteCmd() *cobra.Command {
 				req.Args["hashes"] = args
 			}
 
-			resp, err := ipc.SendRequest(req)
+			resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 			if err != nil {
 				return fmt.Errorf("failed to delete entries: %w", err)
 			}
@@ -303,7 +302,7 @@ func newHistoryStatsCmd() *cobra.Command {
 		Use:   "stats",
 		Short: "Show history statistics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := ipc.SendRequest("", &ipc.Request{
+			resp, err := ipc.SendRequest(ipc.DefaultSocketPath, &ipc.Request{
 				Command: "history.stats",
 			})
 			if err != nil {

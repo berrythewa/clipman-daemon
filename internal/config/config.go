@@ -3,7 +3,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
-	"github.com/berrythewa/clipman-daemon/pkg/utils"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
@@ -181,9 +179,15 @@ func GetConfigPaths() (*ConfigPaths, error) {
 func DefaultConfig() *Config {
 	paths, _ := GetConfigPaths() // Ignore error, will use fallback paths
 
+	// Get hostname
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+
 	return &Config{
 		DeviceID:      uuid.New().String(),
-		DeviceName:    utils.GetHostname(),
+		DeviceName:    hostname,
 		EnableLogging: true,
 		SystemPaths:   *paths,
 		Log: LogConfig{
@@ -213,9 +217,7 @@ func DefaultConfig() *Config {
 			ListenPort:        0, // Dynamic port
 			DiscoveryMethod:   "mdns",
 			PairingEnabled:    true,
-			PairingTimeout:    300,
-			DeviceName:        utils.GetHostname(),
-			DeviceType:        "desktop",
+			DeviceName:        hostname,
 			AllowOnlyKnownPeers: true,
 		},
 		StealthMode:     true,
@@ -223,6 +225,30 @@ func DefaultConfig() *Config {
 		LaunchAtStartup: false,
 		LaunchOnLogin:   false,
 	}
+}
+
+// EnsureDefaultConfig ensures that the default configuration is set up
+func EnsureDefaultConfig() error {
+	paths, err := GetConfigPaths()
+	if err != nil {
+		return fmt.Errorf("failed to get config paths: %w", err)
+	}
+
+	// Create default config
+	cfg := DefaultConfig()
+
+	// Save to active config
+	if err := cfg.Save(paths.ActiveConfig); err != nil {
+		return fmt.Errorf("failed to save default config: %w", err)
+	}
+
+	// Save a copy to configs directory as default.yaml
+	defaultConfigPath := filepath.Join(paths.ConfigsDir, "default.yaml")
+	if err := cfg.Save(defaultConfigPath); err != nil {
+		return fmt.Errorf("failed to save default config template: %w", err)
+	}
+
+	return nil
 }
 
 // Load loads the configuration from the specified file or creates default if not exists
@@ -240,12 +266,12 @@ func Load(configPath string) (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Create default config if it doesn't exist
-			cfg := DefaultConfig()
-			if err := cfg.Save(configPath); err != nil {
-				return nil, fmt.Errorf("failed to create default config: %w", err)
+			// Ensure default config is set up
+			if err := EnsureDefaultConfig(); err != nil {
+				return nil, fmt.Errorf("failed to set up default config: %w", err)
 			}
-			return cfg, nil
+			// Try loading again
+			return Load(configPath)
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
@@ -385,4 +411,9 @@ func overrideFromEnv(config *Config) {
 			config.PollingInterval = ms
 		}
 	}
+}
+
+// GetPaths returns the system paths for this config
+func (c *Config) GetPaths() ConfigPaths {
+	return c.SystemPaths
 }
