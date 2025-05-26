@@ -98,21 +98,44 @@ clipman history stats [--json]
 
 ### 4. Configuration Management (`clipman config`)
 
-Manage Clipman configuration.
+Manage Clipman configuration. The configuration is stored in YAML format with comprehensive settings for all aspects of the application. For detailed configuration options and examples, see [CONFIGURATION.md](CONFIGURATION.md).
 
 ```bash
 # Show current configuration
-clipman config show [--json]
+clipman config show [--format=<yaml|json>]
 
 # Edit configuration in your preferred editor
 clipman config edit
 
 # Reset configuration to defaults
 clipman config reset [--force]
+
+# Validate configuration syntax
+clipman config validate
 ```
 
 #### Flags:
+- `--format, -f`: Output format for show command (yaml or json, default: yaml)
 - `--force, -f`: Force overwrite existing config (for reset)
+
+#### Configuration Sections:
+```yaml
+# Main configuration sections:
+device:        # Device identification settings
+paths:         # System paths configuration
+clipboard:     # Clipboard monitoring settings
+history:       # History management options
+storage:       # Storage and database settings
+logging:       # Logging configuration
+security:      # Security and encryption settings
+system:        # System integration options
+development:   # Development and debug settings
+```
+
+#### Example Configuration Paths:
+- Linux: `~/.config/clipman/config.yaml`
+- macOS: `~/Library/Application Support/Clipman/config.yaml`
+- Windows: `%APPDATA%\Clipman\config.yaml`
 
 ## Content Types
 
@@ -142,16 +165,24 @@ clipman history list -n 5 --reverse
 # Show statistics in JSON format
 clipman history stats --json
 
+# Show current config in JSON format
+clipman config show --format=json
+
 # Edit configuration
 clipman config edit
+
+# Reset config to defaults (with confirmation)
+clipman config reset
 ```
 
 ## Environment Variables
 
-- `EDITOR`: Preferred text editor for config editing
+- `EDITOR`: Preferred text editor for config editing (default: vim)
 - `HOME`: User's home directory for default paths
 - `XDG_CONFIG_HOME`: Alternative config directory base
 - `XDG_DATA_HOME`: Alternative data directory base
+- `CLIPMAN_CONFIG`: Override default config file location
+- `CLIPMAN_DATA_DIR`: Override default data directory location
 
 ## Exit Codes
 
@@ -167,4 +198,8 @@ clipman config edit
 2. Some operations may require elevated privileges when using system-wide features
 3. All timestamps are in local time zone
 4. JSON output is available for most commands that return data
-5. The clipboard history is stored in a local database with configurable size limits 
+5. The clipboard history is stored in a local database with configurable size limits
+6. Configuration changes require a daemon restart to take effect
+7. The configuration file is extensively documented with comments explaining each option
+8. Invalid configuration files will be detected during validation but won't prevent saving
+9. For a complete list of configuration options and their descriptions, see [CONFIGURATION.md](CONFIGURATION.md) 

@@ -1,0 +1,143 @@
+# Clipman Configuration
+# This is the default configuration file for Clipman
+
+# General settings
+device:
+  # Unique identifier for this device (auto-generated if not set)
+  id: ""
+  # Human-readable name for this device
+  name: ""
+
+# System paths
+paths:
+  # Base directory for all Clipman data
+  data_dir: "~/.local/share/clipman"
+  # Configuration directory
+  config_dir: "~/.config/clipman"
+  # Log directory
+  log_dir: "~/.local/share/clipman/logs"
+  # Database file location
+  db_file: "~/.local/share/clipman/clipman.db"
+  # Temporary files directory
+  temp_dir: "~/.local/share/clipman/temp"
+
+# Clipboard settings
+clipboard:
+  # Monitor clipboard changes
+  monitor: true
+  # Base polling interval in milliseconds (Linux only)
+  polling_interval: 500
+  # Maximum polling interval in milliseconds (Linux only)
+  max_polling_interval: 2000
+  # Stealth mode (minimize notifications)
+  stealth_mode: false
+  # Content types to monitor (empty means all)
+  content_types:
+    - text
+    - image
+    - file
+    - url
+    - html
+    - rtf
+  # Maximum content size in bytes (0 means no limit)
+  max_content_size: 10485760  # 10MB
+
+# History settings
+history:
+  # Enable history
+  enabled: true
+  # Maximum number of items to keep
+  max_items: 1000
+  # Maximum total size in bytes
+  max_size: 104857600  # 100MB
+  # Items to keep when flushing
+  keep_items: 10
+  # Default number of items to show in list
+  default_list_size: 50
+  # Deduplication settings
+  deduplication:
+    # Enable deduplication
+    enabled: true
+    # Maximum occurrences to track per item
+    max_occurrences: 1000
+
+# Storage settings
+storage:
+  # Database type (currently only 'boltdb' is supported)
+  type: "boltdb"
+  # Compression settings
+  compression:
+    # Enable compression for large content
+    enabled: true
+    # Minimum size in bytes for compression
+    min_size: 1024  # 1KB
+  # Automatic cleanup
+  cleanup:
+    # Enable automatic cleanup
+    enabled: true
+    # Clean up items older than
+    older_than: "30d"
+    # Minimum free space to maintain in bytes
+    min_free_space: 104857600  # 100MB
+
+# Logging settings
+logging:
+  # Enable logging
+  enabled: true
+  # Log level (debug, info, warn, error)
+  level: "info"
+  # Log format (text or json)
+  format: "text"
+  # File logging settings
+  file:
+    # Enable file logging
+    enabled: true
+    # Maximum log file size in bytes
+    max_size: 10485760  # 10MB
+    # Number of old log files to keep
+    max_files: 5
+    # Maximum age of log files
+    max_age: "30d"
+
+# Security settings
+security:
+  # Encryption settings
+  encryption:
+    # Enable encryption at rest
+    enabled: true
+    # Encryption algorithm (aes-256-gcm recommended)
+    algorithm: "aes-256-gcm"
+  # Access control
+  access:
+    # Require authentication for sensitive operations
+    require_auth: false
+    # Authentication method (none, password, system)
+    auth_method: "none"
+
+# System integration
+system:
+  # Launch at system startup
+  launch_at_startup: false
+  # Launch at user login
+  launch_on_login: false
+  # System tray integration
+  tray:
+    # Show in system tray
+    enabled: true
+    # Show notifications
+    notifications: true
+
+# Development settings
+development:
+  # Enable debug features
+  debug: false
+  # Enable profiling
+  profiling: false
+  # Development specific paths
+  paths:
+    # Override paths for development
+    enabled: false
+    # Development data directory
+    data_dir: "./dev/data"
+    # Development config directory
+    config_dir: "./dev/config" 
