@@ -64,6 +64,8 @@ type Config struct {
 
 // LogConfig holds logging-related configuration
 type LogConfig struct {
+	EnableConsoleLogging bool   `json:"enable_console_logging" yaml:"enable_console_logging"`
+	Level               string `json:"level" yaml:"level"`
 	EnableFileLogging bool   `json:"enable_file_logging" yaml:"enable_file_logging"`
 	MaxLogSize        int    `json:"max_log_size" yaml:"max_log_size"`
 	MaxLogFiles       int    `json:"max_log_files" yaml:"max_log_files"`
@@ -191,6 +193,8 @@ func DefaultConfig() *Config {
 		EnableLogging: true,
 		SystemPaths:   *paths,
 		Log: LogConfig{
+			EnableConsoleLogging: true,
+			Level:               "info",
 			EnableFileLogging: true,
 			MaxLogSize:        10 * 1024 * 1024, // 10MB
 			MaxLogFiles:       5,

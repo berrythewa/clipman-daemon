@@ -80,7 +80,7 @@ storage:
     # Minimum free space to maintain in bytes
     min_free_space: 104857600  # 100MB
 
-# Logging settings
+# Logging settings 1
 logging:
   # Enable logging
   enabled: true
@@ -99,6 +99,16 @@ logging:
     # Maximum age of log files
     max_age: "30d"
 
+# Logging settings 2
+log:
+  enabled: true
+  level: "info"
+  format: "text"
+  file:
+    enabled: true
+    max_size: 10485760
+    max_files: 5
+    max_age: "30d"
 # Security settings
 security:
   # Encryption settings
