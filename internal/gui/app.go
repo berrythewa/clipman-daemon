@@ -3,8 +3,10 @@ package gui
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/gui/ipc"
 	"github.com/berrythewa/clipman-daemon/internal/p2p"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"fyne.io/fyne/v2"
@@ -22,12 +24,17 @@ type App struct {
 	config     *config.Config
 	logger     *zap.Logger
 
+	// IPC client
+	ipcClient *ipc.Client
+
 	// Sync components
 	syncManager *p2p.Manager
 
 	// State
 	clipboardHistory []*types.ClipboardContent
 	pairedDevices   []types.PairedDevice
+	syncStatus      *types.SyncStatus
+	mainView         *views.MainView
 }
 
 // NewApp creates a new GUI application
@@ -37,6 +44,9 @@ func NewApp(cfg *config.Config, logger *zap.Logger) (*App, error) {
 	// Create Fyne application
 	fyneApp := app.New()
 	mainWindow := fyneApp.NewWindow("Clipman")
+
+	// Create IPC client
+	ipcClient := ipc.NewClient(cfg.IPC.SocketPath)
 
 	// Create sync manager if enabled
 	var syncManager *p2p.Manager
@@ -56,13 +66,104 @@ func NewApp(cfg *config.Config, logger *zap.Logger) (*App, error) {
 		cancel:     cancel,
 		config:     cfg,
 		logger:     logger,
+		ipcClient:  ipcClient,
 		syncManager: syncManager,
 	}
 
 	// Set up the main window
 	app.setupMainWindow()
 
+	// Start background tasks
+	go app.startBackgroundTasks()
+
 	return app, nil
+}
+
+// startBackgroundTasks starts background tasks for updating the UI
+func (a *App) startBackgroundTasks() {
+	// Update history periodically
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-ticker.C:
+				history, err := a.ipcClient.GetHistory(100)
+				if err != nil {
+					a.logger.Error("Failed to get history", zap.Error(err))
+					continue
+				}
+				a.updateHistory(history)
+			}
+		}
+	}()
+
+	// Update sync status periodically
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-ticker.C:
+				status, err := a.ipcClient.GetSyncStatus()
+				if err != nil {
+					a.logger.Error("Failed to get sync status", zap.Error(err))
+					continue
+				}
+				a.updateSyncStatus(status)
+			}
+		}
+	}()
+
+	// Update paired devices periodically
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-ticker.C:
+				devices, err := a.ipcClient.GetPairedDevices()
+				if err != nil {
+					a.logger.Error("Failed to get paired devices", zap.Error(err))
+					continue
+				}
+				a.updatePairedDevices(devices)
+			}
+		}
+	}()
+}
+
+// updateHistory updates the clipboard history
+func (a *App) updateHistory(history []*types.ClipboardContent) {
+	a.clipboardHistory = history
+	if a.mainView != nil {
+		a.mainView.UpdateHistory(history)
+	}
+}
+
+// updateSyncStatus updates the sync status
+func (a *App) updateSyncStatus(status *types.SyncStatus) {
+	a.syncStatus = status
+	if a.mainView != nil {
+		a.mainView.UpdateSyncStatus(status)
+	}
+}
+
+// updatePairedDevices updates the list of paired devices
+func (a *App) updatePairedDevices(devices []types.PairedDevice) {
+	a.pairedDevices = devices
+	if a.mainView != nil {
+		a.mainView.UpdatePeers(devices)
+	}
 }
 
 // Run starts the GUI application
@@ -115,8 +216,8 @@ func (a *App) setupMainWindow() {
 
 // createMainContent creates the main window content
 func (a *App) createMainContent() fyne.CanvasObject {
-	// TODO: Implement main content layout
-	return nil
+	a.mainView = views.NewMainView(a.fyneApp, a.mainWindow)
+	return a.mainView.GetContent()
 }
 
 // setupMenu sets up the application menu
