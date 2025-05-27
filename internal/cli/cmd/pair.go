@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
-	"github.com/berrythewa/clipman-daemon/internal/sync"
+	"github.com/berrythewa/clipman-daemon/internal/p2p"
 	"github.com/spf13/cobra"
 	// "go.uber.org/zap" TODO: no logging or Cobra does it ?/
 )
@@ -321,7 +321,7 @@ func removePairedDevice(peerID string) error {
 // getSyncManager gets the sync manager from the current service
 func getSyncManager() (types.SyncManager, error) {
 	// Create a new sync manager instance directly
-	syncManager, err := sync.New(context.Background(), cfg, zapLogger)
+	syncManager, err := p2p.New(context.Background(), cfg, zapLogger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sync manager: %w", err)
 	}

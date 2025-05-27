@@ -1,5 +1,5 @@
-// Package sync provides clipboard synchronization using libp2p
-package sync
+// Package p2p provides clipboard synchronization using libp2p
+package p2p
 
 import (
 	"context"

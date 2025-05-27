@@ -2,6 +2,97 @@
 
 A secure, cross-platform clipboard manager and sync suite with integrated secret vault and P2P file sharing. Built for power users, developers, and privacy-conscious individuals who need a unified solution for managing sensitive data across devices.
 
+## Quick Start
+
+### Prerequisites
+- Go 1.23 or later
+- X11 development libraries (for Linux)
+- Git
+
+### Installation
+
+#### Local Installation (No Root Required)
+```bash
+# Clone the repository
+git clone https://github.com/berrythewa/clipman-daemon.git
+cd clipman-daemon
+
+# Build and install locally
+make install-local
+```
+
+#### System-wide Installation
+```bash
+# Build and install system-wide
+sudo make install
+```
+
+#### Using Go Install
+```bash
+go install github.com/berrythewa/clipman-daemon/cmd/clipman@latest
+go install github.com/berrythewa/clipman-daemon/cmd/clipmand@latest
+```
+
+### Running the Daemon
+
+#### Manual Start
+```bash
+# Start in foreground
+clipman
+
+# Start in background
+clipman --detach
+
+# Check status
+clipman daemon status
+
+# Stop the daemon
+clipman daemon stop
+```
+
+#### Systemd Service (Linux)
+```bash
+# Install systemd service
+sudo cp scripts/clipman.service /etc/systemd/system/clipman@$USER.service
+sudo systemctl daemon-reload
+sudo systemctl enable clipman@$USER
+sudo systemctl start clipman@$USER
+```
+
+### Uninstallation
+
+#### System-wide Uninstallation
+```bash
+# Uninstall system-wide
+sudo make uninstall
+```
+
+#### Local Uninstallation
+```bash
+# Remove local installation
+rm -f ~/.local/bin/clipman
+rm -f ~/.local/bin/clipmand
+
+# Remove data and configuration (optional)
+rm -rf ~/.clipman
+rm -rf ~/.config/clipman
+```
+
+#### Service Removal
+```bash
+# Remove systemd service
+sudo systemctl stop clipman@$USER
+sudo systemctl disable clipman@$USER
+sudo rm /etc/systemd/system/clipman@$USER.service
+sudo systemctl daemon-reload
+```
+
+The uninstaller will:
+1. Remove the binary files
+2. Stop and remove any installed services
+3. Optionally remove all data and configuration
+4. Clean up any remaining files
+
 ## Core Features
 
 ### Clipboard Management (Implemented)
@@ -58,13 +149,49 @@ A secure, cross-platform clipboard manager and sync suite with integrated secret
   - Emergency access
   - Audit logging
 
+## Development
+
+### Building from Source
+```bash
+# Build both CLI and daemon
+make build-all
+
+# Build just the CLI
+make build-cli
+
+# Build just the daemon
+make build-daemon
+
+# Clean build artifacts
+make clean
+```
+
+### Development Tools
+```bash
+# Run tests
+make test
+
+# Run linters
+make lint
+
+# Update dependencies
+make deps
+```
+
+### Release Building
+```bash
+# Build release packages for all platforms
+make release
+```
+
 ## Platform-Specific Implementation
 
 ### Desktop Support
 #### Linux (Implemented)
-* X11 clipboard integration via `github.com/atotto/clipboard`
-* Adaptive polling (500ms - 2s intervals)
+* X11 clipboard integration via `github.com/BurntSushi/xgb`
+* Event-based monitoring
 * Systemd service integration
+* Proper resource cleanup
 
 #### macOS (In Progress)
 * Native NSPasteboard integration
@@ -117,8 +244,6 @@ A secure, cross-platform clipboard manager and sync suite with integrated secret
 clipman [global flags] <command> [flags] [arguments]
 ```
 
-For detailed CLI documentation, see [CLI.md](docs/CLI.md)
-
 ### Core Commands
 ```bash
 # Daemon Management
@@ -149,10 +274,12 @@ clipman room {create|join|leave|list|chat}
 - Content type detection
 - History management
 - Configuration system
+- X11 clipboard integration
+- Daemon process management
+- Systemd service integration
 
 ### In Progress 🔄
 - Platform-specific clipboard implementations
-- Daemon process management
 - P2P networking foundation
 - End-to-end encryption
 - Mobile platform support

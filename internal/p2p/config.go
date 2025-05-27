@@ -1,12 +1,12 @@
-// Package sync provides clipboard synchronization using libp2p
-package sync
+// Package p2p provides clipboard synchronization using libp2p
+package p2p
 
 import (
 	"fmt"
 	"path/filepath"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
+	"github.com/berrythewa/clipman-daemon/internal/p2p/discovery"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	// "github.com/libp2p/go-libp2p/core/peer"

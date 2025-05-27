@@ -13,7 +13,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/ipc"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
-	"github.com/berrythewa/clipman-daemon/internal/sync"
+	"github.com/berrythewa/clipman-daemon/internal/p2p"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
 )
@@ -28,7 +28,7 @@ type Daemon struct {
 	// Components
 	clipboard clipboard.Clipboard
 	storage   *storage.BoltStorage
-	sync      *sync.Node
+	sync      *p2p.Node
 	ipc       func(*ipc.Request) *ipc.Response
 }
 
@@ -66,7 +66,7 @@ func (d *Daemon) Initialize() error {
 
 	// Initialize sync if enabled
 	if d.cfg.Sync.Enabled {
-		syncNode, err := sync.NewNode(d.ctx, d.cfg, d.logger)
+		syncNode, err := p2p.NewNode(d.ctx, d.cfg, d.logger)
 		if err != nil {
 			return fmt.Errorf("failed to initialize sync: %w", err)
 		}

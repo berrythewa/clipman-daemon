@@ -1,5 +1,5 @@
-// Package sync provides clipboard synchronization using libp2p
-package sync
+// Package p2p provides clipboard synchronization using libp2p
+package p2p
 
 import (
 	"bufio"
@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/berrythewa/clipman-daemon/internal/sync/discovery"
+	"github.com/berrythewa/clipman-daemon/internal/p2p/discovery"
 	// "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
