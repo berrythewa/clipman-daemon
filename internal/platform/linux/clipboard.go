@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
@@ -69,19 +68,19 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 		return nil, fmt.Errorf("failed to get selection owner: %w", err)
 	}
 
-	if owner == 0 {
+	if owner.Owner == 0 {
 		return nil, fmt.Errorf("no selection owner")
 	}
 
 	// Convert the selection to a string
-	reply, err := xproto.ConvertSelection(
+	err = xproto.ConvertSelection(
 		c.conn,
 		c.window,
 		xproto.AtomPrimary,
 		xproto.AtomString,
 		xproto.AtomPrimary,
-		xproto.CurrentTime,
-	).Reply()
+		xproto.TimeCurrentTime,
+	).Check()
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert selection: %w", err)
 	}
@@ -102,7 +101,7 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 
 	// Create content from the property
 	content := &types.ClipboardContent{
-		Type: types.ContentTypeText,
+		Type: types.TypeText,
 		Data: prop.Value,
 	}
 
@@ -133,7 +132,7 @@ func (c *LinuxClipboard) Write(content *types.ClipboardContent) error {
 		c.conn,
 		c.window,
 		xproto.AtomPrimary,
-		xproto.CurrentTime,
+		xproto.TimeCurrentTime,
 	).Check()
 	if err != nil {
 		return fmt.Errorf("failed to set selection owner: %w", err)
@@ -150,7 +149,7 @@ func (c *LinuxClipboard) Write(content *types.ClipboardContent) error {
 }
 
 // MonitorChanges starts monitoring for clipboard changes
-func (c *LinuxClipboard) MonitorChanges(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) {
+func (c *LinuxClipboard) MonitorChanges(handler ClipboardChangeHandler) {
 	c.mu.Lock()
 	if c.isRunning {
 		c.mu.Unlock()
@@ -186,8 +185,6 @@ func (c *LinuxClipboard) MonitorChanges(contentCh chan<- *types.ClipboardContent
 
 		for {
 			select {
-			case <-stopCh:
-				return
 			case <-c.ctx.Done():
 				return
 			default:
@@ -207,13 +204,7 @@ func (c *LinuxClipboard) MonitorChanges(contentCh chan<- *types.ClipboardContent
 							continue
 						}
 
-						select {
-						case contentCh <- content:
-						case <-stopCh:
-							return
-						case <-c.ctx.Done():
-							return
-						}
+						handler(content)
 					}
 				}
 			}
@@ -273,22 +264,4 @@ func (c *LinuxClipboard) connect() error {
 	c.conn = conn
 	c.window = window
 	return nil
-}
-
-// NewDaemonizer creates a new Linux daemonizer instance
-func NewDaemonizer() Daemonizer {
-	return &LinuxDaemonizer{}
-}
-
-// LinuxDaemonizer implements the Daemonizer interface for Linux
-type LinuxDaemonizer struct{}
-
-func (d *LinuxDaemonizer) Daemonize(executable string, args []string, workDir string, dataDir string) (int, error) {
-	// TODO: Implement Linux daemonization
-	return 0, fmt.Errorf("daemonization not implemented yet")
-}
-
-func (d *LinuxDaemonizer) IsRunningAsDaemon() bool {
-	// TODO: Implement daemon check
-	return false
 } 
