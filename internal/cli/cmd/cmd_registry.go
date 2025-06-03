@@ -11,6 +11,5 @@ func GetCommands() []*cobra.Command {
 		newClipCmd(),
 		newHistoryCmd(),
 		newConfigCmd(),
-		guiCmd,
 	}
 } 

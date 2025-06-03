@@ -50,6 +50,15 @@ test:
 	@echo "Running tests..."
 	@go test -v ./...
 
+# Run CLI-based tests
+test-config: build-cli
+	@echo "Running config tests script..."
+	@./scripts/test/test_config_cli.sh
+
+# Run all tests (unit + CLI)
+test-all: test test-config
+	@echo "All tests completed!"
+
 # Run linters
 lint:
 	@echo "Running linters..."
