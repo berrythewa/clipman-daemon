@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoad(t *testing.T) {
@@ -34,7 +35,7 @@ func TestLoad(t *testing.T) {
 
 	// Set up mocks
 	getConfigPath = func() (string, error) {
-		return filepath.Join(tempDir, "config.json"), nil
+		return filepath.Join(tempDir, "config.yaml"), nil
 	}
 	getDefaultDataDir = func() (string, error) {
 		return filepath.Join(tempDir, "data"), nil
@@ -44,18 +45,21 @@ func TestLoad(t *testing.T) {
 	}
 
 	// Test loading default config when file doesn't exist
-	cfg, err := Load()
+	configPath, _ := getConfigPath()
+	cfg, err := Load(configPath)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
-	if cfg.LogLevel != DefaultConfig.LogLevel {
-		t.Errorf("Expected LogLevel %s, got %s", DefaultConfig.LogLevel, cfg.LogLevel)
+
+	defaultCfg := DefaultConfig()
+	if cfg.Log.Level != defaultCfg.Log.Level {
+		t.Errorf("Expected Log.Level %s, got %s", defaultCfg.Log.Level, cfg.Log.Level)
 	}
-	if cfg.PollingInterval != DefaultConfig.PollingInterval {
-		t.Errorf("Expected PollingInterval %v, got %v", DefaultConfig.PollingInterval, cfg.PollingInterval)
+	if cfg.PollingInterval != defaultCfg.PollingInterval {
+		t.Errorf("Expected PollingInterval %v, got %v", defaultCfg.PollingInterval, cfg.PollingInterval)
 	}
-	if cfg.DataDir != filepath.Join(tempDir, "data") {
-		t.Errorf("Expected DataDir %s, got %s", filepath.Join(tempDir, "data"), cfg.DataDir)
+	if cfg.SystemPaths.DataDir != filepath.Join(tempDir, "data") {
+		t.Errorf("Expected DataDir %s, got %s", filepath.Join(tempDir, "data"), cfg.SystemPaths.DataDir)
 	}
 	if cfg.DeviceID != "mock-device-id" {
 		t.Errorf("Expected DeviceID %s, got %s", "mock-device-id", cfg.DeviceID)
@@ -63,20 +67,23 @@ func TestLoad(t *testing.T) {
 
 	// Test loading existing config
 	testConfig := Config{
-		LogLevel:        "debug",
-		BrokerURL:       "mqtt://test.mosquitto.org",
-		BrokerUsername:  "testuser",
-		BrokerPassword:  "testpass",
 		DeviceID:        "existing-device-id",
-		PollingInterval: 5 * time.Second,
-		DataDir:         filepath.Join(tempDir, "custom-data-dir"), // Use a subdirectory of tempDir
+		DeviceName:      "test-device",
+		EnableLogging:   true,
+		PollingInterval: 5,
+		SystemPaths: ConfigPaths{
+			DataDir: filepath.Join(tempDir, "custom-data-dir"),
+		},
+		Log: LogConfig{
+			Level: "debug",
+		},
 	}
-	configPath, _ := getConfigPath()
+	configPath, _ = getConfigPath()
 	file, _ := os.Create(configPath)
 	json.NewEncoder(file).Encode(testConfig)
 	file.Close()
 
-	cfg, err = Load()
+	cfg, err = Load(configPath)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -84,6 +91,7 @@ func TestLoad(t *testing.T) {
 		t.Errorf("Loaded config doesn't match saved config. Got %+v, want %+v", cfg, testConfig)
 	}
 }
+
 func TestSave(t *testing.T) {
 	// Setup
 	tempDir, err := os.MkdirTemp("", "clipman-test")
@@ -98,27 +106,30 @@ func TestSave(t *testing.T) {
 
 	// Set up mock
 	getConfigPath = func() (string, error) {
-		return filepath.Join(tempDir, "config.json"), nil
+		return filepath.Join(tempDir, "config.yaml"), nil
 	}
 
 	// Test saving config
 	testConfig := &Config{
-		LogLevel:        "debug",
-		BrokerURL:       "mqtt://test.mosquitto.org",
-		BrokerUsername:  "testuser",
-		BrokerPassword:  "testpass",
 		DeviceID:        "testdevice",
-		PollingInterval: 5 * time.Second,
-		DataDir:         "/custom/data/dir",
+		DeviceName:      "test-device",
+		EnableLogging:   true,
+		PollingInterval: 5,
+		SystemPaths: ConfigPaths{
+			DataDir: "/custom/data/dir",
+		},
+		Log: LogConfig{
+			Level: "debug",
+		},
 	}
 
-	err = testConfig.Save()
+	configPath, _ := getConfigPath()
+	err = testConfig.Save(configPath)
 	if err != nil {
 		t.Fatalf("Save() failed: %v", err)
 	}
 
 	// Verify saved config
-	configPath, _ := getConfigPath()
 	file, err := os.Open(configPath)
 	if err != nil {
 		t.Fatalf("Failed to open saved config: %v", err)
@@ -126,7 +137,7 @@ func TestSave(t *testing.T) {
 	defer file.Close()
 
 	var loadedConfig Config
-	err = json.NewDecoder(file).Decode(&loadedConfig)
+	err = yaml.NewDecoder(file).Decode(&loadedConfig)
 	if err != nil {
 		t.Fatalf("Failed to decode saved config: %v", err)
 	}
@@ -154,7 +165,7 @@ func TestLoadConfigErrorHandling(t *testing.T) {
 
 	// Set up initial mocks
 	getConfigPath = func() (string, error) {
-		return filepath.Join(tempDir, "config.json"), nil
+		return filepath.Join(tempDir, "config.yaml"), nil
 	}
 	getDefaultDataDir = func() (string, error) {
 		return filepath.Join(tempDir, "data"), nil
@@ -162,14 +173,14 @@ func TestLoadConfigErrorHandling(t *testing.T) {
 
 	// Test loading malformed config
 	configPath, _ := getConfigPath()
-	err = os.WriteFile(configPath, []byte("invalid json"), 0644)
+	err = os.WriteFile(configPath, []byte("invalid yaml"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to write invalid config: %v", err)
 	}
 
-	_, err = Load()
+	_, err = Load(configPath)
 	if err == nil {
-		t.Error("Load() should fail with invalid JSON")
+		t.Error("Load() should fail with invalid YAML")
 	}
 
 	// Test error in getConfigPath
@@ -177,20 +188,20 @@ func TestLoadConfigErrorHandling(t *testing.T) {
 		return "", os.ErrPermission
 	}
 
-	_, err = Load()
+	_, err = Load("")
 	if err == nil {
 		t.Error("Load() should fail when getConfigPath fails")
 	}
 
 	// Test error in getDefaultDataDir
 	getConfigPath = func() (string, error) {
-		return filepath.Join(tempDir, "config.json"), nil
+		return filepath.Join(tempDir, "config.yaml"), nil
 	}
 	getDefaultDataDir = func() (string, error) {
 		return "", os.ErrPermission
 	}
 
-	_, err = Load()
+	_, err = Load(configPath)
 	if err == nil {
 		t.Error("Load() should fail when getDefaultDataDir fails")
 	}
@@ -212,7 +223,7 @@ func TestDeviceIDGeneration(t *testing.T) {
     defer os.RemoveAll(tempDir)
 
     getConfigPath = func() (string, error) {
-        return filepath.Join(tempDir, "config.json"), nil
+        return filepath.Join(tempDir, "config.yaml"), nil
     }
     getDefaultDataDir = func() (string, error) {
         return filepath.Join(tempDir, "data"), nil
@@ -223,7 +234,8 @@ func TestDeviceIDGeneration(t *testing.T) {
         return "successful-uuid"
     }
 
-    cfg, err := Load()
+    configPath, _ := getConfigPath()
+    cfg, err := Load(configPath)
     if err != nil {
         t.Fatalf("Load() failed: %v", err)
     }
@@ -236,7 +248,8 @@ func TestDeviceIDGeneration(t *testing.T) {
         return fmt.Sprintf("error-generating-uuid-%d", time.Now().UnixNano())
     }
 
-    cfg, err = Load()
+    configPath, _ = getConfigPath()
+    cfg, err = Load(configPath)
     if err != nil {
         t.Fatalf("Load() failed: %v", err)
     }

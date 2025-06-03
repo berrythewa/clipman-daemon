@@ -15,6 +15,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Function variables for testing
+var (
+	getConfigPath     = GetActiveConfigPath
+	getDefaultDataDir = func() (string, error) {
+		paths, err := GetConfigPaths()
+		if err != nil {
+			return "", err
+		}
+		return paths.DataDir, nil
+	}
+	generateDeviceID = func() string {
+		return uuid.New().String()
+	}
+)
+
 // ConfigPaths holds all relevant paths for the application
 type ConfigPaths struct {
 	BaseDir      string // Base directory for all config files
