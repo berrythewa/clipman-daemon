@@ -1,7 +1,10 @@
 package main
 
 import (
-	"github.com/berrythewa/clipman-daemon/internal/cli"
+	"fmt"
+	"os"
+
+	"github.com/berrythewa/clipman-daemon/internal/daemon"
 )
 
 // Version information - these can be set during build using -ldflags
@@ -12,9 +15,25 @@ var (
 )
 
 func main() {
-	// Set version information
-	cli.SetVersionInfo(version, buildTime, commit)
+	// Check command line arguments for foreground mode
+	foreground := false
+	for _, arg := range os.Args {
+		if arg == "--foreground" {
+			foreground = true
+			break
+		}
+	}
 	
-	// Execute the CLI
-	cli.Execute()
+	// Run the daemon
+	var err error
+	if foreground {
+		err = daemon.RunForeground()
+	} else {
+		err = daemon.Start()
+	}
+	
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Daemon error: %v\n", err)
+		os.Exit(1)
+	}
 }

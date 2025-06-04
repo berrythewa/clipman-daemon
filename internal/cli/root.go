@@ -6,7 +6,6 @@ import (
 
 	cmdpkg "github.com/berrythewa/clipman-daemon/internal/cli/cmd"
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	"github.com/berrythewa/clipman-daemon/internal/daemon"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -37,11 +36,11 @@ var RootCmd = &cobra.Command{
 	Long: `Clipman is a clipboard manager that monitors your clipboard
 and provides history, searching, and synchronization capabilities.
 
-Running clipman without any commands starts the daemon in the foreground.
-Use --detach to run it in the background.`,
+Use 'clipman daemon start' to start the daemon process.
+Use other commands to interact with a running daemon.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// If no subcommand is provided, run in daemon mode by default
-		return runDaemon(cmd, args)
+		// Show help when no subcommand is provided
+		return cmd.Help()
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		var err error
@@ -67,14 +66,6 @@ Use --detach to run it in the background.`,
 	},
 }
 
-// runDaemon implements the daemon mode functionality
-func runDaemon(cmd *cobra.Command, args []string) error {
-	if detach {
-		return daemon.Start()
-	}
-	return daemon.RunForeground()
-}
-
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -95,5 +86,4 @@ func AddCommand(cmd *cobra.Command) {
 func init() {
 	RootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level (debug, info, warn, error)")
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file path")
-	RootCmd.Flags().BoolVarP(&detach, "detach", "d", false, "run in background")
 } 

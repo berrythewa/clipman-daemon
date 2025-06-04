@@ -9,9 +9,6 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	// Import the Linux-specific daemonizer
-	// linux "github.com/berrythewa/clipman-daemon/internal/daemon/linux/daemon" 
-	// do we really need this, its same package 
 	"github.com/berrythewa/clipman-daemon/internal/ipc"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
@@ -19,6 +16,31 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
 )
+
+// Daemonizer defines the interface for platform-specific daemonization
+// Each platform implements this interface for native daemon process management
+type Daemonizer interface {
+	// Daemonize forks the current process and runs it in the background
+	// Returns the PID of the new process or an error
+	Daemonize(executable string, args []string, workDir string, dataDir string) (int, error)
+	
+	// IsRunningAsDaemon returns true if the current process is running as a daemon
+	IsRunningAsDaemon() bool
+}
+
+// Package variable to hold the platform-specific daemonizer implementation
+var (
+	defaultDaemonizer Daemonizer
+)
+
+// GetPlatformDaemonizer returns the appropriate daemonizer implementation for the current platform
+// The actual implementation is selected at compile time through build tags
+func GetPlatformDaemonizer() Daemonizer {
+	if defaultDaemonizer == nil {
+		panic("no daemonizer implementation registered for this platform")
+	}
+	return defaultDaemonizer
+}
 
 // Daemon represents the main daemon process
 type Daemon struct {
@@ -103,8 +125,8 @@ func Start() error {
 
 	// Handle daemonization if needed
 	if os.Getenv("CLIPMAN_DAEMON") != "1" {
-		// Create Linux daemonizer directly
-		daemonizer := &linux.LinuxDaemonizer{}
+		// Get platform-specific daemonizer
+		daemonizer := GetPlatformDaemonizer()
 		executable, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("failed to get executable path: %w", err)
