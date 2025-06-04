@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
-	"github.com/berrythewa/clipman-daemon/internal/platform"
+	// Import the Linux-specific daemonizer
+	// linux "github.com/berrythewa/clipman-daemon/internal/daemon/linux/daemon" 
+	// do we really need this, its same package 
 	"github.com/berrythewa/clipman-daemon/internal/ipc"
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/storage"
@@ -101,7 +103,8 @@ func Start() error {
 
 	// Handle daemonization if needed
 	if os.Getenv("CLIPMAN_DAEMON") != "1" {
-		daemonizer := platform.GetPlatformDaemonizer()
+		// Create Linux daemonizer directly
+		daemonizer := &linux.LinuxDaemonizer{}
 		executable, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("failed to get executable path: %w", err)

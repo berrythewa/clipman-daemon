@@ -4,9 +4,9 @@
 # General settings
 device:
   # Unique identifier for this device (auto-generated if not set)
-  id: ""
+  id: "" # should be auto-generated at install time
   # Human-readable name for this device
-  name: ""
+  name: "berrytest"
 
 # System paths
 paths:
@@ -20,6 +20,27 @@ paths:
   db_file: "~/.local/share/clipman/clipman.db"
   # Temporary files directory
   temp_dir: "~/.local/share/clipman/temp"
+
+# Sync and P2P settings
+sync:
+  # Enable synchronization functionality (disables P2P when false)
+  enabled: false
+  # Sync over internet
+  sync_over_internet: false
+  # Use relay nodes
+  use_relay_nodes: true
+  # Listen port (0 for dynamic)
+  listen_port: 0
+  # Discovery method (mdns, dht, manual, paired)
+  discovery_method: "paired"
+  # Pairing enabled
+  pairing_enabled: true
+  # Device name for pairing
+  device_name: "berrytest"
+  # Allow only known peers
+  allow_only_known_peers: true
+  # Require approval PIN
+  require_approval_pin: false
 
 # Clipboard settings
 clipboard:
@@ -109,6 +130,22 @@ log:
     max_size: 10485760
     max_files: 5
     max_age: "30d"
+
+# P2P settings
+p2p:
+  # Enable P2P
+  enabled: false
+  # P2P settings
+  settings:
+    # P2P port
+    port: 4000
+    # P2P protocol version
+    version: "1.0.0"
+    # P2P protocol path
+    path: "/clipman/1.0.0/clipboard"
+    # P2P protocol name
+    name: "clipman"
+
 # Security settings
 security:
   # Encryption settings

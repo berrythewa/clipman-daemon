@@ -12,7 +12,8 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/p2p"
 	"github.com/spf13/cobra"
-	// "go.uber.org/zap" TODO: no logging or Cobra does it ?/
+	// "go.uber.org/zap" TODO: let's use zap everywhere
+	"github.com/berrythewa/clipman-daemon/internal/config"
 )
 
 var (
@@ -43,6 +44,14 @@ Examples:
   clipman pair --remove <peerID> # Remove a paired device
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Load config
+		cfg, err := config.Load("")
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+		if !cfg.Sync.Enabled {
+			return fmt.Errorf("pairing is not enabled in the config, please enable it in the config file")
+		}
 		if listPaired {
 			return listPairedDevices()
 		}
