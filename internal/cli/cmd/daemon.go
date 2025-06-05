@@ -44,6 +44,7 @@ func newDaemonStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the Clipman daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := GetZapLogger()
 			if background {
 				logger.Info("Starting Clipman daemon in background")
 				return startDaemonProcess(true)
@@ -65,6 +66,7 @@ func newDaemonStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the Clipman daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := GetZapLogger()
 			logger.Info("Stopping Clipman daemon", zap.Bool("force", force))
 			
 			if err := stopDaemonProcess(force); err != nil {
@@ -107,6 +109,7 @@ func newDaemonRestartCmd() *cobra.Command {
 		Use:   "restart",
 		Short: "Restart the Clipman daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := GetZapLogger()
 			logger.Info("Restarting Clipman daemon")
 
 			// Stop the daemon

@@ -5,7 +5,6 @@ package platform
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 

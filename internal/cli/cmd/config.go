@@ -7,6 +7,7 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
@@ -18,6 +19,7 @@ func newConfigCmd() *cobra.Command {
 		Use:   "config",
 		Short: "Manage Clipman configuration",
 		Long: `Manage Clipman configuration:
+  • Initialize configuration for first-time setup
   • Show current configuration
   • Edit configuration in your preferred editor
   • Reset configuration to defaults
@@ -27,6 +29,7 @@ func newConfigCmd() *cobra.Command {
 	}
 
 	// Add subcommands
+	cmd.AddCommand(newConfigInitCmd())
 	cmd.AddCommand(newConfigShowCmd())
 	cmd.AddCommand(newConfigEditCmd())
 	cmd.AddCommand(newConfigResetCmd())
@@ -34,6 +37,62 @@ func newConfigCmd() *cobra.Command {
 	cmd.AddCommand(newConfigExportCmd())
 	cmd.AddCommand(newConfigLoadCmd())
 
+	return cmd
+}
+
+func newConfigInitCmd() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize configuration for first-time setup",
+		Long: `Initialize Clipman configuration with sensible defaults.
+This creates the configuration directory structure and generates
+a default configuration file suitable for first-time users.
+
+The configuration will be created with:
+  • Sync disabled by default (can be enabled later)
+  • Proper platform-specific paths
+  • Reasonable defaults for history and storage`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := GetZapLogger()
+			
+			// Get active config path
+			configPath, err := config.GetActiveConfigPath()
+			if err != nil {
+				return fmt.Errorf("failed to get active config path: %w", err)
+			}
+
+			// Check if config already exists
+			if _, err := os.Stat(configPath); err == nil && !force {
+				return fmt.Errorf("configuration already exists at %s\nUse --force to overwrite or 'clipman config show' to view current config", configPath)
+			}
+
+			// Create default config with sync disabled for first-time users
+			cfg := config.DefaultConfig()
+			cfg.Sync.Enabled = false // Disable sync by default for new users
+			
+			logger.Info("Initializing Clipman configuration",
+				zap.String("config_path", configPath),
+				zap.Bool("sync_enabled", cfg.Sync.Enabled))
+
+			// Save the config
+			if err := cfg.Save(configPath); err != nil {
+				return fmt.Errorf("failed to save configuration: %w", err)
+			}
+
+			fmt.Printf("✓ Configuration initialized at: %s\n", configPath)
+			fmt.Printf("✓ Data directory: %s\n", cfg.SystemPaths.DataDir)
+			fmt.Printf("✓ Database path: %s\n", cfg.Storage.DBPath)
+			fmt.Println("\nConfiguration created with sync disabled.")
+			fmt.Println("To enable sync later, run: clipman config edit")
+			fmt.Println("To start the daemon, run: clipman daemon start")
+			
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "force overwrite existing configuration")
 	return cmd
 }
 

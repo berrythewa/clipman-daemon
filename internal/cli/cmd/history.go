@@ -147,9 +147,35 @@ func newHistoryListCmd() *cobra.Command {
 				return fmt.Errorf("failed to get history: %s", resp.Message)
 			}
 
-			entries, ok := resp.Data.([]*types.ClipboardContent)
-			if !ok {
-				return fmt.Errorf("invalid response data type")
+			// Handle JSON unmarshaling - resp.Data comes back as []interface{}
+			var entries []*types.ClipboardContent
+			if dataSlice, ok := resp.Data.([]interface{}); ok {
+				// Convert each interface{} to ClipboardContent
+				for _, item := range dataSlice {
+					if itemMap, ok := item.(map[string]interface{}); ok {
+						entry := &types.ClipboardContent{}
+						
+						// Convert map fields to ClipboardContent fields
+						if typeStr, ok := itemMap["type"].(string); ok {
+							entry.Type = types.ContentType(typeStr)
+						}
+						if dataStr, ok := itemMap["data"].(string); ok {
+							entry.Data = []byte(dataStr)
+						}
+						if createdStr, ok := itemMap["created"].(string); ok {
+							if created, err := time.Parse(time.RFC3339, createdStr); err == nil {
+								entry.Created = created
+							}
+						}
+						if hashStr, ok := itemMap["hash"].(string); ok {
+							entry.Hash = hashStr
+						}
+						
+						entries = append(entries, entry)
+					}
+				}
+			} else {
+				return fmt.Errorf("invalid response data type - expected array, got %T", resp.Data)
 			}
 
 			if useJSON {

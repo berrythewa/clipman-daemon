@@ -39,22 +39,9 @@ func NewClipboard(logger *zap.Logger) Clipboard {
 	}
 }
 
-// NewDaemonizer creates a new Windows daemonizer instance
+// NewDaemonizer creates a new WindowsDaemonizer instance
 func NewDaemonizer() Daemonizer {
 	return &WindowsDaemonizer{}
-}
-
-// WindowsDaemonizer implements the Daemonizer interface for Windows
-type WindowsDaemonizer struct{}
-
-func (d *WindowsDaemonizer) Daemonize(executable string, args []string, workDir string, dataDir string) (int, error) {
-	// TODO: Implement Windows service installation
-	return 0, fmt.Errorf("daemonization not implemented yet")
-}
-
-func (d *WindowsDaemonizer) IsRunningAsDaemon() bool {
-	// TODO: Implement Windows service check
-	return false
 }
 
 // Read returns the current clipboard content

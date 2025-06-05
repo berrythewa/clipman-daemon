@@ -37,22 +37,9 @@ func NewClipboard(logger *zap.Logger) Clipboard {
 	}
 }
 
-// NewDaemonizer creates a new Darwin daemonizer instance
+// NewDaemonizer creates a new DarwinDaemonizer instance
 func NewDaemonizer() Daemonizer {
 	return &DarwinDaemonizer{}
-}
-
-// DarwinDaemonizer implements the Daemonizer interface for macOS
-type DarwinDaemonizer struct{}
-
-func (d *DarwinDaemonizer) Daemonize(executable string, args []string, workDir string, dataDir string) (int, error) {
-	// TODO: Implement macOS daemonization using launchd
-	return 0, fmt.Errorf("daemonization not implemented yet")
-}
-
-func (d *DarwinDaemonizer) IsRunningAsDaemon() bool {
-	// TODO: Implement daemon check for macOS
-	return false
 }
 
 // Read returns the current clipboard content

@@ -202,7 +202,10 @@ func DefaultConfig() *Config {
 		hostname = "unknown"
 	}
 
-	return &Config{
+	// Get platform-specific defaults
+	platformDefaults := GetPlatformDefaults()
+
+	cfg := &Config{
 		DeviceID:      uuid.New().String(),
 		DeviceName:    hostname,
 		EnableLogging: true,
@@ -210,10 +213,10 @@ func DefaultConfig() *Config {
 		Log: LogConfig{
 			EnableConsoleLogging: true,
 			Level:               "info",
-			EnableFileLogging: true,
-			MaxLogSize:        10 * 1024 * 1024, // 10MB
-			MaxLogFiles:       5,
-			Format:           "text",
+			EnableFileLogging:   true,
+			MaxLogSize:          platformDefaults.MaxLogSize,
+			MaxLogFiles:         platformDefaults.MaxLogFiles,
+			Format:              "text",
 		},
 		History: HistoryOptions{
 			Limit:   0, // No limit
@@ -221,7 +224,7 @@ func DefaultConfig() *Config {
 		},
 		Storage: StorageConfig{
 			DBPath:    paths.DBFile,
-			MaxSize:   100 * 1024 * 1024, // 100MB
+			MaxSize:   platformDefaults.MaxContentSize,
 			KeepItems: 50,
 		},
 		Server: ServerConfig{
@@ -230,20 +233,22 @@ func DefaultConfig() *Config {
 			Path: "/api/v1",
 		},
 		Sync: types.SyncConfig{
-			Enabled:           true,
-			SyncOverInternet:  false,
-			UseRelayNodes:     true,
-			ListenPort:        0, // Dynamic port
-			DiscoveryMethod:   "mdns",
-			PairingEnabled:    true,
-			DeviceName:        hostname,
+			Enabled:             false, // Disabled by default for new users
+			SyncOverInternet:    false,
+			UseRelayNodes:       true,
+			ListenPort:          0, // Dynamic port
+			DiscoveryMethod:     "paired", // Changed from "mdns" to "paired" for better security
+			PairingEnabled:      true,
+			DeviceName:          hostname,
 			AllowOnlyKnownPeers: true,
 		},
-		StealthMode:     true,
-		PollingInterval: 10000, // 10 seconds
-		LaunchAtStartup: false,
+		StealthMode:     platformDefaults.StealthMode,
+		PollingInterval: platformDefaults.PollingInterval,
+		LaunchAtStartup: platformDefaults.LaunchAtStartup,
 		LaunchOnLogin:   false,
 	}
+
+	return cfg
 }
 
 // EnsureDefaultConfig ensures that the default configuration is set up

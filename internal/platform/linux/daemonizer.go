@@ -1,7 +1,7 @@
 //go:build linux
 // +build linux
 
-package daemon
+package platform
 
 import (
 	"fmt"
@@ -17,8 +17,8 @@ import (
 // LinuxDaemonizer implements platform-specific daemonization for Linux
 type LinuxDaemonizer struct{}
 
-// NewDaemonizer creates a new platform-specific daemonizer implementation
-func NewDaemonizer() *LinuxDaemonizer {
+// NewDaemonizer creates a new LinuxDaemonizer instance
+func NewDaemonizer() Daemonizer {
 	return &LinuxDaemonizer{}
 }
 

@@ -8,6 +8,7 @@ import (
 func GetCommands() []*cobra.Command {
 	return []*cobra.Command{
 		newDaemonCmd(),
+		newServiceCmd(),
 		newClipCmd(),
 		newHistoryCmd(),
 		newConfigCmd(),

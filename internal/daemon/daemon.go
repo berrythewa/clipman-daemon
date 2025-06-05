@@ -8,39 +8,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"github.com/berrythewa/clipman-daemon/internal/ipc"
-	"github.com/berrythewa/clipman-daemon/internal/clipboard"
-	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/p2p"
+	"github.com/berrythewa/clipman-daemon/internal/storage"
+	"github.com/berrythewa/clipman-daemon/internal/platform"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
 )
-
-// Daemonizer defines the interface for platform-specific daemonization
-// Each platform implements this interface for native daemon process management
-type Daemonizer interface {
-	// Daemonize forks the current process and runs it in the background
-	// Returns the PID of the new process or an error
-	Daemonize(executable string, args []string, workDir string, dataDir string) (int, error)
-	
-	// IsRunningAsDaemon returns true if the current process is running as a daemon
-	IsRunningAsDaemon() bool
-}
-
-// Package variable to hold the platform-specific daemonizer implementation
-var (
-	defaultDaemonizer Daemonizer
-)
-
-// GetPlatformDaemonizer returns the appropriate daemonizer implementation for the current platform
-// The actual implementation is selected at compile time through build tags
-func GetPlatformDaemonizer() Daemonizer {
-	if defaultDaemonizer == nil {
-		panic("no daemonizer implementation registered for this platform")
-	}
-	return defaultDaemonizer
-}
 
 // Daemon represents the main daemon process
 type Daemon struct {
@@ -83,10 +59,14 @@ func (d *Daemon) Initialize() error {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
 	d.storage = storage
+	d.logger.Info("Storage initialized successfully")
 
 	// Initialize clipboard monitor
+	d.logger.Info("Initializing clipboard...")
 	clipboard := clipboard.NewClipboard()
+	d.logger.Info("Clipboard NewClipboard() called", zap.Bool("is_nil", clipboard == nil))
 	d.clipboard = clipboard
+	d.logger.Info("Clipboard assigned to daemon", zap.Bool("daemon_clipboard_is_nil", d.clipboard == nil))
 
 	// Initialize sync if enabled
 	if d.cfg.Sync.Enabled {
@@ -98,8 +78,9 @@ func (d *Daemon) Initialize() error {
 	}
 
 	// Initialize IPC handler
-	d.ipc = handleIPCRequest
+	d.ipc = d.handleIPCRequest
 
+	d.logger.Info("All daemon components initialized successfully")
 	return nil
 }
 
@@ -126,7 +107,7 @@ func Start() error {
 	// Handle daemonization if needed
 	if os.Getenv("CLIPMAN_DAEMON") != "1" {
 		// Get platform-specific daemonizer
-		daemonizer := GetPlatformDaemonizer()
+		daemonizer := platform.GetPlatformDaemonizer()
 		executable, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("failed to get executable path: %w", err)
@@ -150,10 +131,15 @@ func Start() error {
 func (d *Daemon) Run() error {
 	d.logger.Info("Starting daemon components")
 
+	// Debug logging before clipboard operations
+	d.logger.Info("About to start clipboard monitor", zap.Bool("clipboard_is_nil", d.clipboard == nil))
+
 	// Start clipboard monitor
 	contentCh := make(chan *types.ClipboardContent)
 	stopCh := make(chan struct{})
+	d.logger.Info("Created channels, about to call MonitorChanges")
 	go d.clipboard.MonitorChanges(contentCh, stopCh)
+	d.logger.Info("MonitorChanges goroutine started")
 
 	// Start sync if enabled
 	if d.sync != nil {
@@ -311,16 +297,211 @@ func Status() (bool, error) {
 }
 
 // handleIPCRequest processes incoming IPC requests from the CLI.
-func handleIPCRequest(req *ipc.Request) *ipc.Response {
+func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Received IPC request", zap.String("command", req.Command))
+	
 	switch req.Command {
-	case "history":
-		// TODO: Implement actual history retrieval
-		return &ipc.Response{Status: "ok", Data: "history not implemented"}
-	case "flush":
-		// TODO: Implement actual flush
-		return &ipc.Response{Status: "ok", Message: "Flush not implemented"}
+	case "history", "history.list":
+		return d.handleHistoryListRequest(req)
+	case "history.show":
+		return d.handleHistoryShowRequest(req)
+	case "history.delete":
+		return d.handleHistoryDeleteRequest(req)
+	case "history.stats":
+		return d.handleHistoryStatsRequest(req)
+	case "clip.get":
+		return d.handleClipGetRequest(req)
+	case "clip.set":
+		return d.handleClipSetRequest(req)
+	case "clip.watch":
+		return d.handleClipWatchRequest(req)
+	case "clip.flush":
+		return d.handleClipFlushRequest(req)
 	default:
-		return &ipc.Response{Status: "error", Message: "Unknown command"}
+		return &ipc.Response{
+			Status:  "error", 
+			Message: fmt.Sprintf("Unknown command: %s", req.Command),
+		}
+	}
+}
+
+// handleHistoryListRequest handles history list requests using daemon's storage
+func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing history list request")
+
+	// Parse request arguments
+	limit := int64(10) // default
+	if l, ok := req.Args["limit"].(float64); ok {
+		limit = int64(l)
+	}
+	
+	reverse := false
+	if r, ok := req.Args["reverse"].(bool); ok {
+		reverse = r
+	}
+	
+	contentType := ""
+	if t, ok := req.Args["type"].(string); ok {
+		contentType = t
+	}
+
+	// Build history options
+	options := config.HistoryOptions{
+		Limit:       limit,
+		Reverse:     reverse,
+		ContentType: types.ContentType(contentType),
+	}
+	
+	// Parse time-based filters
+	if since, ok := req.Args["since"].(string); ok {
+		if sinceTime, err := time.Parse(time.RFC3339, since); err == nil {
+			options.Since = sinceTime
+		}
+	}
+	
+	if before, ok := req.Args["before"].(string); ok {
+		if beforeTime, err := time.Parse(time.RFC3339, before); err == nil {
+			options.Before = beforeTime
+		}
+	}
+
+	// Use daemon's existing storage instance - NO new DB connections!
+	contents, err := d.storage.GetHistory(options)
+	if err != nil {
+		d.logger.Error("Failed to get history from storage", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to get history: %v", err),
+		}
+	}
+
+	d.logger.Debug("Retrieved history", 
+		zap.Int("count", len(contents)),
+		zap.Int64("limit", limit),
+		zap.Bool("reverse", reverse))
+
+	return &ipc.Response{
+		Status: "ok",
+		Data:   contents,
+	}
+}
+
+// handleHistoryShowRequest handles showing specific history entry
+func (d *Daemon) handleHistoryShowRequest(req *ipc.Request) *ipc.Response {
+	return &ipc.Response{
+		Status:  "error",
+		Message: "history.show not implemented yet",
+	}
+}
+
+// handleHistoryDeleteRequest handles deleting history entries
+func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
+	return &ipc.Response{
+		Status:  "error",
+		Message: "history.delete not implemented yet",
+	}
+}
+
+// handleHistoryStatsRequest handles history statistics request
+func (d *Daemon) handleHistoryStatsRequest(req *ipc.Request) *ipc.Response {
+	return &ipc.Response{
+		Status:  "error",
+		Message: "history.stats not implemented yet",
+	}
+}
+
+// handleClipGetRequest handles getting current clipboard content
+func (d *Daemon) handleClipGetRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing clip get request")
+
+	// Use daemon's clipboard instance
+	content, err := d.clipboard.Read()
+	if err != nil {
+		d.logger.Error("Failed to read clipboard", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to read clipboard: %v", err),
+		}
+	}
+
+	return &ipc.Response{
+		Status: "ok",
+		Data:   content,
+	}
+}
+
+// handleClipSetRequest handles setting clipboard content
+func (d *Daemon) handleClipSetRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing clip set request")
+
+	// Parse content from request
+	contentData, ok := req.Args["content"]
+	if !ok {
+		return &ipc.Response{
+			Status:  "error",
+			Message: "No content provided",
+		}
+	}
+
+	// Convert to ClipboardContent
+	var content *types.ClipboardContent
+	if contentMap, ok := contentData.(map[string]interface{}); ok {
+		// Parse from map
+		data, _ := contentMap["data"].(string)
+		contentType, _ := contentMap["type"].(string)
+		
+		content = &types.ClipboardContent{
+			Type: types.ContentType(contentType),
+			Data: []byte(data),
+		}
+	} else {
+		return &ipc.Response{
+			Status:  "error",
+			Message: "Invalid content format",
+		}
+	}
+
+	// Use daemon's clipboard instance
+	err := d.clipboard.Write(content)
+	if err != nil {
+		d.logger.Error("Failed to write clipboard", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to write clipboard: %v", err),
+		}
+	}
+
+	return &ipc.Response{
+		Status:  "ok",
+		Message: "Clipboard content set successfully",
+	}
+}
+
+// handleClipWatchRequest handles watching clipboard changes
+func (d *Daemon) handleClipWatchRequest(req *ipc.Request) *ipc.Response {
+	return &ipc.Response{
+		Status:  "error",
+		Message: "clip.watch not implemented yet - use daemon monitoring instead",
+	}
+}
+
+// handleClipFlushRequest handles flushing clipboard history
+func (d *Daemon) handleClipFlushRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing clip flush request")
+
+	// Use daemon's storage instance to flush
+	err := d.storage.FlushCache()
+	if err != nil {
+		d.logger.Error("Failed to flush clipboard history", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to flush history: %v", err),
+		}
+	}
+
+	return &ipc.Response{
+		Status:  "ok",
+		Message: "Clipboard history flushed successfully",
 	}
 }
 
