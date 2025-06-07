@@ -123,9 +123,38 @@ func (f *Formatter) formatHeader(content *types.ClipboardContent) string {
 func (f *Formatter) formatMetadata(content *types.ClipboardContent) string {
 	var parts []string
 
-	// Hash
-	hashStr := fmt.Sprintf("Hash: %s", content.Hash[:8]+"...")
-	parts = append(parts, DimIf(hashStr, f.options.UseColors))
+	// Content preview instead of hash - much more useful for users
+	previewStr := ""
+	switch content.Type {
+	case types.TypeFile, types.TypeFilePath:
+		// For files, show the file path(s)
+		previewStr = fmt.Sprintf("Path: %s", FormatFilePreview(content, 60))
+	case types.TypeText:
+		// For text, show a preview
+		preview := FormatTextPreview(content, 40)
+		if preview != "" {
+			previewStr = fmt.Sprintf("Preview: %s", preview)
+		} else {
+			previewStr = "Preview: (empty)"
+		}
+	case types.TypeURL:
+		// For URLs, show the URL
+		previewStr = fmt.Sprintf("URL: %s", FormatURLPreview(content, 50))
+	case types.TypeImage:
+		// For images, show image info
+		previewStr = FormatImagePreview(content, 40)
+	case types.TypeHTML:
+		// For HTML, show a preview
+		previewStr = fmt.Sprintf("HTML: %s", FormatHTMLPreview(content, 40))
+	default:
+		// Generic preview for unknown types
+		preview := TruncateText(string(content.Data), 40)
+		previewStr = fmt.Sprintf("Content: %s", preview)
+	}
+	
+	if previewStr != "" {
+		parts = append(parts, DimIf(previewStr, f.options.UseColors))
+	}
 
 	// Timestamps
 	createdStr := fmt.Sprintf("Created: %s", FormatRelativeTime(content.Created))

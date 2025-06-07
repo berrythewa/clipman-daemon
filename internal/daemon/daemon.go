@@ -141,6 +141,26 @@ func (d *Daemon) Run() error {
 	go d.clipboard.MonitorChanges(contentCh, stopCh)
 	d.logger.Info("MonitorChanges goroutine started")
 
+	// Start content processing loop - THIS WAS MISSING!
+	go func() {
+		for {
+			select {
+			case content := <-contentCh:
+				// Save content to storage with hash generation
+				if err := d.storage.SaveContent(content); err != nil {
+					d.logger.Error("Failed to save clipboard content to storage", zap.Error(err))
+				} else {
+					d.logger.Info("Saved clipboard content to storage", 
+						zap.String("type", string(content.Type)),
+						zap.String("hash", content.Hash),
+						zap.Int("size", len(content.Data)))
+				}
+			case <-d.ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// Start sync if enabled
 	if d.sync != nil {
 		if err := d.sync.Start(); err != nil {
@@ -162,6 +182,9 @@ func (d *Daemon) Run() error {
 	// Wait for shutdown signal
 	<-sigChan
 	d.logger.Info("Shutdown signal received")
+
+	// Signal clipboard monitoring to stop
+	close(stopCh)
 
 	// Perform graceful shutdown
 	return d.Shutdown()

@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	// "strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -472,30 +474,40 @@ func parseClipboardContent(data interface{}) (*types.ClipboardContent, error) {
 
 	entry := &types.ClipboardContent{}
 
-	// Parse type
-	if typeStr, ok := itemMap["type"].(string); ok {
+	// Parse type - use capitalized field names to match JSON
+	if typeStr, ok := itemMap["Type"].(string); ok {
 		entry.Type = types.ContentType(typeStr)
 	}
 
-	// Parse data
-	if dataStr, ok := itemMap["data"].(string); ok {
-		entry.Data = []byte(dataStr)
+	// Parse data - use capitalized field names to match JSON
+	if dataStr, ok := itemMap["Data"].(string); ok {
+		// Try to decode base64 if it looks like base64
+		if len(dataStr) > 0 && isBase64(dataStr) {
+			if decoded, err := base64.StdEncoding.DecodeString(dataStr); err == nil {
+				entry.Data = decoded
+			} else {
+				// If base64 decode fails, store as raw bytes
+				entry.Data = []byte(dataStr)
+			}
+		} else {
+			entry.Data = []byte(dataStr)
+		}
 	}
 
-	// Parse timestamp
-	if createdStr, ok := itemMap["created"].(string); ok {
+	// Parse timestamp - use capitalized field names to match JSON
+	if createdStr, ok := itemMap["Created"].(string); ok {
 		if created, err := time.Parse(time.RFC3339, createdStr); err == nil {
 			entry.Created = created
 		}
 	}
 
-	// Parse hash
-	if hashStr, ok := itemMap["hash"].(string); ok {
+	// Parse hash - use capitalized field names to match JSON
+	if hashStr, ok := itemMap["Hash"].(string); ok {
 		entry.Hash = hashStr
 	}
 
-	// Parse occurrences if present
-	if occurrences, ok := itemMap["occurrences"].([]interface{}); ok {
+	// Parse occurrences if present - use capitalized field names to match JSON
+	if occurrences, ok := itemMap["Occurrences"].([]interface{}); ok {
 		for _, occ := range occurrences {
 			if occStr, ok := occ.(string); ok {
 				if occTime, err := time.Parse(time.RFC3339, occStr); err == nil {
@@ -506,4 +518,10 @@ func parseClipboardContent(data interface{}) (*types.ClipboardContent, error) {
 	}
 
 	return entry, nil
+}
+
+// isBase64 checks if a string is a valid base64 encoded string
+func isBase64(s string) bool {
+	_, err := base64.StdEncoding.DecodeString(s)
+	return err == nil
 }

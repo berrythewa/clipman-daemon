@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -198,6 +199,7 @@ func (s *BoltStorage) SaveContent(content *types.ClipboardContent) error {
 func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 	var latestContent *types.ClipboardContent
 	var latestTime time.Time
+	var needsHashUpdate bool
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
@@ -206,6 +208,19 @@ func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 			if err := json.Unmarshal(v, &content); err != nil {
 				s.logger.Warn("Failed to unmarshal content", zap.Error(err), zap.Binary("hash", k))
 				return nil // skip invalid entries
+			}
+			
+			// BACKWARD COMPATIBILITY: Generate hash if missing
+			if content.Hash == "" && len(content.Data) > 0 {
+				if len(content.Data) > 1024*1024 { // 1MB threshold
+					content.Hash = utils.HashContentBis(content.Data)
+				} else {
+					content.Hash = utils.HashContent(content.Data)
+				}
+				needsHashUpdate = true
+				s.logger.Debug("Generated missing hash for latest content", 
+					zap.String("hash", content.Hash),
+					zap.String("type", string(content.Type)))
 			}
 			
 			// Find latest occurrence
@@ -225,12 +240,36 @@ func (s *BoltStorage) GetLatestContent() (*types.ClipboardContent, error) {
 		return nil, fmt.Errorf("failed to get latest content: %w", err)
 	}
 
-	if latestContent != nil && latestContent.Compressed {
-		decompressed, err := compression.DecompressContent(latestContent)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decompress content: %w", err)
+	// Update database if hash was generated
+	if needsHashUpdate && latestContent != nil {
+		updateErr := s.db.Update(func(tx *bbolt.Tx) error {
+			b := tx.Bucket([]byte(clipboardBucket))
+			encoded, err := json.Marshal(latestContent)
+			if err != nil {
+				return fmt.Errorf("failed to marshal content for hash update: %w", err)
+			}
+			return b.Put([]byte(latestContent.Hash), encoded)
+		})
+		if updateErr != nil {
+			s.logger.Warn("Failed to update latest content hash", zap.Error(updateErr))
 		}
-		latestContent = decompressed
+	}
+
+	if latestContent != nil {
+		// ALWAYS attempt decompression for backward compatibility
+		decompressed, err := compression.DecompressContent(latestContent)
+		if err == nil {
+			s.logger.Debug("Successfully decompressed latest content", 
+				zap.String("hash", latestContent.Hash),
+				zap.Bool("compressed_flag", latestContent.Compressed))
+			latestContent = decompressed
+		} else {
+			// Decompression failed - try base64 decoding as fallback
+			s.logger.Debug("Decompression failed for latest content, trying base64 decode", 
+				zap.String("hash", latestContent.Hash),
+				zap.Error(err))
+			latestContent = s.decodeContentIfNeeded(latestContent)
+		}
 	}
 
 	return latestContent, nil
@@ -279,17 +318,22 @@ func (s *BoltStorage) GetContentSince(since time.Time) ([]*types.ClipboardConten
 	// Flatten to []*ClipboardContent and handle compression
 	result := make([]*types.ClipboardContent, 0, len(occurrences))
 	for _, occ := range occurrences {
-		if occ.Content.Compressed {
-			decompressed, err := compression.DecompressContent(occ.Content)
-			if err != nil {
-				s.logger.Error("Failed to decompress content", 
-					zap.Error(err),
-					zap.String("hash", occ.Content.Hash))
-				continue
-			}
-			occ.Content = decompressed
+		// ALWAYS attempt decompression for backward compatibility
+		decompressed, err := compression.DecompressContent(occ.Content)
+		if err == nil {
+			// Decompression succeeded
+			s.logger.Debug("Successfully decompressed content since", 
+				zap.String("hash", occ.Content.Hash),
+				zap.Bool("compressed_flag", occ.Content.Compressed))
+			result = append(result, decompressed)
+		} else {
+			// Decompression failed - try base64 decoding as fallback  
+			s.logger.Debug("Decompression failed for content since, trying base64 decode",
+				zap.String("hash", occ.Content.Hash),
+				zap.Error(err))
+			decoded := s.decodeContentIfNeeded(occ.Content)
+			result = append(result, decoded)
 		}
-		result = append(result, occ.Content)
 	}
 
 	return result, nil
@@ -416,117 +460,125 @@ func (s *BoltStorage) Close() error {
 
 // GetHistory retrieves clipboard history based on the provided options
 func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error) {
-	var contents []*types.ClipboardContent
-	
+	var allContents []*types.ClipboardContent
+	var updatedContents []*types.ClipboardContent // Track items that need hash updates
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(clipboardBucket))
-		c := b.Cursor()
-		
-		// Determine starting position and iteration direction based on options
-		var k, v []byte
-		var iterateNext func() ([]byte, []byte)
-		
-		if options.Reverse {
-			// Start from the newest entry if going in reverse
-			if !options.Before.IsZero() {
-				// Start from the entry just before the 'Before' time
-				seekKey := []byte(options.Before.Format(time.RFC3339Nano))
-				k, v = c.Seek(seekKey)
-				// If we found an exact match or a later key, step back one
-				if k != nil && bytes.Compare(k, seekKey) >= 0 {
-					k, v = c.Prev()
-				}
-			} else {
-				// No 'Before' specified, start from the very last entry
-				k, v = c.Last()
-			}
-			iterateNext = c.Prev
-		} else {
-			// Start from the oldest entry if going in forward direction
-			if !options.Since.IsZero() {
-				// Start from entries at or after the 'Since' time
-				seekKey := []byte(options.Since.Format(time.RFC3339Nano))
-				k, v = c.Seek(seekKey)
-			} else {
-				// No 'Since' specified, start from the very first entry
-				k, v = c.First()
-			}
-			iterateNext = c.Next
-		}
-		
-		// Iterate through entries
-		count := int64(0)
-		for ; k != nil; k, v = iterateNext() {
-			// Check time boundaries
-			timestamp, err := time.Parse(time.RFC3339Nano, string(k))
-			if err != nil {
-				s.logger.Error("Failed to parse timestamp", 
-					zap.String("key", string(k)), 
-					zap.Error(err))
-				continue
-			}
-			
-			if !options.Since.IsZero() && timestamp.Before(options.Since) {
-				continue
-			}
-			
-			if !options.Before.IsZero() && timestamp.After(options.Before) {
-				continue
-			}
-			
-			// Unmarshal the content
+		return b.ForEach(func(k, v []byte) error {
 			var content types.ClipboardContent
 			if err := json.Unmarshal(v, &content); err != nil {
-				s.logger.Error("Failed to unmarshal content", 
-					zap.String("key", string(k)), 
-					zap.Error(err))
-				continue
+				s.logger.Warn("Failed to unmarshal content", zap.Error(err), zap.Binary("key", k))
+				return nil // skip invalid entries
 			}
 			
-			// Apply content type filter
-			if options.ContentType != "" && content.Type != types.ContentType(options.ContentType) {
-				continue
-			}
-			
-			// Apply size filters
-			contentSize := int64(len(content.Data))
-			if options.MinSize > 0 && contentSize < options.MinSize {
-				continue
-			}
-			
-			if options.MaxSize > 0 && contentSize > options.MaxSize {
-				continue
-			}
-			
-			// Handle decompression if needed
-			if content.Compressed {
-				decompressed, err := compression.DecompressContent(&content)
-				if err != nil {
-					s.logger.Error("Failed to decompress content", 
-						zap.String("key", string(k)), 
-						zap.Error(err))
-					continue
+			// BACKWARD COMPATIBILITY: Generate hash if missing
+			if content.Hash == "" && len(content.Data) > 0 {
+				if len(content.Data) > 1024*1024 { // 1MB threshold
+					content.Hash = utils.HashContentBis(content.Data)
+				} else {
+					content.Hash = utils.HashContent(content.Data)
 				}
-				contents = append(contents, decompressed)
-			} else {
-				contents = append(contents, &content)
+				s.logger.Debug("Generated missing hash for existing content", 
+					zap.String("hash", content.Hash),
+					zap.String("type", string(content.Type)))
+				updatedContents = append(updatedContents, &content)
 			}
 			
-			// Check if we've reached the limit
-			count++
-			if options.Limit > 0 && count >= options.Limit {
-				break
-			}
-		}
-		
-		return nil
+			allContents = append(allContents, &content)
+			return nil
+		})
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get history: %w", err)
 	}
+
+	// Update database records that were missing hashes
+	if len(updatedContents) > 0 {
+		updateErr := s.db.Update(func(tx *bbolt.Tx) error {
+			b := tx.Bucket([]byte(clipboardBucket))
+			for _, content := range updatedContents {
+				encoded, err := json.Marshal(content)
+				if err != nil {
+					s.logger.Error("Failed to marshal content for hash update", zap.Error(err))
+					continue
+				}
+				// Use hash as key for new storage format
+				if err := b.Put([]byte(content.Hash), encoded); err != nil {
+					s.logger.Error("Failed to update content with hash", zap.Error(err))
+					continue
+				}
+			}
+			return nil
+		})
+		if updateErr != nil {
+			s.logger.Warn("Failed to update some content hashes", zap.Error(updateErr))
+		} else {
+			s.logger.Info("Updated missing hashes for existing content", zap.Int("count", len(updatedContents)))
+		}
+	}
+
+	// Apply filtering to all contents
+	var filteredContents []*types.ClipboardContent
+	for _, content := range allContents {
+		// Apply time filters
+		if !options.Since.IsZero() && content.Created.Before(options.Since) {
+			continue
+		}
+		if !options.Before.IsZero() && content.Created.After(options.Before) {
+			continue
+		}
+		
+		// Apply content type filter
+		if options.ContentType != "" && content.Type != types.ContentType(options.ContentType) {
+			continue
+		}
+		
+		// Apply size filters
+		contentSize := int64(len(content.Data))
+		if options.MinSize > 0 && contentSize < options.MinSize {
+			continue
+		}
+		if options.MaxSize > 0 && contentSize > options.MaxSize {
+			continue
+		}
+		
+		// Handle decompression - ALWAYS attempt decompression for backward compatibility
+		// Some old data may be compressed but have Compressed=false due to flag changes
+		decompressed, err := compression.DecompressContent(content)
+		if err == nil {
+			// Decompression succeeded - use decompressed data
+			s.logger.Debug("Successfully decompressed content", 
+				zap.String("hash", content.Hash),
+				zap.Bool("compressed_flag", content.Compressed),
+				zap.Int("original_size", len(content.Data)),
+				zap.Int("decompressed_size", len(decompressed.Data)))
+			filteredContents = append(filteredContents, decompressed)
+		} else {
+			// Decompression failed - try base64 decoding as fallback
+			s.logger.Debug("Decompression failed, trying base64 decode", 
+				zap.String("hash", content.Hash),
+				zap.Error(err))
+			content = s.decodeContentIfNeeded(content)
+			filteredContents = append(filteredContents, content)
+		}
+	}
 	
-	return contents, nil
+	// Sort by creation time (newest first by default, unless reverse is specified)
+	sort.Slice(filteredContents, func(i, j int) bool {
+		if options.Reverse {
+			return filteredContents[i].Created.Before(filteredContents[j].Created)
+		}
+		return filteredContents[i].Created.After(filteredContents[j].Created)
+	})
+	
+	// Apply limit
+	if options.Limit > 0 && int64(len(filteredContents)) > options.Limit {
+		filteredContents = filteredContents[:options.Limit]
+	}
+
+	return filteredContents, nil
 }
 
 // LogCompleteHistory dumps the clipboard history to the logger based on provided options
@@ -885,19 +937,66 @@ func (s *BoltStorage) GetFrequentContent(limit int) ([]*types.ClipboardContent, 
 	// Convert to result format
 	result := make([]*types.ClipboardContent, len(items))
 	for i, item := range items {
-		if item.content.Compressed {
-			decompressed, err := compression.DecompressContent(item.content)
-			if err != nil {
-				s.logger.Error("Failed to decompress content",
-					zap.Error(err),
-					zap.String("hash", item.content.Hash))
-				continue
-			}
+		// ALWAYS attempt decompression for backward compatibility
+		decompressed, err := compression.DecompressContent(item.content)
+		if err == nil {
+			s.logger.Debug("Successfully decompressed frequent content", 
+				zap.String("hash", item.content.Hash),
+				zap.Bool("compressed_flag", item.content.Compressed))
 			result[i] = decompressed
 		} else {
-			result[i] = item.content
+			// Decompression failed - try base64 decoding as fallback
+			s.logger.Debug("Decompression failed for frequent content, trying base64 decode",
+				zap.String("hash", item.content.Hash),
+				zap.Error(err))
+			result[i] = s.decodeContentIfNeeded(item.content)
 		}
 	}
 	
 	return result, nil
+}
+
+// decodeContentIfNeeded checks if content.Data is base64 encoded and decodes it if it is
+func (s *BoltStorage) decodeContentIfNeeded(content *types.ClipboardContent) *types.ClipboardContent {
+	if len(content.Data) == 0 {
+		return content
+	}
+	
+	dataStr := string(content.Data)
+	
+	// Check if it looks like base64:
+	// 1. Reasonable length (base64 encoded data is usually longer)
+	// 2. Only contains base64 characters (A-Z, a-z, 0-9, +, /, =)
+	// 3. Proper padding with = at the end
+	if len(dataStr) > 20 && len(dataStr)%4 == 0 {
+		// Check if all characters are valid base64
+		validBase64 := true
+		for _, char := range dataStr {
+			if !((char >= 'A' && char <= 'Z') || 
+				 (char >= 'a' && char <= 'z') || 
+				 (char >= '0' && char <= '9') || 
+				 char == '+' || char == '/' || char == '=') {
+				validBase64 = false
+				break
+			}
+		}
+		
+		if validBase64 {
+			if decoded, err := base64.StdEncoding.DecodeString(dataStr); err == nil {
+				// Additional check: decoded data should be reasonable
+				if len(decoded) > 0 && len(decoded) < len(dataStr) {
+					// Create a copy of the content with decoded data
+					decodedContent := *content
+					decodedContent.Data = decoded
+					s.logger.Debug("Decoded base64 content", 
+						zap.String("hash", content.Hash),
+						zap.Int("original_size", len(content.Data)),
+						zap.Int("decoded_size", len(decoded)))
+					return &decodedContent
+				}
+			}
+		}
+	}
+	
+	return content
 }
