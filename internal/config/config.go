@@ -407,6 +407,11 @@ func overrideFromEnv(config *Config) {
 		config.SystemPaths.DataDir = val
 	}
 	
+	// Log settings
+	if val := os.Getenv("CLIPMAN_LOG_LEVEL"); val != "" {
+		config.Log.Level = val
+	}
+	
 	// Sync settings
 	if val := os.Getenv("CLIPMAN_SYNC_ENABLED"); val != "" {
 		config.Sync.Enabled = val == "true"

@@ -15,7 +15,13 @@ func init() {
 	fmt.Println("DEBUG: Linux platform init() function called")
 	defaultLogger := zap.NewNop()
 	
-	// Initialize clipboard
+	// Register the clipboard factory for creating clipboards with proper loggers
+	RegisterClipboardFactory(func(logger *zap.Logger) Clipboard {
+		fmt.Printf("DEBUG: Creating clipboard with logger: %v\n", logger != nil)
+		return linuxPlatform.NewClipboard(logger)
+	})
+	
+	// Initialize default clipboard with no-op logger for backwards compatibility
 	clipboard := linuxPlatform.NewClipboard(defaultLogger)
 	fmt.Printf("DEBUG: NewClipboard returned: %v (nil=%t)\n", clipboard, clipboard == nil)
 	defaultClipboard = clipboard

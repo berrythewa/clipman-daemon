@@ -3,6 +3,7 @@ package clipboard
 import (
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/platform"
+	"go.uber.org/zap"
 )
 
 // Defines interface for clipboard operations.
@@ -20,6 +21,12 @@ type Clipboard interface {
 
 // NewClipboard returns a platform-specific Clipboard implementation.
 func NewClipboard() Clipboard {
-    // Implementation delegates to platform package.
+    // Implementation delegates to platform package with no-op logger for backwards compatibility.
 	return platform.GetPlatformClipboard()
+}
+
+// NewClipboardWithLogger returns a platform-specific Clipboard implementation with a logger.
+func NewClipboardWithLogger(logger *zap.Logger) Clipboard {
+    // Implementation delegates to platform package with proper logger.
+	return platform.GetPlatformClipboardWithLogger(logger)
 }

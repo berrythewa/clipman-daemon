@@ -2,6 +2,7 @@ package platform
 
 import (
 	"github.com/berrythewa/clipman-daemon/internal/types"
+	"go.uber.org/zap"
 )
 
 // Clipboard defines the interface for clipboard operations
@@ -32,15 +33,24 @@ type Daemonizer interface {
 	IsRunningAsDaemon() bool
 }
 
+// ClipboardFactory defines a function that creates a clipboard with a logger
+type ClipboardFactory func(*zap.Logger) Clipboard
+
 // Package variables to hold the platform-specific implementations
 var (
-	defaultClipboard  Clipboard
-	defaultDaemonizer Daemonizer
+	defaultClipboard        Clipboard
+	defaultDaemonizer       Daemonizer
+	clipboardFactory        ClipboardFactory
 )
 
 // RegisterClipboard allows platform-specific packages to register their clipboard implementation
 func RegisterClipboard(clipboard Clipboard) {
 	defaultClipboard = clipboard
+}
+
+// RegisterClipboardFactory allows platform-specific packages to register their clipboard factory
+func RegisterClipboardFactory(factory ClipboardFactory) {
+	clipboardFactory = factory
 }
 
 // RegisterDaemonizer allows platform-specific packages to register their daemonizer implementation
@@ -51,6 +61,15 @@ func RegisterDaemonizer(daemonizer Daemonizer) {
 // GetPlatformClipboard returns the appropriate clipboard implementation for the current platform
 // The actual implementation is selected at compile time through build tags
 func GetPlatformClipboard() Clipboard {
+	return defaultClipboard
+}
+
+// GetPlatformClipboardWithLogger returns the appropriate clipboard implementation with a logger
+func GetPlatformClipboardWithLogger(logger *zap.Logger) Clipboard {
+	if clipboardFactory != nil {
+		return clipboardFactory(logger)
+	}
+	// Fallback to default if no factory is registered
 	return defaultClipboard
 }
 

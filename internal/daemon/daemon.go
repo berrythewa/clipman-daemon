@@ -61,12 +61,25 @@ func (d *Daemon) Initialize() error {
 	d.storage = storage
 	d.logger.Info("Storage initialized successfully")
 
-	// Initialize clipboard monitor
+	// Initialize clipboard
 	d.logger.Info("Initializing clipboard...")
-	clipboard := clipboard.NewClipboard()
+	clipboard := clipboard.NewClipboardWithLogger(d.logger)
 	d.logger.Info("Clipboard NewClipboard() called", zap.Bool("is_nil", clipboard == nil))
 	d.clipboard = clipboard
 	d.logger.Info("Clipboard assigned to daemon", zap.Bool("daemon_clipboard_is_nil", d.clipboard == nil))
+
+	// Initialize clipboard monitor
+	contentCh := make(chan *types.ClipboardContent)
+	stopCh := make(chan struct{})
+	go d.clipboard.MonitorChanges(contentCh, stopCh)
+	go func() {
+		for {
+			select {
+			case content := <-contentCh:
+				d.storage.SaveContent(content)
+			}
+		}
+	}()
 
 	// Initialize sync if enabled
 	if d.cfg.Sync.Enabled {
@@ -270,10 +283,19 @@ func Kill() error {
 func setupLogger(cfg *config.Config) (*zap.Logger, error) {
 	config := zap.NewProductionConfig()
 	
-	// Set log level
+	// Set log level based on configuration
 	level := zap.InfoLevel
-	if cfg.Log.Format == "debug" {
+	switch cfg.Log.Level {
+	case "debug":
 		level = zap.DebugLevel
+	case "info":
+		level = zap.InfoLevel
+	case "warn":
+		level = zap.WarnLevel
+	case "error":
+		level = zap.ErrorLevel
+	default:
+		level = zap.InfoLevel
 	}
 	config.Level = zap.NewAtomicLevelAt(level)
 

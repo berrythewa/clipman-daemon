@@ -74,9 +74,9 @@ func NewClipboard(logger *zap.Logger) *LinuxClipboard {
 		logger:        logger,
 		ctx:           ctx,
 		cancel:        cancel,
-		baseInterval:  500 * time.Millisecond,  // 500ms base
-		maxInterval:   2000 * time.Millisecond, // 2s max
-		skipThreshold: 3, // Skip content checks when formats unchanged
+		baseInterval:  100 * time.Millisecond,  // 100ms base - much more responsive
+		maxInterval:   500 * time.Millisecond,  // 500ms max - prevent missing changes
+		skipThreshold: 1, // Skip content checks less often to catch more changes
 	}
 	
 	// Detect and setup the best available backend and monitoring mode
@@ -249,23 +249,254 @@ func (c *LinuxClipboard) Read() (*types.ClipboardContent, error) {
 		return nil, fmt.Errorf("clipboard access disabled - no tools available")
 	}
 
-	text, err := c.readClipboardText()
+	c.logger.Debug("Starting clipboard read operation", 
+		zap.String("backend", c.backendName()))
+
+	// Get available formats first to understand what's in clipboard
+	formats, err := c.getAvailableFormats()
 	if err != nil {
+		c.logger.Debug("Failed to get clipboard formats during read", zap.Error(err))
+	} else {
+		c.logger.Debug("Available clipboard formats", zap.Strings("formats", formats))
+	}
+
+	// Check if clipboard contains files by looking at formats
+	contentType := c.detectContentType(formats)
+	c.logger.Debug("Detected content type", zap.String("type", string(contentType)))
+
+	var content *types.ClipboardContent
+
+	// Handle different content types
+	switch contentType {
+	case types.TypeFile:
+		content, err = c.readClipboardFiles()
+		if err != nil {
+			c.logger.Debug("Failed to read files, falling back to text", zap.Error(err))
+			// Fallback to text
+			content, err = c.readClipboardText2()
+		}
+	default:
+		content, err = c.readClipboardText2()
+	}
+
+	if err != nil {
+		c.logger.Debug("Failed to read clipboard content", 
+			zap.Error(err), 
+			zap.String("attempted_type", string(contentType)))
 		return nil, fmt.Errorf("failed to read clipboard: %w", err)
 	}
 
-	// Create content from the clipboard text
+	c.logger.Info("Successfully read clipboard content",
+		zap.String("backend", c.backendName()),
+		zap.String("detected_type", string(contentType)),
+		zap.String("final_type", string(content.Type)),
+		zap.Int("size", len(content.Data)),
+		zap.Int("format_count", len(formats)))
+
+	return content, nil
+}
+
+// detectContentType analyzes clipboard formats to determine content type
+func (c *LinuxClipboard) detectContentType(formats []string) types.ContentType {
+	c.logger.Debug("Analyzing clipboard formats for content type detection", 
+		zap.Strings("formats", formats))
+
+	// Check for file-related formats
+	fileFormats := []string{
+		"text/uri-list",
+		"text/x-moz-url", 
+		"application/x-kde-cutselection",
+		"x-special/gnome-copied-files",
+		"application/x-nautilus-desktop",
+		"text/plain;charset=utf-8", // Sometimes files are also available as text
+	}
+
+	for _, format := range formats {
+		for _, fileFormat := range fileFormats {
+			if strings.Contains(strings.ToLower(format), strings.ToLower(fileFormat)) {
+				c.logger.Debug("File format detected", 
+					zap.String("format", format), 
+					zap.String("matched", fileFormat))
+				return types.TypeFile
+			}
+		}
+	}
+
+	c.logger.Debug("No file formats detected, defaulting to text")
+	return types.TypeText
+}
+
+// readClipboardText2 reads text content (renamed to avoid conflict)
+func (c *LinuxClipboard) readClipboardText2() (*types.ClipboardContent, error) {
+	c.logger.Debug("Reading clipboard as text content")
+	
+	text, err := c.readClipboardText()
+	if err != nil {
+		return nil, err
+	}
+
 	content := &types.ClipboardContent{
 		Type: types.TypeText,
 		Data: []byte(text),
 	}
 
-	c.logger.Debug("Read clipboard content",
-		zap.String("backend", c.backendName()),
-		zap.String("type", string(content.Type)),
-		zap.Int("size", len(content.Data)))
+	c.logger.Debug("Text content read successfully", 
+		zap.Int("length", len(text)),
+		zap.String("preview", c.getContentPreview(text, 100)))
 
 	return content, nil
+}
+
+// readClipboardFiles reads file content from clipboard
+func (c *LinuxClipboard) readClipboardFiles() (*types.ClipboardContent, error) {
+	c.logger.Debug("Attempting to read clipboard as file content")
+
+	var cmd *exec.Cmd
+	var format string
+
+	// Try different approaches to get file URIs
+	switch c.backend {
+	case BackendXClip:
+		// Try uri-list format first
+		c.logger.Debug("Trying xclip with text/uri-list format")
+		cmd = exec.Command("xclip", "-selection", "clipboard", "-t", "text/uri-list", "-o")
+		format = "text/uri-list"
+	case BackendWLClipboard:
+		// Try uri-list format first  
+		c.logger.Debug("Trying wl-paste with text/uri-list format")
+		cmd = exec.Command("wl-paste", "-t", "text/uri-list")
+		format = "text/uri-list"
+	default:
+		c.logger.Debug("Backend doesn't support specific format reading, falling back to text")
+		return c.readClipboardText2()
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		c.logger.Debug("Failed to read with format, trying alternative", 
+			zap.String("format", format), 
+			zap.Error(err))
+		
+		// Try alternative formats
+		return c.tryAlternativeFileFormats()
+	}
+
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" {
+		c.logger.Debug("Empty output from file format read, trying alternatives")
+		return c.tryAlternativeFileFormats()
+	}
+
+	c.logger.Info("Successfully read file content from clipboard", 
+		zap.String("format", format),
+		zap.Int("length", len(outputStr)),
+		zap.String("preview", c.getContentPreview(outputStr, 200)))
+
+	// Parse file URIs
+	files := c.parseFileURIs(outputStr)
+	if len(files) == 0 {
+		c.logger.Debug("No valid file URIs found, treating as text")
+		return &types.ClipboardContent{
+			Type: types.TypeText,
+			Data: []byte(outputStr),
+		}, nil
+	}
+
+	// Create file content
+	content := &types.ClipboardContent{
+		Type: types.TypeFile,
+		Data: []byte(outputStr), // Store the raw URI list
+	}
+
+	c.logger.Info("File content processed successfully", 
+		zap.Int("file_count", len(files)),
+		zap.Strings("files", files))
+
+	return content, nil
+}
+
+// tryAlternativeFileFormats tries different clipboard formats for files
+func (c *LinuxClipboard) tryAlternativeFileFormats() (*types.ClipboardContent, error) {
+	c.logger.Debug("Trying alternative file formats")
+
+	alternativeFormats := []string{
+		"x-special/gnome-copied-files",
+		"application/x-kde-cutselection", 
+		"text/x-moz-url",
+	}
+
+	for _, format := range alternativeFormats {
+		c.logger.Debug("Trying alternative format", zap.String("format", format))
+		
+		var cmd *exec.Cmd
+		switch c.backend {
+		case BackendXClip:
+			cmd = exec.Command("xclip", "-selection", "clipboard", "-t", format, "-o")
+		case BackendWLClipboard:
+			cmd = exec.Command("wl-paste", "-t", format)
+		default:
+			continue
+		}
+
+		output, err := cmd.Output()
+		if err != nil {
+			c.logger.Debug("Format failed", zap.String("format", format), zap.Error(err))
+			continue
+		}
+
+		outputStr := strings.TrimSpace(string(output))
+		if outputStr != "" {
+			c.logger.Info("Successfully read with alternative format", 
+				zap.String("format", format),
+				zap.String("preview", c.getContentPreview(outputStr, 200)))
+			
+			return &types.ClipboardContent{
+				Type: types.TypeFile,
+				Data: []byte(outputStr),
+			}, nil
+		}
+	}
+
+	c.logger.Debug("All alternative formats failed, falling back to text")
+	return c.readClipboardText2()
+}
+
+// parseFileURIs extracts file paths from URI list format
+func (c *LinuxClipboard) parseFileURIs(uriList string) []string {
+	var files []string
+	lines := strings.Split(uriList, "\n")
+	
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		
+		// Handle file:// URIs
+		if strings.HasPrefix(line, "file://") {
+			path := strings.TrimPrefix(line, "file://")
+			// URL decode the path
+			if decoded, err := exec.Command("printf", "%b", strings.ReplaceAll(path, "%", "\\x")).Output(); err == nil {
+				path = string(decoded)
+			}
+			files = append(files, path)
+			c.logger.Debug("Parsed file URI", zap.String("uri", line), zap.String("path", path))
+		} else if strings.HasPrefix(line, "/") {
+			// Direct file path
+			files = append(files, line)
+			c.logger.Debug("Found direct file path", zap.String("path", line))
+		}
+	}
+	
+	return files
+}
+
+// getContentPreview returns a safe preview of content for logging
+func (c *LinuxClipboard) getContentPreview(content string, maxLen int) string {
+	if len(content) <= maxLen {
+		return content
+	}
+	return content[:maxLen] + "..."
 }
 
 // Write sets the clipboard content
@@ -555,63 +786,131 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
+	pollCount := 0
+
 	for {
 		select {
 		case <-stopCh:
+			c.logger.Info("Stop signal received, ending monitoring")
 			return
 		case <-ticker.C:
+			pollCount++
+			c.logger.Debug("=== POLLING CYCLE START ===", 
+				zap.Int("poll_count", pollCount),
+				zap.Duration("current_interval", currentInterval))
+
 			// STEP 1: Check formats first (less intrusive than content reading)
+			c.logger.Debug("STEP 1: Getting available clipboard formats")
 			newFormats, err := c.getAvailableFormats()
 			if err != nil {
 				c.logger.Debug("Failed to get clipboard formats", zap.Error(err))
 				continue
 			}
 			
-			// STEP 2: Smart skip logic - if formats haven't changed, skip content check most of the time
-			if c.formatsEqual(c.lastFormats, newFormats) {
+			c.logger.Debug("STEP 1 RESULT: Got clipboard formats", 
+				zap.Strings("formats", newFormats),
+				zap.Duration("interval", currentInterval),
+				zap.Int("skip_counter", c.skipCounter),
+				zap.Int("inactive_streak", c.inactiveStreak))
+			
+			// STEP 2: Smart skip logic - but much less aggressive to avoid missing changes
+			c.logger.Debug("STEP 2: Checking format changes")
+			formatsChanged := !c.formatsEqual(c.lastFormats, newFormats)
+			c.logger.Debug("STEP 2 RESULT: Format comparison", 
+				zap.Bool("formats_changed", formatsChanged),
+				zap.Strings("old_formats", c.lastFormats),
+				zap.Strings("new_formats", newFormats))
+
+			if !formatsChanged {
 				c.skipCounter++
 				c.inactiveStreak++
 				
-				// Only check content every Nth time when formats unchanged
+				c.logger.Debug("Formats unchanged, considering skip", 
+					zap.Int("skip_counter", c.skipCounter),
+					zap.Int("skip_threshold", c.skipThreshold))
+				
+				// Only skip occasionally and only when we're really sure nothing changed
 				if c.skipCounter < c.skipThreshold {
-					// Adaptive interval increase for inactivity
-					if c.inactiveStreak > 3 && currentInterval < c.maxInterval {
-						newInterval := time.Duration(float64(currentInterval) * 1.5)
+					c.logger.Debug("SKIPPING content read this cycle", 
+						zap.String("reason", "formats_unchanged_and_under_threshold"))
+					
+					// Be much less aggressive about increasing interval - only after many inactive checks
+					if c.inactiveStreak > 20 && currentInterval < c.maxInterval {
+						oldInterval := currentInterval
+						newInterval := time.Duration(float64(currentInterval) * 1.2) // Smaller increase
 						if newInterval > c.maxInterval {
 							newInterval = c.maxInterval
 						}
 						if newInterval != currentInterval {
 							currentInterval = newInterval
 							ticker.Reset(currentInterval)
-							c.logger.Debug("Increased polling interval due to inactivity", 
-								zap.Duration("interval", currentInterval))
+							c.logger.Debug("Slightly increased polling interval due to long inactivity", 
+								zap.Duration("old_interval", oldInterval),
+								zap.Duration("new_interval", currentInterval),
+								zap.Int("inactive_streak", c.inactiveStreak))
 						}
 					}
+					c.logger.Debug("=== POLLING CYCLE END (SKIPPED) ===")
 					continue
 				}
 				c.skipCounter = 0 // Reset skip counter
+				c.logger.Debug("Skip threshold reached, will read content anyway")
 			} else {
 				// Formats changed, update and reset counters
+				c.logger.Info("CLIPBOARD FORMATS CHANGED - This indicates potential new content!", 
+					zap.Strings("old_formats", c.lastFormats),
+					zap.Strings("new_formats", newFormats))
 				c.lastFormats = newFormats
 				c.skipCounter = 0
 				c.inactiveStreak = 0
 			}
 			
 			// STEP 3: Read content and check for changes
+			c.logger.Debug("STEP 3: Reading clipboard content")
+			startTime := time.Now()
 			content, err := c.Read()
+			readDuration := time.Since(startTime)
+			
 			if err != nil {
-				c.logger.Debug("Failed to read clipboard during polling", zap.Error(err))
+				c.logger.Warn("STEP 3 FAILED: Could not read clipboard", 
+					zap.Error(err),
+					zap.Duration("read_duration", readDuration))
 				continue
 			}
 			
+			c.logger.Debug("STEP 3 RESULT: Content read successfully", 
+				zap.String("content_type", string(content.Type)),
+				zap.Int("content_size", len(content.Data)),
+				zap.Duration("read_duration", readDuration),
+				zap.String("content_preview", c.getContentPreview(string(content.Data), 100)))
+			
 			// STEP 4: Hash-based change detection
+			c.logger.Debug("STEP 4: Calculating content hash for change detection")
 			newHash := c.hashContent(string(content.Data))
-			if newHash == c.lastContentHash {
+			hashChanged := newHash != c.lastContentHash
+			
+			c.logger.Debug("STEP 4 RESULT: Hash comparison", 
+				zap.Bool("hash_changed", hashChanged),
+				zap.String("old_hash", c.lastContentHash),
+				zap.String("new_hash", newHash))
+			
+			if !hashChanged {
 				c.inactiveStreak++
+				c.logger.Debug("Content unchanged (same hash), no action needed", 
+					zap.String("hash", newHash),
+					zap.Int("inactive_streak", c.inactiveStreak))
+				c.logger.Debug("=== POLLING CYCLE END (NO CHANGE) ===")
 				continue // No actual change
 			}
 			
 			// STEP 5: Real change detected - reset to base interval and send content
+			c.logger.Info("🎉 REAL CLIPBOARD CHANGE DETECTED! 🎉", 
+				zap.String("old_hash", c.lastContentHash),
+				zap.String("new_hash", newHash),
+				zap.String("content_type", string(content.Type)),
+				zap.Int("content_size", len(content.Data)),
+				zap.Bool("formats_changed", formatsChanged))
+			
 			c.lastContentHash = newHash
 			c.inactiveStreak = 0
 			
@@ -621,12 +920,17 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 				c.logger.Debug("Reset polling interval due to activity", zap.Duration("interval", currentInterval))
 			}
 			
+			c.logger.Debug("STEP 5: Sending content to daemon")
 			select {
 			case contentCh <- content:
-				c.logger.Info("Polling: New clipboard content detected and sent", zap.Int("size", len(content.Data)))
+				c.logger.Info("✅ CLIPBOARD CONTENT SUCCESSFULLY SENT TO DAEMON", 
+					zap.String("type", string(content.Type)),
+					zap.Int("size", len(content.Data)))
 			case <-stopCh:
+				c.logger.Info("Stop signal received while sending content")
 				return
 			}
+			c.logger.Debug("=== POLLING CYCLE END (CONTENT SENT) ===")
 		}
 	}
 }
