@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"fmt"
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"go.uber.org/zap"
 )
@@ -61,15 +62,39 @@ func RegisterDaemonizer(daemonizer Daemonizer) {
 // GetPlatformClipboard returns the appropriate clipboard implementation for the current platform
 // The actual implementation is selected at compile time through build tags
 func GetPlatformClipboard() Clipboard {
+	if defaultClipboard == nil {
+		panic("no clipboard implementation registered for this platform")
+	}
 	return defaultClipboard
 }
 
 // GetPlatformClipboardWithLogger returns the appropriate clipboard implementation with a logger
 func GetPlatformClipboardWithLogger(logger *zap.Logger) Clipboard {
-	if clipboardFactory != nil {
-		return clipboardFactory(logger)
+	if logger == nil {
+		logger = zap.NewNop()
 	}
+	
+	logger.Info("🔧 Creating platform clipboard", 
+		zap.Bool("has_factory", clipboardFactory != nil),
+		zap.Bool("has_default", defaultClipboard != nil))
+	
+	if clipboardFactory != nil {
+		logger.Info("🔧 Using clipboard factory")
+		clipboard := clipboardFactory(logger)
+		logger.Info("✅ Clipboard created via factory", 
+			zap.String("type", fmt.Sprintf("%T", clipboard)),
+			zap.Bool("is_nil", clipboard == nil))
+		return clipboard
+	}
+	
 	// Fallback to default if no factory is registered
+	if defaultClipboard == nil {
+		logger.Error("❌ No clipboard implementation available")
+		panic("no clipboard implementation registered for this platform")
+	}
+	
+	logger.Info("🔧 Using default clipboard implementation", 
+		zap.String("type", fmt.Sprintf("%T", defaultClipboard)))
 	return defaultClipboard
 }
 

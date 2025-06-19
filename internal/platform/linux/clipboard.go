@@ -87,83 +87,102 @@ func NewClipboard(logger *zap.Logger) *LinuxClipboard {
 
 // detectBackend determines the best clipboard backend for the current environment
 func (c *LinuxClipboard) detectBackend() {
+	c.logger.Info("🔍 Detecting clipboard backend", 
+		zap.String("display", os.Getenv("DISPLAY")),
+		zap.String("wayland_display", os.Getenv("WAYLAND_DISPLAY")))
+	
 	// Check for Wayland first
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		c.logger.Debug("🔍 Wayland environment detected, checking wl-clipboard")
 		if c.checkCommand("wl-copy") && c.checkCommand("wl-paste") {
 			c.backend = BackendWLClipboard
-			c.logger.Info("Using Wayland clipboard backend (wl-clipboard)")
+			c.logger.Info("✅ Using Wayland clipboard backend (wl-clipboard)")
 			return
 		}
-		c.logger.Warn("Wayland detected but wl-clipboard not available")
+		c.logger.Warn("⚠️ Wayland detected but wl-clipboard not available")
 	}
 	
 	// Check for X11 tools
+	c.logger.Debug("🔍 Checking X11 clipboard tools")
 	if c.checkCommand("xclip") {
 		c.backend = BackendXClip
-		c.logger.Info("Using X11 clipboard backend (xclip)")
+		c.logger.Info("✅ Using X11 clipboard backend (xclip)")
 		return
 	}
 	
 	if c.checkCommand("xsel") {
 		c.backend = BackendXSel  
-		c.logger.Info("Using X11 clipboard backend (xsel)")
+		c.logger.Info("✅ Using X11 clipboard backend (xsel)")
 		return
 	}
 	
 	// No clipboard tools available
 	c.backend = BackendDisabled
-	c.logger.Warn("No clipboard tools available (xclip, xsel, wl-clipboard). Clipboard access disabled.")
+	c.logger.Error("❌ No clipboard tools available (xclip, xsel, wl-clipboard). Clipboard access disabled.")
 }
 
 // detectMonitoringMode determines the best monitoring strategy
 func (c *LinuxClipboard) detectMonitoringMode() {
-	c.logger.Info("Detecting optimal clipboard monitoring method")
+	c.logger.Info("🔍 Detecting optimal clipboard monitoring method")
 	
 	// Check for X11 with XFixes extension (most efficient)
 	if c.isX11Session() && c.checkXFixesSupport() {
 		c.monitorMode = MonitorModeXFixes
-		c.logger.Info("Using X11 XFixes event-based monitoring (most efficient)")
+		c.logger.Info("✅ Using X11 XFixes event-based monitoring (most efficient)")
 		return
 	}
 	
 	// Check for Wayland with wl-paste -w support
 	if c.isWaylandSession() && c.checkCommand("wl-paste") {
 		c.monitorMode = MonitorModeWayland
-		c.logger.Info("Using Wayland event-based monitoring (wl-paste -w)")
+		c.logger.Info("✅ Using Wayland event-based monitoring (wl-paste -w)")
 		return
 	}
 	
 	// Fallback to adaptive polling
 	c.monitorMode = MonitorModePolling
-	c.logger.Info("Using adaptive polling monitoring (fallback)")
+	c.logger.Info("✅ Using adaptive polling monitoring (fallback)")
 }
 
 // checkCommand checks if a command is available in PATH
 func (c *LinuxClipboard) checkCommand(command string) bool {
 	_, err := exec.LookPath(command)
-	return err == nil
+	available := err == nil
+	c.logger.Debug("🔍 Command check", zap.String("command", command), zap.Bool("available", available))
+	return available
 }
 
 // isX11Session checks if running in X11 environment
 func (c *LinuxClipboard) isX11Session() bool {
-	return os.Getenv("DISPLAY") != ""
+	hasDisplay := os.Getenv("DISPLAY") != ""
+	c.logger.Debug("🔍 X11 session check", zap.Bool("has_display", hasDisplay))
+	return hasDisplay
 }
 
 // isWaylandSession checks if running in Wayland environment
 func (c *LinuxClipboard) isWaylandSession() bool {
-	return os.Getenv("WAYLAND_DISPLAY") != ""
+	hasWayland := os.Getenv("WAYLAND_DISPLAY") != ""
+	c.logger.Debug("🔍 Wayland session check", zap.Bool("has_wayland", hasWayland))
+	return hasWayland
 }
 
 // checkXFixesSupport checks if X11 XFixes extension is available
 func (c *LinuxClipboard) checkXFixesSupport() bool {
 	if !c.checkCommand("xprop") {
+		c.logger.Debug("❌ XFixes check failed: xprop not available")
 		return false
 	}
 	
 	// Try to run xprop to verify X11 connectivity
 	cmd := exec.Command("xprop", "-root", "-notype", "_NET_SUPPORTED")
 	err := cmd.Run()
-	return err == nil
+	if err != nil {
+		c.logger.Debug("❌ XFixes check failed: xprop command failed", zap.Error(err))
+		return false
+	}
+	
+	c.logger.Debug("✅ XFixes check passed: xprop command succeeded")
+	return true
 }
 
 // getAvailableFormats returns clipboard formats (less intrusive than reading content)
@@ -590,27 +609,33 @@ func (c *LinuxClipboard) MonitorChanges(contentCh chan<- *types.ClipboardContent
 	c.mu.Lock()
 	if c.isRunning {
 		c.mu.Unlock()
+		c.logger.Warn("🔴 MonitorChanges called but already running - ignoring duplicate call")
 		return
 	}
 	c.isRunning = true
 	c.mu.Unlock()
 
 	if c.backend == BackendDisabled {
-		c.logger.Warn("Cannot monitor clipboard - no backend available")
+		c.logger.Error("❌ Cannot monitor clipboard - no backend available")
 		return
 	}
 
-	c.logger.Info("Starting clipboard monitoring", 
+	c.logger.Info("🚀 Starting clipboard monitoring", 
 		zap.String("backend", c.backendName()),
-		zap.String("mode", c.monitorModeName()))
+		zap.String("mode", c.monitorModeName()),
+		zap.String("display", os.Getenv("DISPLAY")),
+		zap.String("wayland_display", os.Getenv("WAYLAND_DISPLAY")))
 
 	// Choose monitoring method based on detected mode
 	switch c.monitorMode {
 	case MonitorModeXFixes:
+		c.logger.Info("📡 Using XFixes event-based monitoring")
 		go c.monitorWithXFixes(contentCh, stopCh)
 	case MonitorModeWayland:
+		c.logger.Info("📡 Using Wayland event-based monitoring")
 		go c.monitorWithWayland(contentCh, stopCh)
 	default:
+		c.logger.Info("📡 Using adaptive polling monitoring")
 		go c.monitorWithAdaptivePolling(contentCh, stopCh)
 	}
 }
@@ -633,57 +658,65 @@ func (c *LinuxClipboard) monitorWithXFixes(contentCh chan<- *types.ClipboardCont
 		c.mu.Lock()
 		c.isRunning = false
 		c.mu.Unlock()
-		c.logger.Info("XFixes monitoring stopped")
+		c.logger.Info("🛑 XFixes monitoring stopped")
 	}()
 	
-	c.logger.Info("Starting XFixes event-based monitoring")
+	c.logger.Info("🔧 Starting XFixes event-based monitoring")
 	
 	// Use xprop to monitor clipboard owner changes
 	cmd := exec.Command("xprop", "-root", "-spy", "_NET_SELECTION_OWNER_CHANGES_CLIPBOARD")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		c.logger.Error("Failed to create xprop pipe, falling back to polling", zap.Error(err))
+		c.logger.Error("❌ Failed to create xprop pipe, falling back to polling", zap.Error(err))
 		c.monitorWithAdaptivePolling(contentCh, stopCh)
 		return
 	}
 	
 	if err := cmd.Start(); err != nil {
-		c.logger.Error("Failed to start xprop, falling back to polling", zap.Error(err))
+		c.logger.Error("❌ Failed to start xprop, falling back to polling", zap.Error(err))
 		c.monitorWithAdaptivePolling(contentCh, stopCh)
 		return
 	}
 	
 	c.monitorProc = cmd.Process
-	c.logger.Info("XFixes monitoring started", zap.Int("pid", cmd.Process.Pid))
+	c.logger.Info("✅ XFixes monitoring started", zap.Int("pid", cmd.Process.Pid))
 	
 	// Monitor output for clipboard change events
 	scanner := bufio.NewScanner(stdout)
+	eventCount := 0
 	for scanner.Scan() {
+		eventCount++
 		select {
 		case <-stopCh:
+			c.logger.Info("🛑 XFixes: Stop signal received, killing process")
 			cmd.Process.Kill()
 			return
 		default:
 			// Clipboard change detected
-			c.logger.Debug("XFixes: Clipboard change event detected")
+			c.logger.Debug("📡 XFixes: Clipboard change event detected", zap.Int("event_count", eventCount))
 			
 			content, err := c.Read()
 			if err != nil {
-				c.logger.Debug("Failed to read clipboard after XFixes event", zap.Error(err))
+				c.logger.Debug("⚠️ Failed to read clipboard after XFixes event", zap.Error(err))
 				continue
 			}
 			
 			// Check if content actually changed using hash
 			newHash := c.hashContent(string(content.Data))
 			if newHash == c.lastContentHash {
+				c.logger.Debug("🔄 XFixes: Content unchanged, skipping", zap.String("hash", newHash))
 				continue // Same content
 			}
 			c.lastContentHash = newHash
 			
 			select {
 			case contentCh <- content:
-				c.logger.Info("XFixes: New clipboard content sent", zap.Int("size", len(content.Data)))
+				c.logger.Info("✅ XFixes: New clipboard content sent", 
+					zap.Int("size", len(content.Data)),
+					zap.String("type", string(content.Type)),
+					zap.String("hash", newHash))
 			case <-stopCh:
+				c.logger.Info("🛑 XFixes: Stop signal received while sending content")
 				cmd.Process.Kill()
 				return
 			}
@@ -692,7 +725,9 @@ func (c *LinuxClipboard) monitorWithXFixes(contentCh chan<- *types.ClipboardCont
 	
 	// If scanner stopped, fall back to polling
 	if err := scanner.Err(); err != nil {
-		c.logger.Warn("XFixes monitoring failed, falling back to polling", zap.Error(err))
+		c.logger.Warn("⚠️ XFixes monitoring failed, falling back to polling", zap.Error(err))
+	} else {
+		c.logger.Warn("⚠️ XFixes monitoring stopped unexpectedly (scanner ended)")
 	}
 	cmd.Process.Kill()
 	c.monitorWithAdaptivePolling(contentCh, stopCh)
@@ -704,57 +739,68 @@ func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardCon
 		c.mu.Lock()
 		c.isRunning = false
 		c.mu.Unlock()
-		c.logger.Info("Wayland monitoring stopped")
+		c.logger.Info("🛑 Wayland monitoring stopped")
 	}()
 	
-	c.logger.Info("Starting Wayland event-based monitoring")
+	c.logger.Info("🔧 Starting Wayland event-based monitoring")
 	
 	// Use wl-paste -w to watch for clipboard changes
 	cmd := exec.Command("wl-paste", "-w", "echo", "CLIPBOARD_CHANGED")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		c.logger.Error("Failed to create wl-paste pipe, falling back to polling", zap.Error(err))
+		c.logger.Error("❌ Failed to create wl-paste pipe, falling back to polling", zap.Error(err))
 		c.monitorWithAdaptivePolling(contentCh, stopCh)
 		return
 	}
 	
 	if err := cmd.Start(); err != nil {
-		c.logger.Error("Failed to start wl-paste, falling back to polling", zap.Error(err))
+		c.logger.Error("❌ Failed to start wl-paste, falling back to polling", zap.Error(err))
 		c.monitorWithAdaptivePolling(contentCh, stopCh)
 		return
 	}
 	
 	c.monitorProc = cmd.Process
-	c.logger.Info("Wayland monitoring started", zap.Int("pid", cmd.Process.Pid))
+	c.logger.Info("✅ Wayland monitoring started", zap.Int("pid", cmd.Process.Pid))
 	
 	// Monitor output for clipboard change events
 	scanner := bufio.NewScanner(stdout)
+	eventCount := 0
 	for scanner.Scan() {
+		eventCount++
+		line := scanner.Text()
 		select {
 		case <-stopCh:
+			c.logger.Info("🛑 Wayland: Stop signal received, killing process")
 			cmd.Process.Kill()
 			return
 		default:
 			// Clipboard change detected
-			c.logger.Debug("Wayland: Clipboard change event detected")
+			c.logger.Debug("📡 Wayland: Clipboard change event detected", 
+				zap.Int("event_count", eventCount),
+				zap.String("output", line))
 			
 			content, err := c.Read()
 			if err != nil {
-				c.logger.Debug("Failed to read clipboard after Wayland event", zap.Error(err))
+				c.logger.Debug("⚠️ Failed to read clipboard after Wayland event", zap.Error(err))
 				continue
 			}
 			
 			// Check if content actually changed using hash
 			newHash := c.hashContent(string(content.Data))
 			if newHash == c.lastContentHash {
+				c.logger.Debug("🔄 Wayland: Content unchanged, skipping", zap.String("hash", newHash))
 				continue // Same content
 			}
 			c.lastContentHash = newHash
 			
 			select {
 			case contentCh <- content:
-				c.logger.Info("Wayland: New clipboard content sent", zap.Int("size", len(content.Data)))
+				c.logger.Info("✅ Wayland: New clipboard content sent", 
+					zap.Int("size", len(content.Data)),
+					zap.String("type", string(content.Type)),
+					zap.String("hash", newHash))
 			case <-stopCh:
+				c.logger.Info("🛑 Wayland: Stop signal received while sending content")
 				cmd.Process.Kill()
 				return
 			}
@@ -763,7 +809,9 @@ func (c *LinuxClipboard) monitorWithWayland(contentCh chan<- *types.ClipboardCon
 	
 	// If scanner stopped, fall back to polling
 	if err := scanner.Err(); err != nil {
-		c.logger.Warn("Wayland monitoring failed, falling back to polling", zap.Error(err))
+		c.logger.Warn("⚠️ Wayland monitoring failed, falling back to polling", zap.Error(err))
+	} else {
+		c.logger.Warn("⚠️ Wayland monitoring stopped unexpectedly (scanner ended)")
 	}
 	cmd.Process.Kill()
 	c.monitorWithAdaptivePolling(contentCh, stopCh)
@@ -775,10 +823,10 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 		c.mu.Lock()
 		c.isRunning = false
 		c.mu.Unlock()
-		c.logger.Info("Adaptive polling monitoring stopped")
+		c.logger.Info("🛑 Adaptive polling monitoring stopped")
 	}()
 	
-	c.logger.Info("Starting adaptive polling monitoring", 
+	c.logger.Info("🔧 Starting adaptive polling monitoring", 
 		zap.Duration("base_interval", c.baseInterval),
 		zap.Duration("max_interval", c.maxInterval))
 	
@@ -791,32 +839,32 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 	for {
 		select {
 		case <-stopCh:
-			c.logger.Info("Stop signal received, ending monitoring")
+			c.logger.Info("🛑 Stop signal received, ending monitoring")
 			return
 		case <-ticker.C:
 			pollCount++
-			c.logger.Debug("=== POLLING CYCLE START ===", 
+			c.logger.Debug("🔄 === POLLING CYCLE START ===", 
 				zap.Int("poll_count", pollCount),
 				zap.Duration("current_interval", currentInterval))
 
 			// STEP 1: Check formats first (less intrusive than content reading)
-			c.logger.Debug("STEP 1: Getting available clipboard formats")
+			c.logger.Debug("📋 STEP 1: Getting available clipboard formats")
 			newFormats, err := c.getAvailableFormats()
 			if err != nil {
-				c.logger.Debug("Failed to get clipboard formats", zap.Error(err))
+				c.logger.Debug("⚠️ Failed to get clipboard formats", zap.Error(err))
 				continue
 			}
 			
-			c.logger.Debug("STEP 1 RESULT: Got clipboard formats", 
+			c.logger.Debug("📋 STEP 1 RESULT: Got clipboard formats", 
 				zap.Strings("formats", newFormats),
 				zap.Duration("interval", currentInterval),
 				zap.Int("skip_counter", c.skipCounter),
 				zap.Int("inactive_streak", c.inactiveStreak))
 			
 			// STEP 2: Smart skip logic - but much less aggressive to avoid missing changes
-			c.logger.Debug("STEP 2: Checking format changes")
+			c.logger.Debug("🔍 STEP 2: Checking format changes")
 			formatsChanged := !c.formatsEqual(c.lastFormats, newFormats)
-			c.logger.Debug("STEP 2 RESULT: Format comparison", 
+			c.logger.Debug("🔍 STEP 2 RESULT: Format comparison", 
 				zap.Bool("formats_changed", formatsChanged),
 				zap.Strings("old_formats", c.lastFormats),
 				zap.Strings("new_formats", newFormats))
@@ -825,13 +873,13 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 				c.skipCounter++
 				c.inactiveStreak++
 				
-				c.logger.Debug("Formats unchanged, considering skip", 
+				c.logger.Debug("🔄 Formats unchanged, considering skip", 
 					zap.Int("skip_counter", c.skipCounter),
 					zap.Int("skip_threshold", c.skipThreshold))
 				
 				// Only skip occasionally and only when we're really sure nothing changed
 				if c.skipCounter < c.skipThreshold {
-					c.logger.Debug("SKIPPING content read this cycle", 
+					c.logger.Debug("⏭️ SKIPPING content read this cycle", 
 						zap.String("reason", "formats_unchanged_and_under_threshold"))
 					
 					// Be much less aggressive about increasing interval - only after many inactive checks
@@ -844,20 +892,20 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 						if newInterval != currentInterval {
 							currentInterval = newInterval
 							ticker.Reset(currentInterval)
-							c.logger.Debug("Slightly increased polling interval due to long inactivity", 
+							c.logger.Debug("⏱️ Slightly increased polling interval due to long inactivity", 
 								zap.Duration("old_interval", oldInterval),
 								zap.Duration("new_interval", currentInterval),
 								zap.Int("inactive_streak", c.inactiveStreak))
 						}
 					}
-					c.logger.Debug("=== POLLING CYCLE END (SKIPPED) ===")
+					c.logger.Debug("🔄 === POLLING CYCLE END (SKIPPED) ===")
 					continue
 				}
 				c.skipCounter = 0 // Reset skip counter
-				c.logger.Debug("Skip threshold reached, will read content anyway")
+				c.logger.Debug("📋 Skip threshold reached, will read content anyway")
 			} else {
 				// Formats changed, update and reset counters
-				c.logger.Info("CLIPBOARD FORMATS CHANGED - This indicates potential new content!", 
+				c.logger.Info("🎯 CLIPBOARD FORMATS CHANGED - This indicates potential new content!", 
 					zap.Strings("old_formats", c.lastFormats),
 					zap.Strings("new_formats", newFormats))
 				c.lastFormats = newFormats
@@ -866,40 +914,40 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 			}
 			
 			// STEP 3: Read content and check for changes
-			c.logger.Debug("STEP 3: Reading clipboard content")
+			c.logger.Debug("📖 STEP 3: Reading clipboard content")
 			startTime := time.Now()
 			content, err := c.Read()
 			readDuration := time.Since(startTime)
 			
 			if err != nil {
-				c.logger.Warn("STEP 3 FAILED: Could not read clipboard", 
+				c.logger.Warn("❌ STEP 3 FAILED: Could not read clipboard", 
 					zap.Error(err),
 					zap.Duration("read_duration", readDuration))
 				continue
 			}
 			
-			c.logger.Debug("STEP 3 RESULT: Content read successfully", 
+			c.logger.Debug("📖 STEP 3 RESULT: Content read successfully", 
 				zap.String("content_type", string(content.Type)),
 				zap.Int("content_size", len(content.Data)),
 				zap.Duration("read_duration", readDuration),
 				zap.String("content_preview", c.getContentPreview(string(content.Data), 100)))
 			
 			// STEP 4: Hash-based change detection
-			c.logger.Debug("STEP 4: Calculating content hash for change detection")
+			c.logger.Debug("🔐 STEP 4: Calculating content hash for change detection")
 			newHash := c.hashContent(string(content.Data))
 			hashChanged := newHash != c.lastContentHash
 			
-			c.logger.Debug("STEP 4 RESULT: Hash comparison", 
+			c.logger.Debug("🔐 STEP 4 RESULT: Hash comparison", 
 				zap.Bool("hash_changed", hashChanged),
 				zap.String("old_hash", c.lastContentHash),
 				zap.String("new_hash", newHash))
 			
 			if !hashChanged {
 				c.inactiveStreak++
-				c.logger.Debug("Content unchanged (same hash), no action needed", 
+				c.logger.Debug("🔄 Content unchanged (same hash), no action needed", 
 					zap.String("hash", newHash),
 					zap.Int("inactive_streak", c.inactiveStreak))
-				c.logger.Debug("=== POLLING CYCLE END (NO CHANGE) ===")
+				c.logger.Debug("🔄 === POLLING CYCLE END (NO CHANGE) ===")
 				continue // No actual change
 			}
 			
@@ -917,20 +965,21 @@ func (c *LinuxClipboard) monitorWithAdaptivePolling(contentCh chan<- *types.Clip
 			if currentInterval != c.baseInterval {
 				currentInterval = c.baseInterval
 				ticker.Reset(currentInterval)
-				c.logger.Debug("Reset polling interval due to activity", zap.Duration("interval", currentInterval))
+				c.logger.Debug("⏱️ Reset polling interval due to activity", zap.Duration("interval", currentInterval))
 			}
 			
-			c.logger.Debug("STEP 5: Sending content to daemon")
+			c.logger.Debug("📤 STEP 5: Sending content to daemon")
 			select {
 			case contentCh <- content:
 				c.logger.Info("✅ CLIPBOARD CONTENT SUCCESSFULLY SENT TO DAEMON", 
 					zap.String("type", string(content.Type)),
-					zap.Int("size", len(content.Data)))
+					zap.Int("size", len(content.Data)),
+					zap.String("hash", newHash))
 			case <-stopCh:
-				c.logger.Info("Stop signal received while sending content")
+				c.logger.Info("🛑 Stop signal received while sending content")
 				return
 			}
-			c.logger.Debug("=== POLLING CYCLE END (CONTENT SENT) ===")
+			c.logger.Debug("✅ === POLLING CYCLE END (CONTENT SENT) ===")
 		}
 	}
 }
@@ -950,4 +999,13 @@ func (c *LinuxClipboard) Close() {
 		c.monitorProc.Kill()
 		c.monitorProc = nil
 	}
+}
+
+// init registers the Linux clipboard implementation with the platform package
+func init() {
+	// Register the clipboard factory
+	RegisterClipboardFactory(NewClipboard)
+	
+	// Register a default daemonizer (placeholder for now)
+	// RegisterDaemonizer(&LinuxDaemonizer{})
 } 

@@ -45,9 +45,10 @@ func NewDaemon(cfg *config.Config, logger *zap.Logger) *Daemon {
 
 // Initialize sets up all daemon components
 func (d *Daemon) Initialize() error {
-	d.logger.Info("Initializing daemon components")
+	d.logger.Info("🔧 Initializing daemon components")
 
 	// Initialize storage
+	d.logger.Info("📦 Initializing storage...")
 	storage, err := storage.NewBoltStorage(storage.StorageConfig{
 		DBPath:    d.cfg.Storage.DBPath,
 		MaxSize:   d.cfg.Storage.MaxSize,
@@ -59,41 +60,34 @@ func (d *Daemon) Initialize() error {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
 	d.storage = storage
-	d.logger.Info("Storage initialized successfully")
+	d.logger.Info("✅ Storage initialized successfully")
 
 	// Initialize clipboard
-	d.logger.Info("Initializing clipboard...")
+	d.logger.Info("📋 Initializing clipboard...")
 	clipboard := clipboard.NewClipboardWithLogger(d.logger)
-	d.logger.Info("Clipboard NewClipboard() called", zap.Bool("is_nil", clipboard == nil))
+	d.logger.Info("📋 Clipboard NewClipboard() called", 
+		zap.Bool("is_nil", clipboard == nil),
+		zap.String("clipboard_type", fmt.Sprintf("%T", clipboard)))
 	d.clipboard = clipboard
-	d.logger.Info("Clipboard assigned to daemon", zap.Bool("daemon_clipboard_is_nil", d.clipboard == nil))
-
-	// Initialize clipboard monitor
-	contentCh := make(chan *types.ClipboardContent)
-	stopCh := make(chan struct{})
-	go d.clipboard.MonitorChanges(contentCh, stopCh)
-	go func() {
-		for {
-			select {
-			case content := <-contentCh:
-				d.storage.SaveContent(content)
-			}
-		}
-	}()
+	d.logger.Info("📋 Clipboard assigned to daemon", 
+		zap.Bool("daemon_clipboard_is_nil", d.clipboard == nil))
 
 	// Initialize sync if enabled
 	if d.cfg.Sync.Enabled {
+		d.logger.Info("🔄 Initializing sync component...")
 		syncNode, err := p2p.NewNode(d.ctx, d.cfg, d.logger)
 		if err != nil {
 			return fmt.Errorf("failed to initialize sync: %w", err)
 		}
 		d.sync = syncNode
+		d.logger.Info("✅ Sync component initialized")
 	}
 
 	// Initialize IPC handler
 	d.ipc = d.handleIPCRequest
+	d.logger.Info("✅ IPC handler initialized")
 
-	d.logger.Info("All daemon components initialized successfully")
+	d.logger.Info("✅ All daemon components initialized successfully")
 	return nil
 }
 
@@ -142,33 +136,51 @@ func Start() error {
 
 // Run starts all daemon components and handles shutdown
 func (d *Daemon) Run() error {
-	d.logger.Info("Starting daemon components")
+	d.logger.Info("🚀 Starting daemon components")
 
 	// Debug logging before clipboard operations
-	d.logger.Info("About to start clipboard monitor", zap.Bool("clipboard_is_nil", d.clipboard == nil))
+	d.logger.Info("🔍 About to start clipboard monitor", 
+		zap.Bool("clipboard_is_nil", d.clipboard == nil),
+		zap.String("clipboard_type", fmt.Sprintf("%T", d.clipboard)))
 
 	// Start clipboard monitor
-	contentCh := make(chan *types.ClipboardContent)
+	contentCh := make(chan *types.ClipboardContent, 10) // Add buffer to prevent blocking
 	stopCh := make(chan struct{})
-	d.logger.Info("Created channels, about to call MonitorChanges")
-	go d.clipboard.MonitorChanges(contentCh, stopCh)
-	d.logger.Info("MonitorChanges goroutine started")
-
-	// Start content processing loop - THIS WAS MISSING!
+	d.logger.Info("📡 Created channels, about to call MonitorChanges")
+	
+	// Start monitoring in a goroutine
 	go func() {
+		d.logger.Info("🔄 Starting MonitorChanges goroutine")
+		d.clipboard.MonitorChanges(contentCh, stopCh)
+		d.logger.Info("🛑 MonitorChanges goroutine ended")
+	}()
+	d.logger.Info("✅ MonitorChanges goroutine started")
+
+	// Start content processing loop
+	go func() {
+		d.logger.Info("🔄 Starting content processing loop")
+		processedCount := 0
 		for {
 			select {
 			case content := <-contentCh:
+				processedCount++
+				d.logger.Info("📥 Received clipboard content from monitor", 
+					zap.Int("processed_count", processedCount),
+					zap.String("type", string(content.Type)),
+					zap.Int("size", len(content.Data)),
+					zap.String("hash", content.Hash))
+				
 				// Save content to storage with hash generation
 				if err := d.storage.SaveContent(content); err != nil {
-					d.logger.Error("Failed to save clipboard content to storage", zap.Error(err))
+					d.logger.Error("❌ Failed to save clipboard content to storage", zap.Error(err))
 				} else {
-					d.logger.Info("Saved clipboard content to storage", 
+					d.logger.Info("✅ Saved clipboard content to storage", 
 						zap.String("type", string(content.Type)),
 						zap.String("hash", content.Hash),
 						zap.Int("size", len(content.Data)))
 				}
 			case <-d.ctx.Done():
+				d.logger.Info("🛑 Content processing loop stopped (context cancelled)")
 				return
 			}
 		}
@@ -176,27 +188,34 @@ func (d *Daemon) Run() error {
 
 	// Start sync if enabled
 	if d.sync != nil {
+		d.logger.Info("🔄 Starting sync component")
 		if err := d.sync.Start(); err != nil {
 			return fmt.Errorf("failed to start sync: %w", err)
 		}
+		d.logger.Info("✅ Sync component started")
 	}
 
 	// Start IPC server
 	go func() {
+		d.logger.Info("🔄 Starting IPC server")
 		if err := ipc.ListenAndServe("", d.ipc); err != nil {
-			d.logger.Error("IPC server error", zap.Error(err))
+			d.logger.Error("❌ IPC server error", zap.Error(err))
 		}
+		d.logger.Info("🛑 IPC server stopped")
 	}()
 
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	d.logger.Info("✅ Signal handling setup complete")
 
 	// Wait for shutdown signal
+	d.logger.Info("⏳ Daemon running, waiting for shutdown signal...")
 	<-sigChan
-	d.logger.Info("Shutdown signal received")
+	d.logger.Info("🛑 Shutdown signal received")
 
 	// Signal clipboard monitoring to stop
+	d.logger.Info("🛑 Signaling clipboard monitoring to stop")
 	close(stopCh)
 
 	// Perform graceful shutdown
