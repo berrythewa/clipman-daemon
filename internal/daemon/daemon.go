@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,6 +31,15 @@ type Daemon struct {
 	storage   *storage.BoltStorage
 	sync      *p2p.Node
 	ipc       func(*ipc.Request) *ipc.Response
+	
+	// Monitoring channels
+	stopCh chan struct{}
+	
+	// Supervision
+	contentCh               chan *types.ClipboardContent
+	supervisionTicker       *time.Ticker
+	lastMonitoringCheck     time.Time
+	monitoringRestartCount  int
 }
 
 // NewDaemon creates a new daemon instance
@@ -143,33 +153,25 @@ func (d *Daemon) Run() error {
 		zap.Bool("clipboard_is_nil", d.clipboard == nil),
 		zap.String("clipboard_type", fmt.Sprintf("%T", d.clipboard)))
 
-	// Start clipboard monitor
-	contentCh := make(chan *types.ClipboardContent, 10) // Add buffer to prevent blocking
-	stopCh := make(chan struct{})
-	d.logger.Info("📡 Created channels, about to call MonitorChanges")
+	// Initialize supervision
+	d.contentCh = make(chan *types.ClipboardContent, 10) // Buffered channel for reliability
+	d.stopCh = make(chan struct{})
+	d.supervisionTicker = time.NewTicker(30 * time.Second) // Check every 30 seconds
+	d.lastMonitoringCheck = time.Now()
 	
-	// Start monitoring in a goroutine
-	go func() {
-		d.logger.Info("🔄 Starting MonitorChanges goroutine")
-		d.clipboard.MonitorChanges(contentCh, stopCh)
-		d.logger.Info("🛑 MonitorChanges goroutine ended")
-	}()
-	d.logger.Info("✅ MonitorChanges goroutine started")
+	d.logger.Info("Created channels and supervision, about to call MonitorChanges")
+	go d.clipboard.MonitorChanges(d.contentCh, d.stopCh)
+	d.logger.Info("MonitorChanges goroutine started")
 
 	// Start content processing loop
 	go func() {
-		d.logger.Info("🔄 Starting content processing loop")
-		processedCount := 0
+		d.logger.Info("Content processing loop started")
 		for {
 			select {
-			case content := <-contentCh:
-				processedCount++
-				d.logger.Info("📥 Received clipboard content from monitor", 
-					zap.Int("processed_count", processedCount),
+			case content := <-d.contentCh:
+				d.logger.Info("Received content from clipboard monitor",
 					zap.String("type", string(content.Type)),
-					zap.Int("size", len(content.Data)),
-					zap.String("hash", content.Hash))
-				
+					zap.Int("size", len(content.Data)))
 				// Save content to storage with hash generation
 				if err := d.storage.SaveContent(content); err != nil {
 					d.logger.Error("❌ Failed to save clipboard content to storage", zap.Error(err))
@@ -180,7 +182,21 @@ func (d *Daemon) Run() error {
 						zap.Int("size", len(content.Data)))
 				}
 			case <-d.ctx.Done():
-				d.logger.Info("🛑 Content processing loop stopped (context cancelled)")
+				d.logger.Info("Content processing loop shutting down")
+				return
+			}
+		}
+	}()
+
+	// Start monitoring supervision loop
+	go func() {
+		d.logger.Info("Monitoring supervision started")
+		for {
+			select {
+			case <-d.supervisionTicker.C:
+				d.checkAndRestartMonitoring()
+			case <-d.ctx.Done():
+				d.logger.Info("Monitoring supervision shutting down")
 				return
 			}
 		}
@@ -214,12 +230,76 @@ func (d *Daemon) Run() error {
 	<-sigChan
 	d.logger.Info("🛑 Shutdown signal received")
 
+	// Stop supervision
+	if d.supervisionTicker != nil {
+		d.supervisionTicker.Stop()
+	}
+
 	// Signal clipboard monitoring to stop
-	d.logger.Info("🛑 Signaling clipboard monitoring to stop")
-	close(stopCh)
+	if d.stopCh != nil {
+		close(d.stopCh)
+		d.logger.Info("Sent stop signal to clipboard monitor")
+	}
 
 	// Perform graceful shutdown
+	d.logger.Info("Performing graceful shutdown")
 	return d.Shutdown()
+}
+
+// checkAndRestartMonitoring checks the health of clipboard monitoring and restarts if needed
+func (d *Daemon) checkAndRestartMonitoring() {
+	status := d.clipboard.GetMonitoringStatus()
+	now := time.Now()
+	
+	d.logger.Debug("Checking monitoring health",
+		zap.Bool("is_running", status.IsRunning),
+		zap.String("mode", status.Mode),
+		zap.Time("last_activity", status.LastActivity),
+		zap.Int("error_count", status.ErrorCount),
+		zap.String("last_error", status.LastError))
+	
+	// Check if monitoring is unhealthy
+	needsRestart := false
+	reason := ""
+	
+	if !status.IsRunning {
+		needsRestart = true
+		reason = "monitoring not running"
+	} else if status.ErrorCount > 5 {
+		needsRestart = true
+		reason = fmt.Sprintf("too many errors (%d)", status.ErrorCount)
+	} else if now.Sub(status.LastActivity) > 5*time.Minute {
+		needsRestart = true
+		reason = "no activity for 5 minutes"
+	} else if strings.Contains(status.Mode, "failed") {
+		needsRestart = true
+		reason = "monitoring in failed state"
+	}
+	
+	if needsRestart {
+		d.monitoringRestartCount++
+		d.logger.Warn("Clipboard monitoring needs restart",
+			zap.String("reason", reason),
+			zap.Int("restart_count", d.monitoringRestartCount),
+			zap.String("current_mode", status.Mode))
+		
+		// Try to restart monitoring
+		if err := d.clipboard.RestartMonitoring(d.contentCh, d.stopCh); err != nil {
+			d.logger.Error("Failed to restart clipboard monitoring", zap.Error(err))
+		} else {
+			d.logger.Info("Successfully triggered clipboard monitoring restart",
+				zap.Int("restart_count", d.monitoringRestartCount))
+		}
+	} else {
+		// Monitoring is healthy
+		if d.monitoringRestartCount > 0 {
+			d.logger.Info("Clipboard monitoring is healthy",
+				zap.String("mode", status.Mode),
+				zap.Duration("time_since_activity", now.Sub(status.LastActivity)))
+		}
+	}
+	
+	d.lastMonitoringCheck = now
 }
 
 // Shutdown gracefully stops all daemon components
@@ -439,6 +519,20 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 		}
 	}
 
+	// Debug log each content entry
+	for i, content := range contents {
+		d.logger.Debug("History entry details",
+			zap.Int("index", i),
+			zap.String("type", string(content.Type)),
+			zap.Int("data_size", len(content.Data)),
+			zap.String("hash", content.Hash),
+			zap.Time("created", content.Created),
+			zap.Bool("has_data", content.Data != nil),
+			zap.Bool("has_type", content.Type != ""),
+			zap.Bool("has_hash", content.Hash != ""),
+			zap.Bool("has_created", !content.Created.IsZero()))
+	}
+
 	d.logger.Debug("Retrieved history", 
 		zap.Int("count", len(contents)),
 		zap.Int64("limit", limit),
@@ -452,25 +546,249 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 
 // handleHistoryShowRequest handles showing specific history entry
 func (d *Daemon) handleHistoryShowRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing history show request", zap.Any("args", req.Args))
+
+	// Parse request arguments
+	hash := ""
+	if h, ok := req.Args["hash"].(string); ok {
+		hash = h
+	}
+
+	if hash == "" {
+		return &ipc.Response{
+			Status:  "error",
+			Message: "No hash provided",
+		}
+	}
+
+	d.logger.Info("History show request", zap.String("hash", hash))
+
+	// Get all content to find the specific hash
+	allContents, err := d.storage.GetAllContents()
+	if err != nil {
+		d.logger.Error("Failed to get all contents for show", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to get contents: %v", err),
+		}
+	}
+
+	// Find the content with the specified hash
+	var foundContent *types.ClipboardContent
+	for _, content := range allContents {
+		if content.Hash == hash {
+			foundContent = content
+			break
+		}
+	}
+
+	if foundContent == nil {
+		d.logger.Warn("Content not found", zap.String("hash", hash))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Content with hash %s not found", hash),
+		}
+	}
+
+	d.logger.Info("Found content for show", 
+		zap.String("hash", foundContent.Hash),
+		zap.String("type", string(foundContent.Type)),
+		zap.Int("size", len(foundContent.Data)),
+		zap.Time("created", foundContent.Created))
+
 	return &ipc.Response{
-		Status:  "error",
-		Message: "history.show not implemented yet",
+		Status: "ok",
+		Data:   foundContent,
 	}
 }
 
 // handleHistoryDeleteRequest handles deleting history entries
 func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing history delete request", zap.Any("args", req.Args))
+
+	// Parse request arguments
+	var hashes []string
+	if h, ok := req.Args["hashes"].([]interface{}); ok {
+		for _, hash := range h {
+			if hashStr, ok := hash.(string); ok {
+				hashes = append(hashes, hashStr)
+			}
+		}
+	}
+
+	all := false
+	if a, ok := req.Args["all"].(bool); ok {
+		all = a
+	}
+
+	olderThan := time.Time{}
+	if older, ok := req.Args["older_than"].(string); ok {
+		if olderTime, err := time.Parse(time.RFC3339, older); err == nil {
+			olderThan = olderTime
+		}
+	}
+
+	typeFilter := ""
+	if t, ok := req.Args["type"].(string); ok {
+		typeFilter = t
+	}
+
+	d.logger.Info("History delete request", 
+		zap.Strings("hashes", hashes),
+		zap.Bool("all", all),
+		zap.Time("older_than", olderThan),
+		zap.String("type", typeFilter))
+
+	// Get all content to filter
+	allContents, err := d.storage.GetAllContents()
+	if err != nil {
+		d.logger.Error("Failed to get all contents for deletion", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to get contents: %v", err),
+		}
+	}
+
+	// Filter contents to delete
+	var contentsToDelete []*types.ClipboardContent
+	for _, content := range allContents {
+		shouldDelete := false
+
+		// Check if this content should be deleted based on criteria
+		if all {
+			shouldDelete = true
+		} else if len(hashes) > 0 {
+			// Check if this content's hash matches any of the requested hashes
+			for _, hash := range hashes {
+				if content.Hash == hash {
+					shouldDelete = true
+					break
+				}
+			}
+		} else if !olderThan.IsZero() {
+			// Check if content is older than the specified time
+			if content.Created.Before(olderThan) {
+				shouldDelete = true
+			}
+		} else if typeFilter != "" {
+			// Check if content type matches the filter
+			if string(content.Type) == typeFilter {
+				shouldDelete = true
+			}
+		}
+
+		if shouldDelete {
+			contentsToDelete = append(contentsToDelete, content)
+		}
+	}
+
+	if len(contentsToDelete) == 0 {
+		d.logger.Info("No content found matching deletion criteria")
+		return &ipc.Response{
+			Status: "ok",
+			Data:   0,
+		}
+	}
+
+	// Delete the filtered contents
+	err = d.storage.DeleteContents(contentsToDelete)
+	if err != nil {
+		d.logger.Error("Failed to delete contents", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to delete contents: %v", err),
+		}
+	}
+
+	d.logger.Info("Successfully deleted history entries", 
+		zap.Int("deleted_count", len(contentsToDelete)),
+		zap.Bool("all", all),
+		zap.Strings("deleted_hashes", func() []string {
+			var hashes []string
+			for _, content := range contentsToDelete {
+				hashes = append(hashes, content.Hash)
+			}
+			return hashes
+		}()))
+
 	return &ipc.Response{
-		Status:  "error",
-		Message: "history.delete not implemented yet",
+		Status: "ok",
+		Data:   len(contentsToDelete),
 	}
 }
 
 // handleHistoryStatsRequest handles history statistics request
 func (d *Daemon) handleHistoryStatsRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing history stats request")
+
+	// Get all content for statistics
+	allContents, err := d.storage.GetAllContents()
+	if err != nil {
+		d.logger.Error("Failed to get all contents for stats", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to get contents: %v", err),
+		}
+	}
+
+	// Calculate statistics
+	stats := map[string]interface{}{
+		"total_entries": len(allContents),
+		"total_size":    0,
+		"type_counts":   make(map[string]int),
+		"oldest_entry":  nil,
+		"newest_entry":  nil,
+	}
+
+	var totalSize int64
+	var oldestTime, newestTime time.Time
+	var oldestContent, newestContent *types.ClipboardContent
+
+	for _, content := range allContents {
+		// Count total size
+		totalSize += int64(len(content.Data))
+		
+		// Count by type
+		typeStr := string(content.Type)
+		stats["type_counts"].(map[string]int)[typeStr]++
+		
+		// Track oldest and newest
+		if oldestTime.IsZero() || content.Created.Before(oldestTime) {
+			oldestTime = content.Created
+			oldestContent = content
+		}
+		if newestTime.IsZero() || content.Created.After(newestTime) {
+			newestTime = content.Created
+			newestContent = content
+		}
+	}
+
+	stats["total_size"] = totalSize
+	if oldestContent != nil {
+		stats["oldest_entry"] = map[string]interface{}{
+			"hash":    oldestContent.Hash,
+			"type":    string(oldestContent.Type),
+			"created": oldestContent.Created.Format(time.RFC3339),
+			"size":    len(oldestContent.Data),
+		}
+	}
+	if newestContent != nil {
+		stats["newest_entry"] = map[string]interface{}{
+			"hash":    newestContent.Hash,
+			"type":    string(newestContent.Type),
+			"created": newestContent.Created.Format(time.RFC3339),
+			"size":    len(newestContent.Data),
+		}
+	}
+
+	d.logger.Info("Generated history statistics", 
+		zap.Int("total_entries", len(allContents)),
+		zap.Int64("total_size", totalSize),
+		zap.Any("type_counts", stats["type_counts"]))
+
 	return &ipc.Response{
-		Status:  "error",
-		Message: "history.stats not implemented yet",
+		Status: "ok",
+		Data:   stats,
 	}
 }
 

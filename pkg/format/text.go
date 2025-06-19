@@ -47,7 +47,11 @@ func decodeIfBase64(data []byte) []byte {
 
 // FormatText formats text content for display
 func FormatText(content *types.ClipboardContent, opts Options) string {
-	// Decode base64 if needed
+	if content == nil || len(content.Data) == 0 {
+		return ""
+	}
+
+	// Try to decode base64 if it looks like base64
 	data := decodeIfBase64(content.Data)
 	text := string(data)
 
@@ -66,7 +70,11 @@ func FormatText(content *types.ClipboardContent, opts Options) string {
 
 // FormatTextPreview creates a short preview of text content
 func FormatTextPreview(content *types.ClipboardContent, maxLen int) string {
-	// Decode base64 if needed
+	if content == nil || len(content.Data) == 0 {
+		return ""
+	}
+
+	// Try to decode base64 if it looks like base64
 	data := decodeIfBase64(content.Data)
 	text := string(data)
 	

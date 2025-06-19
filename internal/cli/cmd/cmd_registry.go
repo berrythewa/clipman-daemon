@@ -10,7 +10,7 @@ func GetCommands() []*cobra.Command {
 		newDaemonCmd(),
 		newServiceCmd(),
 		newClipCmd(),
-		newHistoryCmd(),
+		historyCmd(),
 		newConfigCmd(),
 	}
 } 

@@ -50,10 +50,13 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&useJSON, "json", false, "output in JSON format")
 
 	// Add commands
-	rootCmd.AddCommand(newDaemonCmd())
-	rootCmd.AddCommand(newClipCmd())
-	rootCmd.AddCommand(newHistoryCmd())
-	rootCmd.AddCommand(newConfigCmd())
+	rootCmd.AddCommand(
+		newDaemonCmd(),
+		newServiceCmd(),
+		newClipCmd(),
+		historyCmd(),
+		newConfigCmd(),
+	)
 }
 
 func setupLogger() {

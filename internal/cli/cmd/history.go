@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
-	// "strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,30 +19,8 @@ var (
 	loadMore  bool
 )
 
-// historyCmd represents the history command
-var historyCmd = &cobra.Command{
-	Use:   "history",
-	Short: "Manage clipboard history",
-	Long: `Manage clipboard history:
-  • List clipboard history entries
-  • Show specific history entries
-  • Delete history entries
-  • Show history statistics`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// Default behavior: list recent history
-		return executeHistoryList(format.DefaultOptions(), limit, false, "", 0, 0, 0, 0)
-	},
-}
-
-func init() {
-	historyCmd.Flags().IntVarP(&limit, "limit", "n", 10, "Number of items to display")
-	historyCmd.Flags().IntVar(&offset, "offset", 0, "Offset for pagination (start at this item)")
-	historyCmd.Flags().BoolVar(&useJSON, "json", false, "Output history as JSON")
-	historyCmd.Flags().BoolVar(&loadMore, "load-more", false, "Load more items from DB after cache is exhausted")
-}
-
-// newHistoryCmd creates the history command with all subcommands
-func newHistoryCmd() *cobra.Command {
+// historyCmd creates the history command with all subcommands
+func historyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "history",
 		Short: "Manage clipboard history",
@@ -53,19 +29,27 @@ func newHistoryCmd() *cobra.Command {
   • Show specific history entries  
   • Delete history entries
   • Show history statistics`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Default behavior: list recent history
+			return executeHistoryList(format.DefaultOptions(), 10, false, "", 0, 0, 0, 0)
+		},
 	}
 
+	// Add global flags for the history command
+	cmd.Flags().IntVarP(&limit, "limit", "n", 10, "Number of items to display")
+	cmd.Flags().BoolVar(&useJSON, "json", false, "Output history as JSON")
+
 	// Add subcommands
-	cmd.AddCommand(newHistoryListCmd())
-	cmd.AddCommand(newHistoryShowCmd())
-	cmd.AddCommand(newHistoryDeleteCmd())
-	cmd.AddCommand(newHistoryStatsCmd())
+	cmd.AddCommand(historyListCmd())
+	cmd.AddCommand(historyShowCmd())
+	cmd.AddCommand(historyDeleteCmd())
+	cmd.AddCommand(historyStatsCmd())
 
 	return cmd
 }
 
-// newHistoryListCmd creates the list subcommand
-func newHistoryListCmd() *cobra.Command {
+// historyListCmd creates the list subcommand
+func historyListCmd() *cobra.Command {
 	var (
 		limit      int
 		since      time.Duration
@@ -134,8 +118,8 @@ Examples:
 	return cmd
 }
 
-// newHistoryShowCmd creates the show subcommand
-func newHistoryShowCmd() *cobra.Command {
+// historyShowCmd creates the show subcommand
+func historyShowCmd() *cobra.Command {
 	var (
 		raw      bool
 		noColors bool
@@ -196,8 +180,8 @@ Examples:
 	return cmd
 }
 
-// newHistoryDeleteCmd creates the delete subcommand
-func newHistoryDeleteCmd() *cobra.Command {
+// historyDeleteCmd creates the delete subcommand
+func historyDeleteCmd() *cobra.Command {
 	var (
 		all        bool
 		older      time.Duration
@@ -248,21 +232,16 @@ Examples:
 	return cmd
 }
 
-// newHistoryStatsCmd creates the stats subcommand
-func newHistoryStatsCmd() *cobra.Command {
-	var (
-		noColors bool
-		noIcons  bool
-	)
-
+// historyStatsCmd creates the stats subcommand
+func historyStatsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stats",
 		Short: "Show history statistics",
-		Long: `Show comprehensive statistics about clipboard history.
+		Long: `Show statistics about clipboard history.
 
 Examples:
-  clipman history stats           # Show detailed statistics
-  clipman history stats --json   # Output statistics as JSON`,
+  clipman history stats                   # Show basic statistics
+  clipman history stats --json           # Show statistics as JSON`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			stats, err := getHistoryStats()
 			if err != nil {
@@ -275,32 +254,42 @@ Examples:
 				return enc.Encode(stats)
 			}
 
-			// Build formatting options
-			opts := format.DefaultOptions()
-			if noColors {
-				opts.UseColors = false
-			}
-			if noIcons {
-				opts.UseIcons = false
+			// Format statistics for display
+			fmt.Printf("📊 Clipboard History Statistics\n\n")
+			fmt.Printf("Total entries: %v\n", stats["total_entries"])
+			fmt.Printf("Total size: %v bytes\n", stats["total_size"])
+			
+			if typeCounts, ok := stats["type_counts"].(map[string]interface{}); ok {
+				fmt.Printf("\nBy type:\n")
+				for contentType, count := range typeCounts {
+					fmt.Printf("  %s: %v\n", contentType, count)
+				}
 			}
 
-			formatter := format.New(opts)
-			output := formatter.FormatStats(stats)
-			fmt.Println(output)
+			if oldest, ok := stats["oldest_entry"].(map[string]interface{}); ok {
+				fmt.Printf("\nOldest entry:\n")
+				fmt.Printf("  Hash: %v\n", oldest["hash"])
+				fmt.Printf("  Type: %v\n", oldest["type"])
+				fmt.Printf("  Created: %v\n", oldest["created"])
+				fmt.Printf("  Size: %v bytes\n", oldest["size"])
+			}
+
+			if newest, ok := stats["newest_entry"].(map[string]interface{}); ok {
+				fmt.Printf("\nNewest entry:\n")
+				fmt.Printf("  Hash: %v\n", newest["hash"])
+				fmt.Printf("  Type: %v\n", newest["type"])
+				fmt.Printf("  Created: %v\n", newest["created"])
+				fmt.Printf("  Size: %v bytes\n", newest["size"])
+			}
 
 			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&noColors, "no-colors", false, "disable colored output")
-	cmd.Flags().BoolVar(&noIcons, "no-icons", false, "disable icons in output")
-
 	return cmd
 }
 
-// Helper functions for IPC communication
-
-// executeHistoryList executes the history list command via IPC
+// executeHistoryList handles the history list functionality
 func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter string, since, before time.Duration, minSize, maxSize int64) error {
 	now := time.Now()
 	req := &ipc.Request{
@@ -438,90 +427,50 @@ func getHistoryStats() (map[string]interface{}, error) {
 
 	stats, ok := resp.Data.(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("invalid response data type")
+		return nil, fmt.Errorf("invalid response data type: %T", resp.Data)
 	}
 
 	return stats, nil
 }
 
-// Utility functions for parsing IPC response data
-
-// parseClipboardContentList converts IPC response data to ClipboardContent list
+// parseClipboardContentList parses a list of clipboard content from IPC response
 func parseClipboardContentList(data interface{}) ([]*types.ClipboardContent, error) {
-	dataSlice, ok := data.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("expected array, got %T", data)
+	// Handle the case where data is already a slice
+	if entries, ok := data.([]*types.ClipboardContent); ok {
+		return entries, nil
+	}
+
+	// Handle JSON unmarshaling
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
 	var entries []*types.ClipboardContent
-	for _, item := range dataSlice {
-		entry, err := parseClipboardContent(item)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse entry: %w", err)
-		}
-		entries = append(entries, entry)
+	if err := json.Unmarshal(jsonData, &entries); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal entries: %w", err)
 	}
 
 	return entries, nil
 }
 
-// parseClipboardContent converts IPC response data to ClipboardContent
+// parseClipboardContent parses a single clipboard content from IPC response
 func parseClipboardContent(data interface{}) (*types.ClipboardContent, error) {
-	itemMap, ok := data.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("expected object, got %T", data)
+	// Handle the case where data is already a ClipboardContent
+	if content, ok := data.(*types.ClipboardContent); ok {
+		return content, nil
 	}
 
-	entry := &types.ClipboardContent{}
-
-	// Parse type - use capitalized field names to match JSON
-	if typeStr, ok := itemMap["Type"].(string); ok {
-		entry.Type = types.ContentType(typeStr)
+	// Handle JSON unmarshaling
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	// Parse data - use capitalized field names to match JSON
-	if dataStr, ok := itemMap["Data"].(string); ok {
-		// Try to decode base64 if it looks like base64
-		if len(dataStr) > 0 && isBase64(dataStr) {
-			if decoded, err := base64.StdEncoding.DecodeString(dataStr); err == nil {
-				entry.Data = decoded
-			} else {
-				// If base64 decode fails, store as raw bytes
-				entry.Data = []byte(dataStr)
-			}
-		} else {
-			entry.Data = []byte(dataStr)
-		}
+	var content types.ClipboardContent
+	if err := json.Unmarshal(jsonData, &content); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal content: %w", err)
 	}
 
-	// Parse timestamp - use capitalized field names to match JSON
-	if createdStr, ok := itemMap["Created"].(string); ok {
-		if created, err := time.Parse(time.RFC3339, createdStr); err == nil {
-			entry.Created = created
-		}
-	}
-
-	// Parse hash - use capitalized field names to match JSON
-	if hashStr, ok := itemMap["Hash"].(string); ok {
-		entry.Hash = hashStr
-	}
-
-	// Parse occurrences if present - use capitalized field names to match JSON
-	if occurrences, ok := itemMap["Occurrences"].([]interface{}); ok {
-		for _, occ := range occurrences {
-			if occStr, ok := occ.(string); ok {
-				if occTime, err := time.Parse(time.RFC3339, occStr); err == nil {
-					entry.Occurrences = append(entry.Occurrences, occTime)
-				}
-			}
-		}
-	}
-
-	return entry, nil
-}
-
-// isBase64 checks if a string is a valid base64 encoded string
-func isBase64(s string) bool {
-	_, err := base64.StdEncoding.DecodeString(s)
-	return err == nil
+	return &content, nil
 }

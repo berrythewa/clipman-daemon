@@ -544,25 +544,29 @@ func (s *BoltStorage) GetHistory(options config.HistoryOptions) ([]*types.Clipbo
 			continue
 		}
 		
-		// Handle decompression - ALWAYS attempt decompression for backward compatibility
-		// Some old data may be compressed but have Compressed=false due to flag changes
-		decompressed, err := compression.DecompressContent(content)
-		if err == nil {
-			// Decompression succeeded - use decompressed data
-			s.logger.Debug("Successfully decompressed content", 
-				zap.String("hash", content.Hash),
-				zap.Bool("compressed_flag", content.Compressed),
-				zap.Int("original_size", len(content.Data)),
-				zap.Int("decompressed_size", len(decompressed.Data)))
-			filteredContents = append(filteredContents, decompressed)
+		// Process content - try decompression first, then base64 if needed
+		var processedContent *types.ClipboardContent
+		if content.Compressed {
+			decompressed, err := compression.DecompressContent(content)
+			if err == nil {
+				s.logger.Debug("Successfully decompressed content", 
+					zap.String("hash", content.Hash),
+					zap.Bool("compressed_flag", content.Compressed),
+					zap.Int("original_size", len(content.Data)),
+					zap.Int("decompressed_size", len(decompressed.Data)))
+				processedContent = decompressed
+			} else {
+				s.logger.Debug("Decompression failed, using original content", 
+					zap.String("hash", content.Hash),
+					zap.Error(err))
+				processedContent = content
+			}
 		} else {
-			// Decompression failed - try base64 decoding as fallback
-			s.logger.Debug("Decompression failed, trying base64 decode", 
-				zap.String("hash", content.Hash),
-				zap.Error(err))
-			content = s.decodeContentIfNeeded(content)
-			filteredContents = append(filteredContents, content)
+			// Try base64 decoding for non-compressed content
+			processedContent = s.decodeContentIfNeeded(content)
 		}
+		
+		filteredContents = append(filteredContents, processedContent)
 	}
 	
 	// Sort by creation time (newest first by default, unless reverse is specified)
@@ -961,42 +965,19 @@ func (s *BoltStorage) decodeContentIfNeeded(content *types.ClipboardContent) *ty
 	if len(content.Data) == 0 {
 		return content
 	}
-	
-	dataStr := string(content.Data)
-	
-	// Check if it looks like base64:
-	// 1. Reasonable length (base64 encoded data is usually longer)
-	// 2. Only contains base64 characters (A-Z, a-z, 0-9, +, /, =)
-	// 3. Proper padding with = at the end
-	if len(dataStr) > 20 && len(dataStr)%4 == 0 {
-		// Check if all characters are valid base64
-		validBase64 := true
-		for _, char := range dataStr {
-			if !((char >= 'A' && char <= 'Z') || 
-				 (char >= 'a' && char <= 'z') || 
-				 (char >= '0' && char <= '9') || 
-				 char == '+' || char == '/' || char == '=') {
-				validBase64 = false
-				break
-			}
-		}
-		
-		if validBase64 {
-			if decoded, err := base64.StdEncoding.DecodeString(dataStr); err == nil {
-				// Additional check: decoded data should be reasonable
-				if len(decoded) > 0 && len(decoded) < len(dataStr) {
-					// Create a copy of the content with decoded data
-					decodedContent := *content
-					decodedContent.Data = decoded
-					s.logger.Debug("Decoded base64 content", 
-						zap.String("hash", content.Hash),
-						zap.Int("original_size", len(content.Data)),
-						zap.Int("decoded_size", len(decoded)))
-					return &decodedContent
-				}
-			}
-		}
+
+	// Try base64 decoding first
+	if decoded, err := base64.StdEncoding.DecodeString(string(content.Data)); err == nil {
+		// Create a copy of the content with decoded data
+		decodedContent := *content
+		decodedContent.Data = decoded
+		s.logger.Debug("Decoded base64 content", 
+			zap.String("hash", content.Hash),
+			zap.Int("original_size", len(content.Data)),
+			zap.Int("decoded_size", len(decoded)))
+		return &decodedContent
 	}
-	
+
+	// If base64 decoding fails, return original content
 	return content
 }

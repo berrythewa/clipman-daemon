@@ -21,6 +21,12 @@ type Clipboard interface {
 	
 	// Close releases any resources held by the clipboard implementation
 	Close()
+	
+	// GetMonitoringStatus returns the current monitoring status
+	GetMonitoringStatus() types.MonitoringStatus
+	
+	// RestartMonitoring attempts to restart clipboard monitoring
+	RestartMonitoring(contentCh chan<- *types.ClipboardContent, stopCh <-chan struct{}) error
 }
 
 // Daemonizer defines the interface for platform-specific daemonization
