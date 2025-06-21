@@ -51,9 +51,13 @@ Use other commands to interact with a running daemon.`,
 			return fmt.Errorf("failed to load config: %v", err)
 		}
 
-		// Initialize basic logger
-		zapConfig := zap.NewProductionConfig()
-		zapLogger, err = zapConfig.Build()
+		// Override log level from command line if specified
+		if logLevel != "" {
+			cfg.Log.Level = logLevel
+		}
+
+		// Initialize logger using the new setup
+		zapLogger, err = cmdpkg.SetupLogger(cfg)
 		if err != nil {
 			return fmt.Errorf("failed to initialize logger: %v", err)
 		}
@@ -61,6 +65,15 @@ Use other commands to interact with a running daemon.`,
 		// Share cfg and logger with cmd package
 		cmdpkg.SetConfig(cfg)
 		cmdpkg.SetZapLogger(zapLogger)
+
+		// Log startup information
+		zapLogger.Info("Clipman CLI started",
+			zap.String("version", Version),
+			zap.String("build_time", BuildTime),
+			zap.String("commit", Commit),
+			zap.String("config_file", cfgFile),
+			zap.String("log_level", cfg.Log.Level),
+			zap.Bool("file_logging", cfg.Log.EnableFileLogging))
 
 		return nil
 	},

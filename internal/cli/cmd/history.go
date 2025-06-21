@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/internal/ipc"
@@ -200,6 +201,11 @@ Examples:
   clipman history delete --older 7d      # Delete entries older than 7 days
   clipman history delete --type image    # Delete all image entries`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			logger, err := GetLogger()
+			if err != nil {
+				return fmt.Errorf("failed to get logger: %w", err)
+			}
+
 			if !all && older == 0 && typeFilter == "" && len(args) == 0 {
 				return fmt.Errorf("specify entries to delete by hash, or use --all/--older/--type flags")
 			}
@@ -209,16 +215,26 @@ Examples:
 				var response string
 				fmt.Scanln(&response)
 				if response != "y" && response != "Y" && response != "yes" {
+					logger.Info("History deletion cancelled by user")
 					fmt.Println("Deletion cancelled.")
 					return nil
 				}
 			}
 
+			logger.Info("Deleting history entries",
+				zap.Bool("all", all),
+				zap.Duration("older", older),
+				zap.String("type_filter", typeFilter),
+				zap.Strings("hashes", args),
+				zap.Bool("force", force))
+
 			count, err := deleteHistoryEntries(args, all, older, typeFilter)
 			if err != nil {
+				logger.Error("Failed to delete history entries", zap.Error(err))
 				return err
 			}
 
+			logger.Info("Successfully deleted history entries", zap.Int("count", count))
 			fmt.Printf("✓ Deleted %d entries\n", count)
 			return nil
 		},
@@ -243,8 +259,16 @@ Examples:
   clipman history stats                   # Show basic statistics
   clipman history stats --json           # Show statistics as JSON`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			logger, err := GetLogger()
+			if err != nil {
+				return fmt.Errorf("failed to get logger: %w", err)
+			}
+
+			logger.Info("Retrieving history statistics")
+
 			stats, err := getHistoryStats()
 			if err != nil {
+				logger.Error("Failed to get history statistics", zap.Error(err))
 				return err
 			}
 
@@ -282,6 +306,7 @@ Examples:
 				fmt.Printf("  Size: %v bytes\n", newest["size"])
 			}
 
+			logger.Info("History statistics displayed successfully")
 			return nil
 		},
 	}
@@ -291,6 +316,11 @@ Examples:
 
 // executeHistoryList handles the history list functionality
 func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter string, since, before time.Duration, minSize, maxSize int64) error {
+	logger, err := GetLogger()
+	if err != nil {
+		return fmt.Errorf("failed to get logger: %w", err)
+	}
+
 	now := time.Now()
 	req := &ipc.Request{
 		Command: "history.list",
@@ -319,21 +349,35 @@ func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter
 		req.Args["max_size"] = maxSize
 	}
 
+	logger.Info("Requesting history list",
+		zap.Int("limit", limit),
+		zap.Bool("reverse", reverse),
+		zap.String("type_filter", typeFilter),
+		zap.Duration("since", since),
+		zap.Duration("before", before),
+		zap.Int64("min_size", minSize),
+		zap.Int64("max_size", maxSize))
+
 	// Send IPC request
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 	if err != nil {
+		logger.Error("Failed to connect to daemon", zap.Error(err))
 		return fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 
 	if resp.Status != "ok" {
+		logger.Error("Daemon returned error", zap.String("status", resp.Status), zap.String("message", resp.Message))
 		return fmt.Errorf("daemon error: %s", resp.Message)
 	}
 
 	// Parse response data
 	entries, err := parseClipboardContentList(resp.Data)
 	if err != nil {
+		logger.Error("Failed to parse response", zap.Error(err))
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
+
+	logger.Info("Successfully retrieved history entries", zap.Int("count", len(entries)))
 
 	// Handle JSON output
 	if useJSON {
@@ -352,6 +396,13 @@ func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter
 
 // getHistoryEntry retrieves a specific history entry by hash via IPC
 func getHistoryEntry(hash string) (*types.ClipboardContent, error) {
+	logger, err := GetLogger()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logger: %w", err)
+	}
+
+	logger.Info("Retrieving history entry", zap.String("hash", hash))
+
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, &ipc.Request{
 		Command: "history.show",
 		Args: map[string]interface{}{
@@ -359,24 +410,37 @@ func getHistoryEntry(hash string) (*types.ClipboardContent, error) {
 		},
 	})
 	if err != nil {
+		logger.Error("Failed to connect to daemon", zap.Error(err))
 		return nil, fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 
 	if resp.Status != "ok" {
+		logger.Error("Daemon returned error", zap.String("status", resp.Status), zap.String("message", resp.Message))
 		return nil, fmt.Errorf("daemon error: %s", resp.Message)
 	}
 
 	// Parse single entry
 	entry, err := parseClipboardContent(resp.Data)
 	if err != nil {
+		logger.Error("Failed to parse entry", zap.Error(err))
 		return nil, fmt.Errorf("failed to parse entry: %w", err)
 	}
+
+	logger.Info("Successfully retrieved history entry", 
+		zap.String("hash", hash),
+		zap.String("type", string(entry.Type)),
+		zap.Int("size", len(entry.Data)))
 
 	return entry, nil
 }
 
 // deleteHistoryEntries deletes history entries via IPC
 func deleteHistoryEntries(hashes []string, all bool, older time.Duration, typeFilter string) (int, error) {
+	logger, err := GetLogger()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get logger: %w", err)
+	}
+
 	req := &ipc.Request{
 		Command: "history.delete",
 		Args:    make(map[string]interface{}),
@@ -395,82 +459,121 @@ func deleteHistoryEntries(hashes []string, all bool, older time.Duration, typeFi
 		req.Args["hashes"] = hashes
 	}
 
+	logger.Info("Sending delete request to daemon",
+		zap.Bool("all", all),
+		zap.Duration("older", older),
+		zap.String("type_filter", typeFilter),
+		zap.Strings("hashes", hashes))
+
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 	if err != nil {
+		logger.Error("Failed to connect to daemon", zap.Error(err))
 		return 0, fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 
 	if resp.Status != "ok" {
+		logger.Error("Daemon returned error", zap.String("status", resp.Status), zap.String("message", resp.Message))
 		return 0, fmt.Errorf("daemon error: %s", resp.Message)
 	}
 
 	count, ok := resp.Data.(float64) // JSON unmarshaling converts int to float64
 	if !ok {
+		logger.Error("Invalid response data type", zap.Any("data", resp.Data))
 		return 0, fmt.Errorf("invalid response data type: %T", resp.Data)
 	}
 
+	logger.Info("Successfully deleted history entries", zap.Int("count", int(count)))
 	return int(count), nil
 }
 
 // getHistoryStats retrieves history statistics via IPC
 func getHistoryStats() (map[string]interface{}, error) {
+	logger, err := GetLogger()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logger: %w", err)
+	}
+
+	logger.Info("Requesting history statistics")
+
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, &ipc.Request{
 		Command: "history.stats",
 	})
 	if err != nil {
+		logger.Error("Failed to connect to daemon", zap.Error(err))
 		return nil, fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 
 	if resp.Status != "ok" {
+		logger.Error("Daemon returned error", zap.String("status", resp.Status), zap.String("message", resp.Message))
 		return nil, fmt.Errorf("daemon error: %s", resp.Message)
 	}
 
 	stats, ok := resp.Data.(map[string]interface{})
 	if !ok {
+		logger.Error("Invalid response data type", zap.Any("data", resp.Data))
 		return nil, fmt.Errorf("invalid response data type: %T", resp.Data)
 	}
 
+	logger.Info("Successfully retrieved history statistics")
 	return stats, nil
 }
 
 // parseClipboardContentList parses a list of clipboard content from IPC response
 func parseClipboardContentList(data interface{}) ([]*types.ClipboardContent, error) {
+	logger, err := GetLogger()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logger: %w", err)
+	}
+
 	// Handle the case where data is already a slice
 	if entries, ok := data.([]*types.ClipboardContent); ok {
+		logger.Debug("Data is already ClipboardContent slice", zap.Int("count", len(entries)))
 		return entries, nil
 	}
 
 	// Handle JSON unmarshaling
 	jsonData, err := json.Marshal(data)
 	if err != nil {
+		logger.Error("Failed to marshal data", zap.Error(err))
 		return nil, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
 	var entries []*types.ClipboardContent
 	if err := json.Unmarshal(jsonData, &entries); err != nil {
+		logger.Error("Failed to unmarshal entries", zap.Error(err))
 		return nil, fmt.Errorf("failed to unmarshal entries: %w", err)
 	}
 
+	logger.Debug("Successfully parsed clipboard content list", zap.Int("count", len(entries)))
 	return entries, nil
 }
 
 // parseClipboardContent parses a single clipboard content from IPC response
 func parseClipboardContent(data interface{}) (*types.ClipboardContent, error) {
+	logger, err := GetLogger()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logger: %w", err)
+	}
+
 	// Handle the case where data is already a ClipboardContent
 	if content, ok := data.(*types.ClipboardContent); ok {
+		logger.Debug("Data is already ClipboardContent")
 		return content, nil
 	}
 
 	// Handle JSON unmarshaling
 	jsonData, err := json.Marshal(data)
 	if err != nil {
+		logger.Error("Failed to marshal data", zap.Error(err))
 		return nil, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
 	var content types.ClipboardContent
 	if err := json.Unmarshal(jsonData, &content); err != nil {
+		logger.Error("Failed to unmarshal content", zap.Error(err))
 		return nil, fmt.Errorf("failed to unmarshal content: %w", err)
 	}
 
+	logger.Debug("Successfully parsed clipboard content")
 	return &content, nil
 }

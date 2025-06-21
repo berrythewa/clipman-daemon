@@ -16,6 +16,7 @@ import (
 	"github.com/berrythewa/clipman-daemon/internal/storage"
 	"github.com/berrythewa/clipman-daemon/internal/platform"
 	"github.com/berrythewa/clipman-daemon/internal/types"
+	"github.com/berrythewa/clipman-daemon/internal/common"
 	"go.uber.org/zap"
 )
 
@@ -380,33 +381,7 @@ func Kill() error {
 
 // setupLogger configures the logger based on configuration
 func setupLogger(cfg *config.Config) (*zap.Logger, error) {
-	config := zap.NewProductionConfig()
-	
-	// Set log level based on configuration
-	level := zap.InfoLevel
-	switch cfg.Log.Level {
-	case "debug":
-		level = zap.DebugLevel
-	case "info":
-		level = zap.InfoLevel
-	case "warn":
-		level = zap.WarnLevel
-	case "error":
-		level = zap.ErrorLevel
-	default:
-		level = zap.InfoLevel
-	}
-	config.Level = zap.NewAtomicLevelAt(level)
-
-	// Configure file logging
-	if cfg.Log.EnableFileLogging {
-		config.OutputPaths = append(config.OutputPaths, 
-			fmt.Sprintf("%s/clipman.log", cfg.SystemPaths.LogDir))
-		config.ErrorOutputPaths = append(config.ErrorOutputPaths,
-			fmt.Sprintf("%s/clipman_error.log", cfg.SystemPaths.LogDir))
-	}
-
-	return config.Build()
+	return common.NewDaemonLogger(cfg)
 }
 
 // Status checks if the daemon is running.

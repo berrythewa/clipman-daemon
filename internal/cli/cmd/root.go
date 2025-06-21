@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -29,9 +28,6 @@ var rootCmd = &cobra.Command{
   • Secure clipboard sync between devices
   • Efficient storage and retrieval of clipboard content
   • Cross-platform support (Linux, macOS, Windows)`,
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		setupLogger()
-	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -57,35 +53,4 @@ func init() {
 		historyCmd(),
 		newConfigCmd(),
 	)
-}
-
-func setupLogger() {
-	var err error
-	var cfg zap.Config
-
-	switch {
-	case verbose:
-		cfg = zap.NewDevelopmentConfig()
-	case quiet:
-		cfg = zap.NewProductionConfig()
-		cfg.Level = zap.NewAtomicLevelAt(zap.WarnLevel)
-	default:
-		cfg = zap.NewProductionConfig()
-		cfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
-	}
-
-	// Set log file if not in verbose mode
-	if !verbose {
-		logDir := filepath.Join(os.Getenv("HOME"), ".local/share/clipman/logs")
-		os.MkdirAll(logDir, 0755)
-		cfg.OutputPaths = []string{
-			filepath.Join(logDir, "clipman.log"),
-		}
-	}
-
-	logger, err = cfg.Build()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error initializing logger: %v\n", err)
-		os.Exit(1)
-	}
 } 

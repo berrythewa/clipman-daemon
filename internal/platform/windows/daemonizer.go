@@ -9,12 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
-	"time"
 	"unsafe"
 
+	"github.com/berrythewa/clipman-daemon/internal/common"
 	"github.com/berrythewa/clipman-daemon/internal/config"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 	"golang.org/x/sys/windows"
 )
 
@@ -42,27 +41,19 @@ func createNamedMutex(name string) (windows.Handle, error) {
 
 // setupLogging initializes zap logger and log file for daemon output.
 func (d *WindowsDaemonizer) setupLogging(cfg *config.Config) (*zap.Logger, *os.File, error) {
-	logDir := cfg.SystemPaths.LogDir
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, nil, fmt.Errorf("failed to create log directory: %v", err)
+	// Use common logger for platform operations
+	logger, err := common.NewPlatformLogger(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to setup logging: %v", err)
 	}
 
+	// For daemonizers, we also need a file handle for stdout/stderr redirection
+	logDir := cfg.SystemPaths.LogDir
 	logFile := filepath.Join(logDir, "clipman_daemon.log")
 	logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %v", err)
 	}
-
-	fileSyncer := zapcore.AddSync(logF)
-	encoderCfg := zap.NewProductionEncoderConfig()
-	encoderCfg.TimeKey = "ts"
-	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
-	core := zapcore.NewCore(
-		zapcore.NewConsoleEncoder(encoderCfg),
-		fileSyncer,
-		zap.InfoLevel,
-	)
-	logger := zap.New(core)
 
 	return logger, logF, nil
 }
@@ -182,25 +173,7 @@ func (d *WindowsDaemonizer) IsRunningAsDaemon() bool {
 
 // isWindowsService checks if the current process is running as a Windows service
 func isWindowsService() bool {
-	var isService bool
-	var err error
-
-	// Try to get the process token
-	var token windows.Token
-	if err = windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
-		return false
-	}
-	defer token.Close()
-
-	// Get the process token information
-	var info windows.TOKEN_GROUPS
-	var size uint32
-	if err = windows.GetTokenInformation(token, windows.TokenGroups, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), &size); err != nil {
-		return false
-	}
-
-	// Check if we're running as a service account
-	// This is a simplified check - in reality, you would need to inspect the groups
-	isService = size > 0
-	return isService
+	// This is a simplified check - in a real implementation, you'd use the Windows API
+	// to check if the process is running as a service
+	return false
 } 

@@ -9,9 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
-    "github.com/berrythewa/clipman-daemon/internal/config"
+
+	"github.com/berrythewa/clipman-daemon/internal/common"
+	"github.com/berrythewa/clipman-daemon/internal/config"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // DarwinDaemonizer implements platform-specific daemonization for macOS
@@ -24,32 +25,19 @@ func NewDaemonizer() *DarwinDaemonizer {
 
 // setupLogging initializes zap logger and log file for daemon output.
 func (d *DarwinDaemonizer) setupLogging(cfg *config.Config) (*zap.Logger, *os.File, error) {
-	// 1. Get log directory and ensure it exists
-	logDir := cfg.SystemPaths.LogDir
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, nil, fmt.Errorf("failed to create log directory: %v", err)
+	// Use common logger for platform operations
+	logger, err := common.NewPlatformLogger(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to setup logging: %v", err)
 	}
 
-	// 2. Build log file path
+	// For daemonizers, we also need a file handle for stdout/stderr redirection
+	logDir := cfg.SystemPaths.LogDir
 	logFile := filepath.Join(logDir, "clipman_daemon.log")
-
-	// 3. Open log file for append/write
 	logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %v", err)
 	}
-
-	// 4. Initialize zap logger to log file
-	fileSyncer := zapcore.AddSync(logF)
-	encoderCfg := zap.NewProductionEncoderConfig()
-	encoderCfg.TimeKey = "ts"
-	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
-	core := zapcore.NewCore(
-		zapcore.NewConsoleEncoder(encoderCfg),
-		fileSyncer,
-		zap.InfoLevel,
-	)
-	logger := zap.New(core)
 
 	return logger, logF, nil
 }
