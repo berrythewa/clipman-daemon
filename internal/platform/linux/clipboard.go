@@ -97,28 +97,80 @@ func (c *LinuxClipboard) detectBackend() {
 		zap.String("display", os.Getenv("DISPLAY")),
 		zap.String("wayland_display", os.Getenv("WAYLAND_DISPLAY")))
 	
-	// Check for Wayland first
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		c.logger.Debug("🔍 Wayland environment detected, checking wl-clipboard")
+	// Check for pure Wayland environment first
+	if os.Getenv("WAYLAND_DISPLAY") != "" && os.Getenv("DISPLAY") == "" {
+		c.logger.Debug("🔍 Pure Wayland environment detected, checking wl-clipboard")
 		if c.checkCommand("wl-copy") && c.checkCommand("wl-paste") {
 			c.backend = BackendWLClipboard
-			c.logger.Info("✅ Using Wayland clipboard backend (wl-clipboard)")
+			c.logger.Info("✅ Using Wayland clipboard backend (wl-clipboard) - pure Wayland")
 			return
 		}
-		c.logger.Warn("⚠️ Wayland detected but wl-clipboard not available")
+		c.logger.Warn("⚠️ Pure Wayland detected but wl-clipboard not available")
 	}
 	
-	// Check for X11 tools
-	c.logger.Debug("🔍 Checking X11 clipboard tools")
-	if c.checkCommand("xclip") {
-		c.backend = BackendXClip
-		c.logger.Info("✅ Using X11 clipboard backend (xclip)")
+	// Check for hybrid X11/Wayland environment (like GNOME on Wayland with XWayland)
+	if os.Getenv("WAYLAND_DISPLAY") != "" && os.Getenv("DISPLAY") != "" {
+		c.logger.Debug("🔍 Hybrid X11/Wayland environment detected")
+		
+		// Test both backends to see which works better
+		waylandWorks := c.testWaylandBackend()
+		x11Works := c.testX11Backend()
+		
+		if waylandWorks && x11Works {
+			// Both work - prefer Wayland for native apps, but note the limitation
+			c.backend = BackendWLClipboard
+			c.logger.Info("✅ Using Wayland clipboard backend (wl-clipboard) - hybrid environment")
+			c.logger.Info("ℹ️ Note: X11 apps will use XWayland clipboard, Wayland apps will use native clipboard")
+			return
+		} else if x11Works {
+			// Only X11 works (common in hybrid setups)
+			if c.checkCommand("xclip") {
+				c.backend = BackendXClip
+				c.logger.Info("✅ Using X11 clipboard backend (xclip) - hybrid environment")
+				return
+			}
+			if c.checkCommand("xsel") {
+				c.backend = BackendXSel
+				c.logger.Info("✅ Using X11 clipboard backend (xsel) - hybrid environment")
+				return
+			}
+		} else if waylandWorks {
+			c.backend = BackendWLClipboard
+			c.logger.Info("✅ Using Wayland clipboard backend (wl-clipboard) - hybrid environment")
+			return
+		}
+	}
+	
+	// Check for pure X11 environment
+	if os.Getenv("DISPLAY") != "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		c.logger.Debug("🔍 Pure X11 environment detected, checking X11 clipboard tools")
+		if c.checkCommand("xclip") {
+			c.backend = BackendXClip
+			c.logger.Info("✅ Using X11 clipboard backend (xclip) - pure X11")
+			return
+		}
+		if c.checkCommand("xsel") {
+			c.backend = BackendXSel  
+			c.logger.Info("✅ Using X11 clipboard backend (xsel) - pure X11")
+			return
+		}
+	}
+	
+	// Fallback: try any available backend regardless of environment
+	c.logger.Debug("🔍 Trying fallback backend detection")
+	if c.checkCommand("wl-copy") && c.checkCommand("wl-paste") {
+		c.backend = BackendWLClipboard
+		c.logger.Info("✅ Using Wayland clipboard backend (wl-clipboard) - fallback")
 		return
 	}
-	
+	if c.checkCommand("xclip") {
+		c.backend = BackendXClip
+		c.logger.Info("✅ Using X11 clipboard backend (xclip) - fallback")
+		return
+	}
 	if c.checkCommand("xsel") {
 		c.backend = BackendXSel  
-		c.logger.Info("✅ Using X11 clipboard backend (xsel)")
+		c.logger.Info("✅ Using X11 clipboard backend (xsel) - fallback")
 		return
 	}
 	
@@ -131,17 +183,27 @@ func (c *LinuxClipboard) detectBackend() {
 func (c *LinuxClipboard) detectMonitoringMode() {
 	c.logger.Info("🔍 Detecting optimal clipboard monitoring method")
 	
-	// Check for X11 with XFixes extension (most efficient)
-	if c.isX11Session() && c.checkXFixesSupport() {
-		c.monitorMode = MonitorModeXFixes
-		c.logger.Info("✅ Using X11 XFixes event-based monitoring (most efficient)")
+	// Check for Wayland with actual wl-paste -w support (test it, don't just assume)
+	if c.isWaylandSession() && c.checkWaylandWatchSupport() {
+		compositor := c.detectWaylandCompositor()
+		c.monitorMode = MonitorModeWayland
+		c.logger.Info("✅ Using Wayland event-based monitoring (wl-paste -w)",
+			zap.String("compositor", compositor))
 		return
 	}
 	
-	// Check for Wayland with wl-paste -w support
+	// If Wayland watch mode is not supported, log why
 	if c.isWaylandSession() && c.checkCommand("wl-paste") {
-		c.monitorMode = MonitorModeWayland
-		c.logger.Info("✅ Using Wayland event-based monitoring (wl-paste -w)")
+		compositor := c.detectWaylandCompositor()
+		c.logger.Info("ℹ️ Wayland detected but watch mode not supported by compositor",
+			zap.String("compositor", compositor),
+			zap.String("reason", "compositor doesn't support wlroots data-control protocol"))
+	}
+	
+	// Check for X11 with XFixes extension (only if no Wayland)
+	if c.isX11Session() && c.checkXFixesSupport() {
+		c.monitorMode = MonitorModeXFixes
+		c.logger.Info("✅ Using X11 XFixes event-based monitoring (most efficient)")
 		return
 	}
 	
@@ -172,6 +234,50 @@ func (c *LinuxClipboard) isWaylandSession() bool {
 	return hasWayland
 }
 
+// checkWaylandWatchSupport checks if wl-paste -w actually works (not just if command exists)
+func (c *LinuxClipboard) checkWaylandWatchSupport() bool {
+	if !c.checkCommand("wl-paste") {
+		c.logger.Debug("❌ Wayland watch check failed: wl-paste not available")
+		return false
+	}
+	
+	// Test if wl-paste -w actually works by trying it briefly
+	cmd := exec.Command("timeout", "2s", "wl-paste", "-w", "echo", "TEST")
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+	
+	// Check for common error messages that indicate lack of support
+	unsupportedMessages := []string{
+		"Watch mode requires a compositor that supports the wlroots data-control protocol",
+		"protocol not supported",
+		"not supported",
+		"unsupported",
+		"no such protocol",
+	}
+	
+	for _, msg := range unsupportedMessages {
+		if strings.Contains(strings.ToLower(outputStr), strings.ToLower(msg)) {
+			c.logger.Debug("❌ Wayland watch check failed: compositor doesn't support watch mode", 
+				zap.String("error", strings.TrimSpace(outputStr)))
+			return false
+		}
+	}
+	
+	// If we get here, either it worked or timed out normally
+	if err != nil {
+		// Check if it's just a timeout (which is expected)
+		if strings.Contains(err.Error(), "exit status 124") {
+			c.logger.Debug("✅ Wayland watch check passed: command timed out normally (expected)")
+			return true
+		}
+		c.logger.Debug("❌ Wayland watch check failed: unexpected error", zap.Error(err))
+		return false
+	}
+	
+	c.logger.Debug("✅ Wayland watch check passed: command executed successfully")
+	return true
+}
+
 // checkXFixesSupport checks if X11 XFixes extension is available
 func (c *LinuxClipboard) checkXFixesSupport() bool {
 	if !c.checkCommand("xprop") {
@@ -187,7 +293,21 @@ func (c *LinuxClipboard) checkXFixesSupport() bool {
 		return false
 	}
 	
-	c.logger.Debug("✅ XFixes check passed: xprop command succeeded")
+	// Check if the specific XFixes atom exists (this is the key fix)
+	cmd = exec.Command("xprop", "-root", "-notype", "_NET_SELECTION_OWNER_CHANGES_CLIPBOARD")
+	output, err := cmd.Output()
+	if err != nil {
+		c.logger.Debug("❌ XFixes check failed: required atom not available", zap.Error(err))
+		return false
+	}
+	
+	// Check if the atom exists (should not return "no such atom")
+	if strings.Contains(string(output), "no such atom") {
+		c.logger.Debug("❌ XFixes check failed: _NET_SELECTION_OWNER_CHANGES_CLIPBOARD atom not found")
+		return false
+	}
+	
+	c.logger.Debug("✅ XFixes check passed: xprop command succeeded and required atom exists")
 	return true
 }
 
@@ -1109,4 +1229,74 @@ func (c *LinuxClipboard) updateMonitoringStatus(mode string, err error) {
 			zap.Error(err),
 			zap.Int("error_count", c.errorCount))
 	}
+}
+
+// testWaylandBackend tests if Wayland clipboard backend actually works
+func (c *LinuxClipboard) testWaylandBackend() bool {
+	if !c.checkCommand("wl-paste") || !c.checkCommand("wl-copy") {
+		return false
+	}
+	
+	// Try to read from clipboard (don't care about content)
+	cmd := exec.Command("wl-paste", "--no-newline")
+	err := cmd.Run()
+	
+	// Consider it working if no error or just empty clipboard error
+	return err == nil || strings.Contains(err.Error(), "exit status 1")
+}
+
+// testX11Backend tests if X11 clipboard backend actually works
+func (c *LinuxClipboard) testX11Backend() bool {
+	if c.checkCommand("xclip") {
+		cmd := exec.Command("xclip", "-selection", "clipboard", "-o")
+		err := cmd.Run()
+		return err == nil || strings.Contains(err.Error(), "exit status 1")
+	}
+	
+	if c.checkCommand("xsel") {
+		cmd := exec.Command("xsel", "--clipboard", "--output")
+		err := cmd.Run()
+		return err == nil || strings.Contains(err.Error(), "exit status 1")
+	}
+	
+	return false
+}
+
+// detectWaylandCompositor attempts to identify the Wayland compositor
+func (c *LinuxClipboard) detectWaylandCompositor() string {
+	// Check common environment variables and processes
+	compositors := map[string][]string{
+		"GNOME": {"gnome-shell", "mutter"},
+		"Sway": {"sway"},
+		"Hyprland": {"Hyprland"},
+		"River": {"river"},
+		"Weston": {"weston"},
+		"KDE Plasma": {"plasmashell", "kwin_wayland"},
+		"Enlightenment": {"enlightenment"},
+	}
+	
+	for name, processes := range compositors {
+		for _, proc := range processes {
+			cmd := exec.Command("pgrep", proc)
+			if cmd.Run() == nil {
+				return name
+			}
+		}
+	}
+	
+	// Check for common environment variables
+	if os.Getenv("GNOME_DESKTOP_SESSION_ID") != "" {
+		return "GNOME"
+	}
+	if os.Getenv("KDEWM") != "" {
+		return "KDE"
+	}
+	if os.Getenv("SWAYSOCK") != "" {
+		return "Sway"
+	}
+	if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") != "" {
+		return "Hyprland"
+	}
+	
+	return "Unknown"
 } 
