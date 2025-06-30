@@ -30,6 +30,25 @@ export CGO_ENABLED
 # Build both CLI and daemon
 build-all: build-cli build-daemon
 
+# Build with X11 dependencies (Linux only)
+build-x11: check-x11-deps build-all
+
+# Check X11 dependencies
+check-x11-deps:
+	@echo "Checking X11 dependencies..."
+	@if [ "$(UNAME_S)" != "Linux" ]; then \
+		echo "X11 build only available on Linux"; \
+		exit 1; \
+	fi
+	@if ! pkg-config --exists x11 xfixes; then \
+		echo "Missing X11 dependencies. Please install:"; \
+		echo "  Ubuntu/Debian: sudo apt-get install libx11-dev libxfixes-dev pkg-config"; \
+		echo "  Arch Linux: sudo pacman -S libx11 libxfixes pkg-config"; \
+		echo "  Fedora: sudo dnf install libX11-devel libXfixes-devel pkg-config"; \
+		exit 1; \
+	fi
+	@echo "X11 dependencies found ✓"
+
 # Build the CLI tool
 build-cli:
 	@echo "Building Clipman CLI v$(VERSION) for $(UNAME_S)..."

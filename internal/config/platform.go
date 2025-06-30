@@ -98,7 +98,7 @@ func GetPlatformDefaults() PlatformDefaults {
 			// Linux requires more frequent polling
 			PollingInterval:    500,  // 500ms - X11/Wayland polling
 			MaxPollingInterval: 2000, // 2s max to balance performance
-			StealthMode:        false, // Linux users often prefer transparency
+			StealthMode:        true, // Enable stealth mode by default to avoid being detected as graphical component
 			
 			// Linux content handling varies by DE
 			MaxContentSize: 20 * 1024 * 1024, // 20MB - conservative for various DEs
