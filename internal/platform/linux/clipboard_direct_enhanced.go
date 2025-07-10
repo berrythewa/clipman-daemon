@@ -188,14 +188,37 @@ func (c *EnhancedDirectClipboard) readWithCLITools() (*types.ClipboardContent, e
 
 // readWithWaylandCLI reads clipboard using Wayland CLI tools
 func (c *EnhancedDirectClipboard) readWithWaylandCLI() (*types.ClipboardContent, error) {
-	// Try wl-paste
+	// Try to get plain text first (preferred)
+	text, err := c.getPlainTextFromWaylandCLI()
+	if err == nil && text != "" {
+		c.logger.Debug("Got plain text from Wayland CLI tools", zap.Int("length", len(text)))
+		return &types.ClipboardContent{
+			Type: types.TypeText,
+			Data: []byte(text),
+		}, nil
+	}
+	
+	// Try to get HTML content to check for password fields
+	html, err := c.getHTMLFromWaylandCLI()
+	if err == nil && html != "" {
+		// Check if this is password content
+		if DetectPasswordContent(html, text) {
+			c.logger.Debug("Detected password content from Wayland CLI")
+			return &types.ClipboardContent{
+				Type: types.TypePassword,
+				Data: []byte(text),
+			}, nil
+		}
+	}
+	
+	// Fallback to raw clipboard content
 	cmd := exec.Command("wl-paste")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("wl-paste failed: %w", err)
 	}
 	
-	text := strings.TrimSpace(string(output))
+	text = strings.TrimSpace(string(output))
 	if text == "" {
 		return nil, fmt.Errorf("empty clipboard content")
 	}
@@ -209,9 +232,82 @@ func (c *EnhancedDirectClipboard) readWithWaylandCLI() (*types.ClipboardContent,
 	return content, nil
 }
 
+// getPlainTextFromWaylandCLI tries to get plain text specifically from Wayland CLI tools
+func (c *EnhancedDirectClipboard) getPlainTextFromWaylandCLI() (string, error) {
+	// Try wl-paste with text/plain type
+	cmd := exec.Command("wl-paste", "--type", "text/plain")
+	output, err := cmd.Output()
+	if err == nil {
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text, nil
+		}
+	}
+	
+	// Try wl-paste with UTF8_STRING type
+	cmd = exec.Command("wl-paste", "--type", "UTF8_STRING")
+	output, err = cmd.Output()
+	if err == nil {
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text, nil
+		}
+	}
+	
+	// Try wl-paste with TEXT type
+	cmd = exec.Command("wl-paste", "--type", "TEXT")
+	output, err = cmd.Output()
+	if err == nil {
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text, nil
+		}
+	}
+	
+	return "", fmt.Errorf("no plain text available from Wayland CLI tools")
+}
+
+// getHTMLFromWaylandCLI tries to get HTML content from Wayland CLI tools
+func (c *EnhancedDirectClipboard) getHTMLFromWaylandCLI() (string, error) {
+	// Try wl-paste with text/html type
+	cmd := exec.Command("wl-paste", "--type", "text/html")
+	output, err := cmd.Output()
+	if err == nil {
+		html := strings.TrimSpace(string(output))
+		if html != "" {
+			return html, nil
+		}
+	}
+	
+	return "", fmt.Errorf("no HTML content available from Wayland CLI tools")
+}
+
 // readWithX11CLI reads clipboard using X11 CLI tools
 func (c *EnhancedDirectClipboard) readWithX11CLI() (*types.ClipboardContent, error) {
-	// Try xclip first
+	// Try to get plain text first (preferred)
+	text, err := c.getPlainTextFromX11CLI()
+	if err == nil && text != "" {
+		c.logger.Debug("Got plain text from X11 CLI tools", zap.Int("length", len(text)))
+		return &types.ClipboardContent{
+			Type: types.TypeText,
+			Data: []byte(text),
+		}, nil
+	}
+	
+	// Try to get HTML content to check for password fields
+	html, err := c.getHTMLFromX11CLI()
+	if err == nil && html != "" {
+		// Check if this is password content
+		if DetectPasswordContent(html, text) {
+			c.logger.Debug("Detected password content from X11 CLI")
+			return &types.ClipboardContent{
+				Type: types.TypePassword,
+				Data: []byte(text),
+			}, nil
+		}
+	}
+	
+	// Fallback to raw clipboard content
 	cmd := exec.Command("xclip", "-selection", "clipboard", "-o")
 	output, err := cmd.Output()
 	if err != nil {
@@ -223,7 +319,7 @@ func (c *EnhancedDirectClipboard) readWithX11CLI() (*types.ClipboardContent, err
 		}
 	}
 	
-	text := strings.TrimSpace(string(output))
+	text = strings.TrimSpace(string(output))
 	if text == "" {
 		return nil, fmt.Errorf("empty clipboard content")
 	}
@@ -235,6 +331,76 @@ func (c *EnhancedDirectClipboard) readWithX11CLI() (*types.ClipboardContent, err
 	}
 	
 	return content, nil
+}
+
+// getPlainTextFromX11CLI tries to get plain text specifically from X11 CLI tools
+func (c *EnhancedDirectClipboard) getPlainTextFromX11CLI() (string, error) {
+	// Try xclip with UTF8_STRING target first
+	cmd := exec.Command("xclip", "-selection", "clipboard", "-o", "-target", "UTF8_STRING")
+	output, err := cmd.Output()
+	if err == nil {
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text, nil
+		}
+	}
+	
+	// Try xclip with TEXT target
+	cmd = exec.Command("xclip", "-selection", "clipboard", "-o", "-target", "TEXT")
+	output, err = cmd.Output()
+	if err == nil {
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text, nil
+		}
+	}
+	
+	// Try xsel with UTF8_STRING target
+	cmd = exec.Command("xsel", "--clipboard", "--output", "--target", "UTF8_STRING")
+	output, err = cmd.Output()
+	if err == nil {
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text, nil
+		}
+	}
+	
+	// Try xsel with TEXT target
+	cmd = exec.Command("xsel", "--clipboard", "--output", "--target", "TEXT")
+	output, err = cmd.Output()
+	if err == nil {
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text, nil
+		}
+	}
+	
+	return "", fmt.Errorf("no plain text available from X11 CLI tools")
+}
+
+// getHTMLFromX11CLI tries to get HTML content from X11 CLI tools
+func (c *EnhancedDirectClipboard) getHTMLFromX11CLI() (string, error) {
+	// Try xclip with text/html target
+	cmd := exec.Command("xclip", "-selection", "clipboard", "-o", "-target", "text/html")
+	output, err := cmd.Output()
+	if err == nil {
+		html := strings.TrimSpace(string(output))
+		if html != "" {
+			return html, nil
+		}
+	}
+	
+	// Try xsel with text/html target
+	cmd = exec.Command("xsel", "--clipboard", "--output", "--target", "text/html")
+	output, err = cmd.Output()
+	if err == nil {
+		html := strings.TrimSpace(string(output))
+		if html != "" {
+			return html, nil
+		}
+	}
+	
+	return "", fmt.Errorf("no HTML content available from X11 CLI tools")
 }
 
 // detectContentWithHTMLProcessing detects content type with HTML processing options

@@ -65,11 +65,11 @@ clipboard:
   # HTML content handling
   html_processing:
     # Extract plain text from HTML content automatically
-    extract_text: false
+    extract_text: true           # Enable text extraction
     # When extract_text is true, prefer extracted text over raw HTML
-    prefer_extracted_text: true
+    prefer_extracted_text: true  # Use extracted text
     # Keep both raw HTML and extracted text when possible
-    keep_both: false
+    keep_both: false            # Don't store both versions
 
 # History settings
 history:

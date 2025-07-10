@@ -198,9 +198,10 @@ char* read_clipboard_target(DirectClipboard *dc, Atom target) {
                     if (result) {
                         memcpy(result, data, nitems);
                         result[nitems] = '\0';
+                        XFree(data);
+                        return result;
                     }
                     XFree(data);
-                    return result;
                 }
             }
             break;
@@ -208,6 +209,46 @@ char* read_clipboard_target(DirectClipboard *dc, Atom target) {
     }
     
     return NULL;
+}
+
+// Check for both HTML and plain text formats
+typedef struct {
+    char *html;
+    char *plain_text;
+} HTMLAndText;
+
+HTMLAndText* read_html_and_text(DirectClipboard *dc) {
+    if (!dc || !dc->display) return NULL;
+    
+    HTMLAndText *result = malloc(sizeof(HTMLAndText));
+    if (!result) return NULL;
+    
+    result->html = NULL;
+    result->plain_text = NULL;
+    
+    // Check if HTML is available first
+    result->html = read_clipboard_target(dc, dc->html);
+    
+    // If HTML is available, also check for plain text
+    if (result->html) {
+        // Try UTF8_STRING first (preferred)
+        result->plain_text = read_clipboard_target(dc, dc->utf8_string);
+        
+        // If no UTF8_STRING, try TEXT
+        if (!result->plain_text) {
+            result->plain_text = read_clipboard_target(dc, dc->text);
+        }
+    }
+    
+    return result;
+}
+
+void free_html_and_text(HTMLAndText *ht) {
+    if (ht) {
+        if (ht->html) free(ht->html);
+        if (ht->plain_text) free(ht->plain_text);
+        free(ht);
+    }
 }
 
 // Write text to clipboard
@@ -377,6 +418,29 @@ func (d *DirectClipboard) ReadHTML() (string, error) {
 	return "", nil
 }
 
+// ReadHTMLAndText reads both HTML and plain text from clipboard
+// Returns HTML content and plain text content if both are available
+func (d *DirectClipboard) ReadHTMLAndText() (html string, plainText string, err error) {
+	if d.dc == nil {
+		return "", "", fmt.Errorf("direct clipboard not initialized")
+	}
+	
+	ht := C.read_html_and_text(d.dc)
+	if ht == nil {
+		return "", "", nil
+	}
+	defer C.free_html_and_text(ht)
+	
+	if ht.html != nil {
+		html = C.GoString(ht.html)
+	}
+	if ht.plain_text != nil {
+		plainText = C.GoString(ht.plain_text)
+	}
+	
+	return html, plainText, nil
+}
+
 // ReadRTF reads RTF content from clipboard
 func (d *DirectClipboard) ReadRTF() (string, error) {
 	if d.dc == nil {
@@ -531,9 +595,34 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 	
 	// Try to read different content types in priority order
 	
-	// 1. Try HTML
-	if html, err := d.dc.ReadHTML(); err == nil && html != "" {
-		d.logger.Debug("Read HTML content from clipboard", zap.Int("length", len(html)))
+	// 1. Try HTML and check for plain text simultaneously
+	if html, plainText, err := d.dc.ReadHTMLAndText(); err == nil && html != "" {
+		d.logger.Debug("Read HTML content from clipboard", 
+			zap.Int("html_length", len(html)),
+			zap.Int("plain_text_length", len(plainText)),
+			zap.Bool("has_plain_text", plainText != ""))
+		
+		// Check if this is password content
+		if DetectPasswordContent(html, plainText) {
+			d.logger.Debug("Detected password content from clipboard")
+			return &types.ClipboardContent{
+				Type: types.TypePassword,
+				Data: []byte(plainText),
+			}, nil
+		}
+		
+		// If we have both HTML and plain text, we can make a smart decision
+		if plainText != "" {
+			// For now, prefer plain text when both are available
+			// This can be made configurable later
+			d.logger.Debug("Using plain text from clipboard instead of HTML")
+			return &types.ClipboardContent{
+				Type: types.TypeText,
+				Data: []byte(plainText),
+			}, nil
+		}
+		
+		// Only HTML available
 		return &types.ClipboardContent{
 			Type: types.TypeHTML,
 			Data: []byte(html),

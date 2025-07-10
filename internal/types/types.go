@@ -19,6 +19,7 @@ const (
 	TypeHTML     ContentType = "html"
 	TypeHTMLText ContentType = "html_text"
 	TypeRTF      ContentType = "rtf"
+	TypePassword ContentType = "password"
 )
 
 // ClipboardContent represents a clipboard item
