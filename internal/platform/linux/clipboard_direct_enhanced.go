@@ -219,6 +219,7 @@ func (c *EnhancedDirectClipboard) readWithX11CLI() (*types.ClipboardContent, err
 
 // detectContentType detects the type of content from text
 func (c *EnhancedDirectClipboard) detectContentType(text string) types.ContentType {
+	//todo use formats.go 
 	// Check for URL
 	if strings.HasPrefix(text, "http://") || strings.HasPrefix(text, "https://") {
 		return types.TypeURL
