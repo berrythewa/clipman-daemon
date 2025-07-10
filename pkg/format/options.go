@@ -41,6 +41,7 @@ var ContentIcons = map[types.ContentType]string{
 	types.TypeFilePath: "📁",
 	types.TypeURL:      "🔗",
 	types.TypeHTML:     "🌐",
+	types.TypeHTMLText: "📄",
 	types.TypeRTF:      "📄",
 }
 
@@ -52,5 +53,6 @@ var ContentColors = map[types.ContentType]string{
 	types.TypeFilePath: BrightYellow,
 	types.TypeURL:      Blue,
 	types.TypeHTML:     Green,
+	types.TypeHTMLText: BrightCyan,
 	types.TypeRTF:      Gray,
 } 

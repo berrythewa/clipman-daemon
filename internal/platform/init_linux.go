@@ -26,6 +26,48 @@ func init() {
 		return clipboard
 	})
 	
+	// Register the enhanced direct clipboard factory with config support
+	RegisterClipboardFactoryWithConfig(func(logger *zap.Logger, config interface{}) Clipboard {
+		fmt.Printf("DEBUG: Creating enhanced direct clipboard with config: %v\n", config != nil)
+		
+		// Extract HTML processing config from the provided config
+		htmlConfig := linuxPlatform.HTMLProcessingConfig{
+			ExtractText:         false,
+			PreferExtractedText: true,
+			KeepBoth:            false,
+		}
+		
+		// Try to extract HTML config from the provided config
+		if configMap, ok := config.(map[string]interface{}); ok {
+			if htmlConfigMap, exists := configMap["html_processing"]; exists {
+				if htmlMap, ok := htmlConfigMap.(map[string]interface{}); ok {
+					if extractText, exists := htmlMap["extract_text"]; exists {
+						if extract, ok := extractText.(bool); ok {
+							htmlConfig.ExtractText = extract
+						}
+					}
+					if preferText, exists := htmlMap["prefer_extracted_text"]; exists {
+						if prefer, ok := preferText.(bool); ok {
+							htmlConfig.PreferExtractedText = prefer
+						}
+					}
+					if keepBoth, exists := htmlMap["keep_both"]; exists {
+						if keep, ok := keepBoth.(bool); ok {
+							htmlConfig.KeepBoth = keep
+						}
+					}
+				}
+			}
+		}
+		
+		clipboard, err := linuxPlatform.NewEnhancedDirectClipboardWithConfig(logger, htmlConfig)
+		if err != nil {
+			panic(fmt.Sprintf("Failed to create enhanced direct clipboard with config: %v", err))
+		}
+		fmt.Printf("DEBUG: Enhanced direct clipboard with config created successfully\n")
+		return clipboard
+	})
+	
 	// Initialize default clipboard with enhanced direct implementation
 	var clipboard Clipboard
 	clipboard, err := linuxPlatform.NewEnhancedDirectClipboard(defaultLogger)

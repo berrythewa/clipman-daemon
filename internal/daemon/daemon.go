@@ -75,11 +75,12 @@ func (d *Daemon) Initialize() error {
 
 	// Initialize clipboard
 	d.logger.Info("📋 Initializing clipboard...")
-	clipboard := clipboard.NewClipboardWithConfig(d.logger, d.cfg.StealthMode)
-	d.logger.Info("📋 Clipboard NewClipboard() called", 
+	clipboard := clipboard.NewClipboardWithFullConfig(d.logger, d.cfg)
+	d.logger.Info("📋 Clipboard NewClipboardWithFullConfig() called", 
 		zap.Bool("is_nil", clipboard == nil),
 		zap.String("clipboard_type", fmt.Sprintf("%T", clipboard)),
-		zap.Bool("stealth_mode", d.cfg.StealthMode))
+		zap.Bool("stealth_mode", d.cfg.StealthMode),
+		zap.Bool("html_extract_text", d.cfg.HTML.ExtractText))
 	d.clipboard = clipboard
 	d.logger.Info("📋 Clipboard assigned to daemon", 
 		zap.Bool("daemon_clipboard_is_nil", d.clipboard == nil))

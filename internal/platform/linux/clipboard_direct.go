@@ -277,7 +277,7 @@ int is_display_available() {
 import "C"
 import (
 	"fmt"
-	"strings"
+	//"strings"
 	"time"
 	"unsafe"
 
@@ -571,16 +571,11 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 	if text, err := d.dc.ReadText(); err == nil && text != "" {
 		d.logger.Debug("Read text from clipboard", zap.Int("length", len(text)))
 		
-		// Detect if it's a URL
-		if strings.HasPrefix(text, "http://") || strings.HasPrefix(text, "https://") {
-			return &types.ClipboardContent{
-				Type: types.TypeURL,
-				Data: []byte(text),
-			}, nil
-		}
+		// Use comprehensive content type detection
+		contentType := DetectContentType(text)
 		
 		return &types.ClipboardContent{
-			Type: types.TypeText,
+			Type: contentType,
 			Data: []byte(text),
 		}, nil
 	}

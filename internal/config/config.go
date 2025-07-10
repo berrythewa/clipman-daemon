@@ -72,9 +72,22 @@ type Config struct {
 	StealthMode     bool  `json:"stealth_mode" yaml:"stealth_mode"`
 	PollingInterval int64 `json:"polling_interval" yaml:"polling_interval"`
 
+	// HTML processing options
+	HTML HTMLProcessingConfig `json:"html_processing" yaml:"html_processing"`
+
 	// Launch options
 	LaunchAtStartup bool `json:"launch_at_startup" yaml:"launch_at_startup"`
 	LaunchOnLogin   bool `json:"launch_on_login" yaml:"launch_on_login"`
+}
+
+// HTMLProcessingConfig holds HTML content processing options
+type HTMLProcessingConfig struct {
+	// Extract plain text from HTML content automatically
+	ExtractText bool `json:"extract_text" yaml:"extract_text"`
+	// When extract_text is true, prefer extracted text over raw HTML
+	PreferExtractedText bool `json:"prefer_extracted_text" yaml:"prefer_extracted_text"`
+	// Keep both raw HTML and extracted text when possible
+	KeepBoth bool `json:"keep_both" yaml:"keep_both"`
 }
 
 // LogConfig holds logging-related configuration
@@ -244,6 +257,11 @@ func DefaultConfig() *Config {
 		},
 		StealthMode:     platformDefaults.StealthMode,
 		PollingInterval: platformDefaults.PollingInterval,
+		HTML: HTMLProcessingConfig{
+			ExtractText:         false, // Disabled by default
+			PreferExtractedText: true,  // When enabled, prefer extracted text
+			KeepBoth:            false, // Don't keep both by default
+		},
 		LaunchAtStartup: platformDefaults.LaunchAtStartup,
 		LaunchOnLogin:   false,
 	}

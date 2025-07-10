@@ -40,3 +40,9 @@ func NewClipboardWithConfig(logger *zap.Logger, stealthMode bool) Clipboard {
     // Implementation delegates to platform package with proper logger and stealth mode.
 	return platform.GetPlatformClipboardWithConfig(logger, stealthMode)
 }
+
+// NewClipboardWithFullConfig returns a platform-specific Clipboard implementation with full configuration support.
+func NewClipboardWithFullConfig(logger *zap.Logger, cfg interface{}) Clipboard {
+    // Implementation delegates to platform package with full configuration.
+	return platform.GetPlatformClipboardWithFullConfig(logger, cfg)
+}

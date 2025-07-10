@@ -28,6 +28,9 @@ type EnhancedDirectClipboard struct {
 	useDirectFirst bool
 	fallbackToCLI  bool
 	
+	// HTML processing configuration
+	htmlConfig HTMLProcessingConfig
+	
 	// Status tracking
 	directAvailable bool
 	lastError       string
@@ -39,8 +42,24 @@ type EnhancedDirectClipboard struct {
 	lastContentHash string
 }
 
+// HTMLProcessingConfig holds HTML content processing options
+type HTMLProcessingConfig struct {
+	ExtractText         bool
+	PreferExtractedText bool
+	KeepBoth            bool
+}
+
 // NewEnhancedDirectClipboard creates a new enhanced clipboard with direct C access
 func NewEnhancedDirectClipboard(logger *zap.Logger) (*EnhancedDirectClipboard, error) {
+	return NewEnhancedDirectClipboardWithConfig(logger, HTMLProcessingConfig{
+		ExtractText:         false,
+		PreferExtractedText: true,
+		KeepBoth:            false,
+	})
+}
+
+// NewEnhancedDirectClipboardWithConfig creates a new enhanced clipboard with HTML processing config
+func NewEnhancedDirectClipboardWithConfig(logger *zap.Logger, htmlConfig HTMLProcessingConfig) (*EnhancedDirectClipboard, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -53,6 +72,7 @@ func NewEnhancedDirectClipboard(logger *zap.Logger) (*EnhancedDirectClipboard, e
 		cancel:        cancel,
 		useDirectFirst: true,
 		fallbackToCLI:  true,
+		htmlConfig:    htmlConfig,
 	}
 	
 	// Try to initialize direct backend
@@ -180,13 +200,13 @@ func (c *EnhancedDirectClipboard) readWithWaylandCLI() (*types.ClipboardContent,
 		return nil, fmt.Errorf("empty clipboard content")
 	}
 	
-	// Detect content type
-	contentType := c.detectContentType(text)
+	// Use HTML processing configuration for content detection
+	content, err := c.detectContentWithHTMLProcessing(text)
+	if err != nil {
+		return nil, err
+	}
 	
-	return &types.ClipboardContent{
-		Type: contentType,
-		Data: []byte(text),
-	}, nil
+	return content, nil
 }
 
 // readWithX11CLI reads clipboard using X11 CLI tools
@@ -208,30 +228,28 @@ func (c *EnhancedDirectClipboard) readWithX11CLI() (*types.ClipboardContent, err
 		return nil, fmt.Errorf("empty clipboard content")
 	}
 	
-	// Detect content type
-	contentType := c.detectContentType(text)
+	// Use HTML processing configuration for content detection
+	content, err := c.detectContentWithHTMLProcessing(text)
+	if err != nil {
+		return nil, err
+	}
 	
+	return content, nil
+}
+
+// detectContentWithHTMLProcessing detects content type with HTML processing options
+func (c *EnhancedDirectClipboard) detectContentWithHTMLProcessing(text string) (*types.ClipboardContent, error) {
+	// Use the enhanced detection with HTML text extraction if configured
+	if c.htmlConfig.ExtractText {
+		return DetectContentWithHTMLTextExtraction(text, c.htmlConfig.PreferExtractedText)
+	}
+	
+	// Use normal detection
+	contentType := DetectContentType(text)
 	return &types.ClipboardContent{
 		Type: contentType,
 		Data: []byte(text),
 	}, nil
-}
-
-// detectContentType detects the type of content from text
-func (c *EnhancedDirectClipboard) detectContentType(text string) types.ContentType {
-	//todo use formats.go 
-	// Check for URL
-	if strings.HasPrefix(text, "http://") || strings.HasPrefix(text, "https://") {
-		return types.TypeURL
-	}
-	
-	// Check for file path
-	if strings.Contains(text, "/") && !strings.Contains(text, " ") {
-		return types.TypeFilePath
-	}
-	
-	// Default to text
-	return types.TypeText
 }
 
 // Write writes content to clipboard

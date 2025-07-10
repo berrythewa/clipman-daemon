@@ -43,11 +43,15 @@ type Daemonizer interface {
 // ClipboardFactory defines a function that creates a clipboard with a logger
 type ClipboardFactory func(*zap.Logger) Clipboard
 
+// ClipboardFactoryWithConfig defines a function that creates a clipboard with logger and config
+type ClipboardFactoryWithConfig func(*zap.Logger, interface{}) Clipboard
+
 // Package variables to hold the platform-specific implementations
 var (
 	defaultClipboard        Clipboard
 	defaultDaemonizer       Daemonizer
 	clipboardFactory        ClipboardFactory
+	clipboardFactoryWithConfig ClipboardFactoryWithConfig
 )
 
 // RegisterClipboard allows platform-specific packages to register their clipboard implementation
@@ -58,6 +62,11 @@ func RegisterClipboard(clipboard Clipboard) {
 // RegisterClipboardFactory allows platform-specific packages to register their clipboard factory
 func RegisterClipboardFactory(factory ClipboardFactory) {
 	clipboardFactory = factory
+}
+
+// RegisterClipboardFactoryWithConfig allows platform-specific packages to register their clipboard factory with config
+func RegisterClipboardFactoryWithConfig(factory ClipboardFactoryWithConfig) {
+	clipboardFactoryWithConfig = factory
 }
 
 // RegisterDaemonizer allows platform-specific packages to register their daemonizer implementation
@@ -112,11 +121,31 @@ func GetPlatformClipboardWithConfig(logger *zap.Logger, stealthMode bool) Clipbo
 	
 	logger.Info("🔧 Creating platform clipboard with config", 
 		zap.Bool("stealth_mode", stealthMode),
-		zap.Bool("has_factory", clipboardFactory != nil))
+		zap.Bool("has_factory", clipboardFactory != nil),
+		zap.Bool("has_config_factory", clipboardFactoryWithConfig != nil))
 	
-	// For now, we'll use the factory and then set stealth mode if supported
-	if clipboardFactory != nil {
+	// Try config factory first if available
+	if clipboardFactoryWithConfig != nil {
 		logger.Info("🔧 Using clipboard factory with config")
+		
+		// Create a simple config struct for now
+		config := struct {
+			StealthMode bool
+		}{
+			StealthMode: stealthMode,
+		}
+		
+		clipboard := clipboardFactoryWithConfig(logger, config)
+		
+		logger.Info("✅ Clipboard created via config factory", 
+			zap.String("type", fmt.Sprintf("%T", clipboard)),
+			zap.Bool("is_nil", clipboard == nil))
+		return clipboard
+	}
+	
+	// Fallback to regular factory
+	if clipboardFactory != nil {
+		logger.Info("🔧 Using clipboard factory")
 		clipboard := clipboardFactory(logger)
 		
 		// Try to set stealth mode if the clipboard supports it
@@ -127,7 +156,7 @@ func GetPlatformClipboardWithConfig(logger *zap.Logger, stealthMode bool) Clipbo
 			logger.Warn("⚠️ Clipboard implementation doesn't support stealth mode configuration")
 		}
 		
-		logger.Info("✅ Clipboard created via factory with config", 
+		logger.Info("✅ Clipboard created via factory", 
 			zap.String("type", fmt.Sprintf("%T", clipboard)),
 			zap.Bool("is_nil", clipboard == nil))
 		return clipboard
@@ -139,7 +168,49 @@ func GetPlatformClipboardWithConfig(logger *zap.Logger, stealthMode bool) Clipbo
 		panic("no clipboard implementation registered for this platform")
 	}
 	
-	logger.Info("🔧 Using default clipboard implementation with config", 
+	logger.Info("🔧 Using default clipboard implementation", 
+		zap.String("type", fmt.Sprintf("%T", defaultClipboard)))
+	return defaultClipboard
+}
+
+// GetPlatformClipboardWithFullConfig returns the appropriate clipboard implementation with full configuration
+func GetPlatformClipboardWithFullConfig(logger *zap.Logger, cfg interface{}) Clipboard {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	
+	logger.Info("🔧 Creating platform clipboard with full config", 
+		zap.Bool("has_config_factory", clipboardFactoryWithConfig != nil))
+	
+	// Use config factory if available
+	if clipboardFactoryWithConfig != nil {
+		logger.Info("🔧 Using clipboard factory with full config")
+		clipboard := clipboardFactoryWithConfig(logger, cfg)
+		
+		logger.Info("✅ Clipboard created via full config factory", 
+			zap.String("type", fmt.Sprintf("%T", clipboard)),
+			zap.Bool("is_nil", clipboard == nil))
+		return clipboard
+	}
+	
+	// Fallback to regular factory
+	if clipboardFactory != nil {
+		logger.Info("🔧 Using clipboard factory (fallback)")
+		clipboard := clipboardFactory(logger)
+		
+		logger.Info("✅ Clipboard created via factory (fallback)", 
+			zap.String("type", fmt.Sprintf("%T", clipboard)),
+			zap.Bool("is_nil", clipboard == nil))
+		return clipboard
+	}
+	
+	// Fallback to default if no factory is registered
+	if defaultClipboard == nil {
+		logger.Error("❌ No clipboard implementation available")
+		panic("no clipboard implementation registered for this platform")
+	}
+	
+	logger.Info("🔧 Using default clipboard implementation (fallback)", 
 		zap.String("type", fmt.Sprintf("%T", defaultClipboard)))
 	return defaultClipboard
 }

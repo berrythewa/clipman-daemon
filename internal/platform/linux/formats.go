@@ -6,20 +6,21 @@ package platform
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 	"github.com/berrythewa/clipman-daemon/pkg/utils"
 )
 
-// detectContent determines the content type and creates a ClipboardContent
-func detectContent(text string) (*types.ClipboardContent, error) {
-	contentType := detectContentType(text)
+// DetectContent determines the content type and creates a ClipboardContent
+func DetectContent(text string) (*types.ClipboardContent, error) {
+	contentType := DetectContentType(text)
 	return utils.NewClipboardContent(contentType, []byte(text)), nil
 }
 
-// detectContentType attempts to determine the content type
-func detectContentType(text string) types.ContentType {
+// DetectContentType attempts to determine the content type
+func DetectContentType(text string) types.ContentType {
 	if text == "" {
 		return types.TypeText
 	}
@@ -39,25 +40,77 @@ func detectContentType(text string) types.ContentType {
 	}
 
 	// Check for URL
-	if isURL(text) {
+	if IsURL(text) {
 		return types.TypeURL
 	}
 
 	// Check for HTML
-	if isHTML(text) {
+	if IsHTML(text) {
 		return types.TypeHTML
 	}
 
 	// Check for RTF
-	if isRTF(text) {
+	if IsRTF(text) {
 		return types.TypeRTF
 	}
 
 	return types.TypeText
 }
 
-// isURL checks if the text appears to be a URL
-func isURL(text string) bool {
+// DetectContentWithHTMLTextExtraction detects content type and optionally extracts text from HTML
+func DetectContentWithHTMLTextExtraction(text string, extractHTMLText bool) (*types.ClipboardContent, error) {
+	if text == "" {
+		return utils.NewClipboardContent(types.TypeText, []byte(text)), nil
+	}
+
+	// If HTML text extraction is requested and content is HTML
+	if extractHTMLText && IsHTML(text) {
+		extractedText := ExtractTextFromHTML(text)
+		if extractedText != text { // Only if extraction actually changed something
+			return utils.NewClipboardContent(types.TypeHTMLText, []byte(extractedText)), nil
+		}
+	}
+
+	// Use normal detection
+	contentType := DetectContentType(text)
+	return utils.NewClipboardContent(contentType, []byte(text)), nil
+}
+
+// ExtractTextFromHTML extracts plain text from HTML content
+func ExtractTextFromHTML(html string) string {
+	if html == "" {
+		return ""
+	}
+
+	// Remove HTML comments
+	html = regexp.MustCompile(`<!--[\s\S]*?-->`).ReplaceAllString(html, "")
+	
+	// Remove script and style tags and their content
+	html = regexp.MustCompile(`<script[\s\S]*?</script>`).ReplaceAllString(html, "")
+	html = regexp.MustCompile(`<style[\s\S]*?</style>`).ReplaceAllString(html, "")
+	
+	// Replace common HTML entities
+	html = strings.ReplaceAll(html, "&nbsp;", " ")
+	html = strings.ReplaceAll(html, "&amp;", "&")
+	html = strings.ReplaceAll(html, "&lt;", "<")
+	html = strings.ReplaceAll(html, "&gt;", ">")
+	html = strings.ReplaceAll(html, "&quot;", "\"")
+	html = strings.ReplaceAll(html, "&#39;", "'")
+	
+	// Remove all HTML tags
+	html = regexp.MustCompile(`<[^>]*>`).ReplaceAllString(html, "")
+	
+	// Normalize whitespace
+	html = regexp.MustCompile(`\s+`).ReplaceAllString(html, " ")
+	
+	// Trim whitespace
+	html = strings.TrimSpace(html)
+	
+	return html
+}
+
+// IsURL checks if the text appears to be a URL
+func IsURL(text string) bool {
 	urlPrefixes := []string{
 		"http://",
 		"https://",
@@ -75,8 +128,8 @@ func isURL(text string) bool {
 	return false
 }
 
-// isHTML checks if the text appears to be HTML
-func isHTML(text string) bool {
+// IsHTML checks if the text appears to be HTML
+func IsHTML(text string) bool {
 	text = strings.TrimSpace(text)
 	if len(text) < 6 {
 		return false
@@ -94,11 +147,14 @@ func isHTML(text string) bool {
 			return true
 		}
 	}
-	return false
+	
+	// Also check for HTML tags anywhere in the content
+	htmlTagPattern := regexp.MustCompile(`<[^>]+>`)
+	return htmlTagPattern.MatchString(text)
 }
 
-// isRTF checks if the text appears to be RTF
-func isRTF(text string) bool {
+// IsRTF checks if the text appears to be RTF
+func IsRTF(text string) bool {
 	text = strings.TrimSpace(text)
 	return len(text) > 5 && strings.HasPrefix(text, "{\\rtf")
 } 

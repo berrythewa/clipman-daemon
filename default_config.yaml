@@ -62,6 +62,14 @@ clipboard:
     - rtf
   # Maximum content size in bytes (0 means no limit)
   max_content_size: 10485760  # 10MB
+  # HTML content handling
+  html_processing:
+    # Extract plain text from HTML content automatically
+    extract_text: false
+    # When extract_text is true, prefer extracted text over raw HTML
+    prefer_extracted_text: true
+    # Keep both raw HTML and extracted text when possible
+    keep_both: false
 
 # History settings
 history:

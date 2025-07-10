@@ -146,6 +146,14 @@ func (f *Formatter) formatMetadata(content *types.ClipboardContent) string {
 	case types.TypeHTML:
 		// For HTML, show a preview
 		previewStr = fmt.Sprintf("HTML: %s", FormatHTMLPreview(content, 40))
+	case types.TypeHTMLText:
+		// For extracted HTML text, show a preview
+		preview := FormatTextPreview(content, 40)
+		if preview != "" {
+			previewStr = fmt.Sprintf("Extracted Text: %s", preview)
+		} else {
+			previewStr = "Extracted Text: (empty)"
+		}
 	default:
 		// Generic preview for unknown types
 		preview := TruncateText(string(content.Data), 40)
@@ -196,6 +204,8 @@ func (f *Formatter) formatContentData(content *types.ClipboardContent) string {
 		return FormatURL(content, f.options)
 	case types.TypeHTML:
 		return FormatHTML(content, f.options)
+	case types.TypeHTMLText:
+		return FormatHTMLText(content, f.options)
 	default:
 		return FormatText(content, f.options)
 	}
@@ -217,6 +227,8 @@ func (f *Formatter) formatContentPreview(content *types.ClipboardContent, maxLen
 		return FormatURLPreview(content, maxLen)
 	case types.TypeHTML:
 		return FormatHTMLPreview(content, maxLen)
+	case types.TypeHTMLText:
+		return FormatTextPreview(content, maxLen)
 	default:
 		return TruncateText(string(content.Data), maxLen)
 	}
