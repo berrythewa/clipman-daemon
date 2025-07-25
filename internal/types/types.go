@@ -24,6 +24,7 @@ const (
 
 // ClipboardContent represents a clipboard item
 type ClipboardContent struct {
+	Id          int64         `json:id,omitempty`
 	Type        ContentType   `json:"type"`
 	Data        []byte        `json:"data"`
 	Created     time.Time     `json:"created"`
@@ -31,6 +32,7 @@ type ClipboardContent struct {
 	Hash        string        `json:"hash,omitempty"`
 	Compressed  bool          `json:"compressed,omitempty"`
 	Occurrences []time.Time   `json:"occurrences,omitempty"`
+
 }
 
 // Equal compares two ClipboardContent instances for equality
@@ -67,4 +69,4 @@ type MonitoringStatus struct {
 	LastActivity time.Time `json:"last_activity"`
 	ErrorCount   int       `json:"error_count"`
 	LastError    string    `json:"last_error"`
-} 
+}

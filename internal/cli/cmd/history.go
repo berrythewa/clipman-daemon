@@ -27,7 +27,7 @@ func historyCmd() *cobra.Command {
 		Short: "Manage clipboard history",
 		Long: `Manage clipboard history:
   • List clipboard history entries
-  • Show specific history entries  
+  • Show specific history entries
   • Delete history entries
   • Show history statistics`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -73,7 +73,7 @@ func historyListCmd() *cobra.Command {
 
 Examples:
   clipman history list                    # Show last 10 entries
-  clipman history list -n 20              # Show last 20 entries  
+  clipman history list -n 20              # Show last 20 entries
   clipman history list --since 1h         # Show entries from last hour
   clipman history list --type text        # Show only text entries
   clipman history list --compact          # Compact single-line format`,
@@ -108,7 +108,7 @@ Examples:
 	cmd.Flags().StringVarP(&typeFilter, "type", "t", "", "filter by content type (text, image, file, url, html)")
 	cmd.Flags().Int64Var(&minSize, "min-size", 0, "minimum content size in bytes")
 	cmd.Flags().Int64Var(&maxSize, "max-size", 0, "maximum content size in bytes")
-	
+
 	// Formatting flags
 	cmd.Flags().BoolVarP(&compact, "compact", "c", false, "use compact single-line format")
 	cmd.Flags().BoolVar(&noColors, "no-colors", false, "disable colored output")
@@ -282,7 +282,7 @@ Examples:
 			fmt.Printf("📊 Clipboard History Statistics\n\n")
 			fmt.Printf("Total entries: %v\n", stats["total_entries"])
 			fmt.Printf("Total size: %v bytes\n", stats["total_size"])
-			
+
 			if typeCounts, ok := stats["type_counts"].(map[string]interface{}); ok {
 				fmt.Printf("\nBy type:\n")
 				for contentType, count := range typeCounts {
@@ -337,7 +337,7 @@ func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter
 	if before > 0 {
 		req.Args["before"] = now.Add(-before).Format(time.RFC3339)
 	}
-	
+
 	// Add content filters
 	if typeFilter != "" {
 		req.Args["type"] = typeFilter
@@ -426,7 +426,7 @@ func getHistoryEntry(hash string) (*types.ClipboardContent, error) {
 		return nil, fmt.Errorf("failed to parse entry: %w", err)
 	}
 
-	logger.Info("Successfully retrieved history entry", 
+	logger.Info("Successfully retrieved history entry",
 		zap.String("hash", hash),
 		zap.String("type", string(entry.Type)),
 		zap.Int("size", len(entry.Data)))

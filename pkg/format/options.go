@@ -55,4 +55,4 @@ var ContentColors = map[types.ContentType]string{
 	types.TypeHTML:     Green,
 	types.TypeHTMLText: BrightCyan,
 	types.TypeRTF:      Gray,
-} 
+}
