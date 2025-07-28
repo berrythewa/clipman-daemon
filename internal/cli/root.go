@@ -22,7 +22,7 @@ var (
 
 	// Logger instance
 	zapLogger *zap.Logger
-	
+
 	// Version information - set by main
 	Version   = "dev"
 	BuildTime = "unknown"
@@ -61,7 +61,7 @@ Use other commands to interact with a running daemon.`,
 		if err != nil {
 			return fmt.Errorf("failed to initialize logger: %v", err)
 		}
-		
+
 		// Share cfg and logger with cmd package
 		cmdpkg.SetConfig(cfg)
 		cmdpkg.SetZapLogger(zapLogger)
@@ -99,4 +99,4 @@ func AddCommand(cmd *cobra.Command) {
 func init() {
 	RootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level (debug, info, warn, error)")
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file path")
-} 
+}

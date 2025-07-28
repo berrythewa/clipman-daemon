@@ -32,13 +32,10 @@ func historyCmd() *cobra.Command {
   • Show history statistics`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Default behavior: list recent history
-			return executeHistoryList(format.DefaultOptions(), 10, false, "", 0, 0, 0, 0)
+			return executeHistoryList(format.DefaultOptions(), 10, false, "", 0, 0, 0, 0, false)
 		},
 	}
 
-	// Add global flags for the history command
-	cmd.Flags().IntVarP(&limit, "limit", "n", 10, "Number of items to display")
-	cmd.Flags().BoolVar(&useJSON, "json", false, "Output history as JSON")
 
 	// Add subcommands
 	cmd.AddCommand(historyListCmd())
@@ -64,6 +61,7 @@ func historyListCmd() *cobra.Command {
 		noIcons    bool
 		maxLines   int
 		maxWidth   int
+		useJSON		 bool
 	)
 
 	cmd := &cobra.Command{
@@ -73,10 +71,12 @@ func historyListCmd() *cobra.Command {
 
 Examples:
   clipman history list                    # Show last 10 entries
-  clipman history list -n 20              # Show last 20 entries
+  clipman history list -n/--limit 20      # Show last 20 entries
   clipman history list --since 1h         # Show entries from last hour
   clipman history list --type text        # Show only text entries
-  clipman history list --compact          # Compact single-line format`,
+  clipman history list --compact          # Compact single-line format,
+	clipman history list --json/-j 					# Display content in JSON format`,
+
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Build formatting options
 			opts := format.DefaultOptions()
@@ -95,10 +95,11 @@ Examples:
 			if maxWidth > 0 {
 				opts.MaxWidth = maxWidth
 			}
-
-			return executeHistoryList(opts, limit, reverse, typeFilter, since, before, minSize, maxSize)
+			return executeHistoryList(opts, limit, reverse, typeFilter, since, before, minSize, maxSize, useJSON)
 		},
 	}
+
+	// Add global flags for the history command
 
 	// Filtering flags
 	cmd.Flags().IntVarP(&limit, "limit", "n", 10, "maximum number of entries to show")
@@ -115,6 +116,7 @@ Examples:
 	cmd.Flags().BoolVar(&noIcons, "no-icons", false, "disable icons in output")
 	cmd.Flags().IntVar(&maxLines, "max-lines", 10, "maximum lines to show per entry (0 = no limit)")
 	cmd.Flags().IntVar(&maxWidth, "max-width", 80, "maximum width per line (0 = no limit)")
+	cmd.Flags().BoolVarP(&useJSON, "json","j", false, "Output history as JSON")
 
 	return cmd
 }
@@ -315,7 +317,7 @@ Examples:
 }
 
 // executeHistoryList handles the history list functionality
-func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter string, since, before time.Duration, minSize, maxSize int64) error {
+func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter string, since, before time.Duration, minSize, maxSize int64, useJSON bool) error {
 	logger, err := GetLogger()
 	if err != nil {
 		return fmt.Errorf("failed to get logger: %w", err)
