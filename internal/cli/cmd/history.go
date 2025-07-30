@@ -190,14 +190,17 @@ func historyDeleteCmd() *cobra.Command {
 		older      time.Duration
 		typeFilter string
 		force      bool
+		ids        []int64 // for --id flag
+		hashes      []string // for --hash flag
 	)
 
 	cmd := &cobra.Command{
-		Use:   "delete [hash...]",
+		Use:   "Delete [hash...][id...]",
 		Short: "Delete history entries",
-		Long: `Delete history entries by hash or using filters.
+		Long: `Delete history entries by hash,id or using filters.
 
 Examples:
+	clipman history delete 34              # Delete using id
   clipman history delete abc123def       # Delete specific entry
   clipman history delete --all           # Delete all history
   clipman history delete --older 7d      # Delete entries older than 7 days
@@ -208,8 +211,8 @@ Examples:
 				return fmt.Errorf("failed to get logger: %w", err)
 			}
 
-			if !all && older == 0 && typeFilter == "" && len(args) == 0 {
-				return fmt.Errorf("specify entries to delete by hash, or use --all/--older/--type flags")
+			if !all && older == 0 && typeFilter == "" && len(args) == 0 && len(ids) == 0 && len(hashes) == 0 {
+				return fmt.Errorf("specify entries to delete by hash/ID, or use --all/--older/--type flags")
 			}
 
 			if !force && (all || older > 0 || typeFilter != "") {
@@ -224,13 +227,16 @@ Examples:
 			}
 
 			logger.Info("Deleting history entries",
+				zap.Bool("id", id)
 				zap.Bool("all", all),
 				zap.Duration("older", older),
 				zap.String("type_filter", typeFilter),
 				zap.Strings("hashes", args),
 				zap.Bool("force", force))
 
-			count, err := deleteHistoryEntries(args, all, older, typeFilter)
+			allHashes := append(args, hashes...)
+			count, err := deleteHistoryEntries(allHashes, ids, all, older, typeFilter)
+
 			if err != nil {
 				logger.Error("Failed to delete history entries", zap.Error(err))
 				return err
@@ -246,6 +252,8 @@ Examples:
 	cmd.Flags().DurationVar(&older, "older", 0, "delete entries older than duration (e.g. 7d, 24h)")
 	cmd.Flags().StringVarP(&typeFilter, "type", "t", "", "delete entries of specific type")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "skip confirmation prompt")
+	cmd.Flags().Int64SliceVar(&ids, "id", []int64{}, "delete entries by ID (can specify multiple: --id 1,2,3)")
+	cmd.Flags().StringSliceVar(&ids, "hash", []String{}, "delete entries by Hash (can specify multiple hashes seperated by comma ,)")
 
 	return cmd
 }
@@ -437,7 +445,7 @@ func getHistoryEntry(hash string) (*types.ClipboardContent, error) {
 }
 
 // deleteHistoryEntries deletes history entries via IPC
-func deleteHistoryEntries(hashes []string, all bool, older time.Duration, typeFilter string) (int, error) {
+func deleteHistoryEntries(hashes []string, ids []int64, all bool, older time.Duration, typeFilter string) (int, error) {
 	logger, err := GetLogger()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get logger: %w", err)
@@ -448,6 +456,12 @@ func deleteHistoryEntries(hashes []string, all bool, older time.Duration, typeFi
 		Args:    make(map[string]interface{}),
 	}
 
+	if len(ids) > 0 {
+    req.Args["hashes"] = hashes
+	}
+	if len(hashes) > 0 {
+    req.Args["ids"] = ids
+	}
 	if all {
 		req.Args["all"] = true
 	}
@@ -465,7 +479,9 @@ func deleteHistoryEntries(hashes []string, all bool, older time.Duration, typeFi
 		zap.Bool("all", all),
 		zap.Duration("older", older),
 		zap.String("type_filter", typeFilter),
-		zap.Strings("hashes", hashes))
+		zap.Strings("hashes", hashes)),
+		zap.Strings("hashes", hashes),
+		zap.Int64s("ids", ids)) ,
 
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 	if err != nil {

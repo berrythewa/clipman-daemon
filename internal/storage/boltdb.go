@@ -29,20 +29,34 @@ const (
 
 // BoltStorageInterface defines the methods for BoltStorage
 type BoltStorageInterface interface {
-	SaveContent(content *types.ClipboardContent) error
-	GetLatestContent() (*types.ClipboardContent, error)
-	GetContentSince(since time.Time) ([]*types.ClipboardContent, error)
-	GetAllContents() ([]*types.ClipboardContent, error)
-	GetContentToFlush() ([]*types.ClipboardContent, error)
-	DeleteContents(contents []*types.ClipboardContent) error
-	Close() error
-	GetCacheSize() int64
-	FlushCache() error
-	GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error)
-	LogCompleteHistory(options config.HistoryOptions) error
-	GetOccurrenceStats(hash string) (*types.OccurrenceStats, error)
-	GetFrequentContent(limit int) ([]*types.ClipboardContent, error)
+	// Existing methods
+    SaveContent(content *types.ClipboardContent) error
+    GetLatestContent() (*types.ClipboardContent, error)
+    GetContentSince(since time.Time) ([]*types.ClipboardContent, error)
+    GetAllContents() ([]*types.ClipboardContent, error)
+    GetContentToFlush() ([]*types.ClipboardContent, error)
+    Close() error
+    GetCacheSize() int64
+    FlushCache() error
+    GetHistory(options config.HistoryOptions) ([]*types.ClipboardContent, error)
+    LogCompleteHistory(options config.HistoryOptions) error
+    GetOccurrenceStats(hash string) (*types.OccurrenceStats, error)
+    GetFrequentContent(limit int) ([]*types.ClipboardContent, error)
+
+    // New getter methods
+    GetContentsByHashes(hashes []string) ([]*types.ClipboardContent, error)
+    GetContentsByIDs(ids []int64) ([]*types.ClipboardContent, error)
+
+    // Updated/new delete methods
+    DeleteContents(contents []*types.ClipboardContent) error
+    DeleteByHashes(hashes []string) (int, error)
+    DeleteByIDs(ids []int64) (int, error)
+    DeleteSince(since time.Time) (int, error)
+    DeleteOnDate(date time.Time) (int, error)
+    DeleteAll() (int, error)
 }
+
+
 
 // BoltStorage implements persistent storage for clipboard contents using BoltDB
 type BoltStorage struct {
@@ -398,11 +412,21 @@ func (s *BoltStorage) collectItemsToFlush(tx *bbolt.Tx) ([]*types.ClipboardConte
 	return itemsToFlush, nil
 }
 
-// DeleteContents removes specified content items from storage
+// // DeleteContents removes specified content items from storage
+// func (s *BoltStorage) DeleteContents(contents []*types.ClipboardContent) error {
+// 	return s.db.Update(func(tx *bbolt.Tx) error {
+// 		return s.deleteItemsFromBucket(tx, contents)
+// 	})
+}
+
+// DeleteContents removes specified content items from storage (updated to use hashes)
 func (s *BoltStorage) DeleteContents(contents []*types.ClipboardContent) error {
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		return s.deleteItemsFromBucket(tx, contents)
-	})
+    hashes := make([]string, len(contents))
+    for i, content := range contents {
+        hashes[i] = content.Hash
+    }
+    _, err := s.DeleteByHashes(hashes)
+    return err
 }
 
 // deleteItemsFromBucket removes the specified items from the database
@@ -431,6 +455,32 @@ func (s *BoltStorage) deleteItemsFromBucket(tx *bbolt.Tx, itemsToDelete []*types
 
 	return nil
 }
+// deleteItemsFromBucket removes the specified items from the database (updated to use hashes)
+// func (s *BoltStorage) deleteItemsFromBucket(tx *bbolt.Tx, itemsToDelete []*types.ClipboardContent) error {
+//     if len(itemsToDelete) == 0 {
+//         return nil
+//     }
+//
+//     b := tx.Bucket([]byte(clipboardBucket))
+//
+//     // Delete the items using hash as key
+//     var totalFreed int64
+//     for _, content := range itemsToDelete {
+//         key := []byte(content.Hash) // Use hash instead of timestamp
+//         if err := b.Delete(key); err != nil {
+//             return err
+//         }
+//         totalFreed += int64(len(content.Data))
+//     }
+//
+//     // Update cache size
+//     atomic.AddInt64(&s.cacheSize, -totalFreed)
+//     s.logger.Info("Cache items deleted",
+//         zap.Int64("freed_bytes", totalFreed),
+//         zap.Int("deleted_items", len(itemsToDelete)))
+//
+//     return nil
+// }
 
 // flushOldestContent flushes the oldest content from the cache
 func (s *BoltStorage) flushOldestContent(tx *bbolt.Tx) error {
@@ -985,4 +1035,105 @@ func (s *BoltStorage) decodeContentIfNeeded(content *types.ClipboardContent) *ty
 
 	// If base64 decoding fails, return original content
 	return content
+}
+
+// GetContentByHash retrieves a single clipboard content by its hash
+func (s *BoltStorage) GetContentByHash(hash string) (*types.ClipboardContent, error) {
+	var content *types.ClipboardContetypes.ClipboardContent
+    err := s.db.View(func(tx *bbolt.Tx) error {
+        b := tx.Bucket([]byte(clipboardBucket))
+        for _, hash := range hashes {
+            v := b.Get([]byte(hash))
+            if v != nil {
+                var content types.ClipboardContent
+                if err := json.Unmarshal(v, &content); err == nil {
+                    contents = append(contents, &content)
+                }
+            }
+        }
+        return nil
+    })
+    return contents, err
+}
+
+// GetContentsByIDs retrieves specific history entries by their IDs
+func (s *BoltStorage) GetContentsByIDs(ids []int64) ([]*types.ClipboardContent, error) {
+    var contents []*types.ClipboardContent
+    idMap := make(map[int64]bool)
+    for _, id := range ids {
+        idMap[id] = true
+    }
+    err := s.db.View(func(tx *bbolt.Tx) error {
+        b := tx.Bucket([]byte(clipboardBucket))
+        return b.ForEach(func(k, v []byte) error {
+            var content types.ClipboardContent
+            if err := json.Unmarshal(v, &content); err == nil {
+                if _, found := idMap[content.Id]; found {
+                    contents = append(contents, &content)
+                }
+            }
+            return nil
+        })
+    })
+    return contents, err
+}
+
+// DeleteHistory deletes history entries based on filter criteria
+func (s *BoltStorage) DeleteHistory(options config.HistoryOptions) (int, error) {
+    var toDelete []*types.ClipboardContent
+    allContent, err := s.GetHistory(options)
+    if err != nil {
+        return 0, err
+    }
+    toDelete = allContent
+    if len(toDelete) == 0 {
+        return 0, nil
+    }
+    err = s.DeleteContents(toDelete)
+    if err != nil {
+        return 0, err
+    }
+    return len(toDelete), nil
+}
+
+// GetContentsByHashes retrieves specific history entries by their hashes
+func (s *BoltStorage) GetContentsByHashes(hashes []string) ([]*types.ClipboardContent, error) {
+    // TODO: Implementation
+    return nil, nil
+}
+
+// GetContentsByIDs retrieves specific history entries by their IDs
+func (s *BoltStorage) GetContentsByIDs(ids []int64) ([]*types.ClipboardContent, error) {
+    // TODO: Implementation
+    return nil, nil
+}
+
+// DeleteByHashes removes items from the database by their hashes
+func (s *BoltStorage) DeleteByHashes(hashes []string) (int, error) {
+    // TODO: Implementation
+    return 0, nil
+}
+
+// DeleteByIDs removes items from the database by their IDs
+func (s *BoltStorage) DeleteByIDs(ids []int64) (int, error) {
+    // TODO: Implementation
+    return 0, nil
+}
+
+// DeleteSince deletes all clipboard entries created since a specified time
+func (s *BoltStorage) DeleteSince(since time.Time) (int, error) {
+    // TODO: Implementation
+    return 0, nil
+}
+
+// DeleteOnDate deletes all clipboard entries created on a specific date
+func (s *BoltStorage) DeleteOnDate(date time.Time) (int, error) {
+    // TODO: Implementation
+    return 0, nil
+}
+
+// DeleteAll deletes all clipboard entries
+func (s *BoltStorage) DeleteAll() (int, error) {
+    // TODO: Implementation
+    return 0, nil
 }

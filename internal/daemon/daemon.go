@@ -26,16 +26,16 @@ type Daemon struct {
 	cancel context.CancelFunc
 	cfg    *config.Config
 	logger *zap.Logger
-	
+
 	// Components
 	clipboard clipboard.Clipboard
 	storage   *storage.BoltStorage
 	sync      *p2p.Node
 	ipc       func(*ipc.Request) *ipc.Response
-	
+
 	// Monitoring channels
 	stopCh chan struct{}
-	
+
 	// Supervision
 	contentCh               chan *types.ClipboardContent
 	supervisionTicker       *time.Ticker
@@ -76,13 +76,13 @@ func (d *Daemon) Initialize() error {
 	// Initialize clipboard
 	d.logger.Info("📋 Initializing clipboard...")
 	clipboard := clipboard.NewClipboardWithFullConfig(d.logger, d.cfg)
-	d.logger.Info("📋 Clipboard NewClipboardWithFullConfig() called", 
+	d.logger.Info("📋 Clipboard NewClipboardWithFullConfig() called",
 		zap.Bool("is_nil", clipboard == nil),
 		zap.String("clipboard_type", fmt.Sprintf("%T", clipboard)),
 		zap.Bool("stealth_mode", d.cfg.StealthMode),
 		zap.Bool("html_extract_text", d.cfg.HTML.ExtractText))
 	d.clipboard = clipboard
-	d.logger.Info("📋 Clipboard assigned to daemon", 
+	d.logger.Info("📋 Clipboard assigned to daemon",
 		zap.Bool("daemon_clipboard_is_nil", d.clipboard == nil))
 
 	// Initialize sync if enabled
@@ -152,7 +152,7 @@ func (d *Daemon) Run() error {
 	d.logger.Info("🚀 Starting daemon components")
 
 	// Debug logging before clipboard operations
-	d.logger.Info("🔍 About to start clipboard monitor", 
+	d.logger.Info("🔍 About to start clipboard monitor",
 		zap.Bool("clipboard_is_nil", d.clipboard == nil),
 		zap.String("clipboard_type", fmt.Sprintf("%T", d.clipboard)))
 
@@ -161,7 +161,7 @@ func (d *Daemon) Run() error {
 	d.stopCh = make(chan struct{})
 	d.supervisionTicker = time.NewTicker(30 * time.Second) // Check every 30 seconds
 	d.lastMonitoringCheck = time.Now()
-	
+
 	d.logger.Info("Created channels and supervision, about to call MonitorChanges")
 	go d.clipboard.MonitorChanges(d.contentCh, d.stopCh)
 	d.logger.Info("MonitorChanges goroutine started")
@@ -179,7 +179,7 @@ func (d *Daemon) Run() error {
 				if err := d.storage.SaveContent(content); err != nil {
 					d.logger.Error("❌ Failed to save clipboard content to storage", zap.Error(err))
 				} else {
-					d.logger.Info("✅ Saved clipboard content to storage", 
+					d.logger.Info("✅ Saved clipboard content to storage",
 						zap.String("type", string(content.Type)),
 						zap.String("hash", content.Hash),
 						zap.Int("size", len(content.Data)))
@@ -253,18 +253,18 @@ func (d *Daemon) Run() error {
 func (d *Daemon) checkAndRestartMonitoring() {
 	status := d.clipboard.GetMonitoringStatus()
 	now := time.Now()
-	
+
 	d.logger.Debug("Checking monitoring health",
 		zap.Bool("is_running", status.IsRunning),
 		zap.String("mode", status.Mode),
 		zap.Time("last_activity", status.LastActivity),
 		zap.Int("error_count", status.ErrorCount),
 		zap.String("last_error", status.LastError))
-	
+
 	// Check if monitoring is unhealthy
 	needsRestart := false
 	reason := ""
-	
+
 	if !status.IsRunning {
 		needsRestart = true
 		reason = "monitoring not running"
@@ -278,14 +278,14 @@ func (d *Daemon) checkAndRestartMonitoring() {
 		needsRestart = true
 		reason = "monitoring in failed state"
 	}
-	
+
 	if needsRestart {
 		d.monitoringRestartCount++
 		d.logger.Warn("Clipboard monitoring needs restart",
 			zap.String("reason", reason),
 			zap.Int("restart_count", d.monitoringRestartCount),
 			zap.String("current_mode", status.Mode))
-		
+
 		// Try to restart monitoring
 		if err := d.clipboard.RestartMonitoring(d.contentCh, d.stopCh); err != nil {
 			d.logger.Error("Failed to restart clipboard monitoring", zap.Error(err))
@@ -301,7 +301,7 @@ func (d *Daemon) checkAndRestartMonitoring() {
 				zap.Duration("time_since_activity", now.Sub(status.LastActivity)))
 		}
 	}
-	
+
 	d.lastMonitoringCheck = now
 }
 
@@ -420,7 +420,7 @@ func Status() (bool, error) {
 // handleIPCRequest processes incoming IPC requests from the CLI.
 func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 	d.logger.Debug("Received IPC request", zap.String("command", req.Command))
-	
+
 	switch req.Command {
 	case "history", "history.list":
 		return d.handleHistoryListRequest(req)
@@ -440,7 +440,7 @@ func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 		return d.handleClipFlushRequest(req)
 	default:
 		return &ipc.Response{
-			Status:  "error", 
+			Status:  "error",
 			Message: fmt.Sprintf("Unknown command: %s", req.Command),
 		}
 	}
@@ -455,12 +455,12 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 	if l, ok := req.Args["limit"].(float64); ok {
 		limit = int64(l)
 	}
-	
+
 	reverse := false
 	if r, ok := req.Args["reverse"].(bool); ok {
 		reverse = r
 	}
-	
+
 	contentType := ""
 	if t, ok := req.Args["type"].(string); ok {
 		contentType = t
@@ -472,14 +472,14 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 		Reverse:     reverse,
 		ContentType: types.ContentType(contentType),
 	}
-	
+
 	// Parse time-based filters
 	if since, ok := req.Args["since"].(string); ok {
 		if sinceTime, err := time.Parse(time.RFC3339, since); err == nil {
 			options.Since = sinceTime
 		}
 	}
-	
+
 	if before, ok := req.Args["before"].(string); ok {
 		if beforeTime, err := time.Parse(time.RFC3339, before); err == nil {
 			options.Before = beforeTime
@@ -510,7 +510,7 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 			zap.Bool("has_created", !content.Created.IsZero()))
 	}
 
-	d.logger.Debug("Retrieved history", 
+	d.logger.Debug("Retrieved history",
 		zap.Int("count", len(contents)),
 		zap.Int64("limit", limit),
 		zap.Bool("reverse", reverse))
@@ -567,7 +567,7 @@ func (d *Daemon) handleHistoryShowRequest(req *ipc.Request) *ipc.Response {
 		}
 	}
 
-	d.logger.Info("Found content for show", 
+	d.logger.Info("Found content for show",
 		zap.String("hash", foundContent.Hash),
 		zap.String("type", string(foundContent.Type)),
 		zap.Int("size", len(foundContent.Data)),
@@ -593,6 +593,15 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 		}
 	}
 
+	var ids []int64
+	if i, ok := req.Args["ids"].([]interface{}); ok {
+	    for _, id := range i {
+	        if idFloat, ok := id.(float64); ok {
+	            ids = append(ids, int64(idFloat))
+	        }
+	    }
+	}
+
 	all := false
 	if a, ok := req.Args["all"].(bool); ok {
 		all = a
@@ -610,7 +619,7 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 		typeFilter = t
 	}
 
-	d.logger.Info("History delete request", 
+	d.logger.Info("History delete request",
 		zap.Strings("hashes", hashes),
 		zap.Bool("all", all),
 		zap.Time("older_than", olderThan),
@@ -652,8 +661,11 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 			if string(content.Type) == typeFilter {
 				shouldDelete = true
 			}
+		}else if len(ids) > 0 {
+				for _, id := range ids {
+					
+				}
 		}
-
 		if shouldDelete {
 			contentsToDelete = append(contentsToDelete, content)
 		}
@@ -677,7 +689,7 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 		}
 	}
 
-	d.logger.Info("Successfully deleted history entries", 
+	d.logger.Info("Successfully deleted history entries",
 		zap.Int("deleted_count", len(contentsToDelete)),
 		zap.Bool("all", all),
 		zap.Strings("deleted_hashes", func() []string {
@@ -724,11 +736,11 @@ func (d *Daemon) handleHistoryStatsRequest(req *ipc.Request) *ipc.Response {
 	for _, content := range allContents {
 		// Count total size
 		totalSize += int64(len(content.Data))
-		
+
 		// Count by type
 		typeStr := string(content.Type)
 		stats["type_counts"].(map[string]int)[typeStr]++
-		
+
 		// Track oldest and newest
 		if oldestTime.IsZero() || content.Created.Before(oldestTime) {
 			oldestTime = content.Created
@@ -758,7 +770,7 @@ func (d *Daemon) handleHistoryStatsRequest(req *ipc.Request) *ipc.Response {
 		}
 	}
 
-	d.logger.Info("Generated history statistics", 
+	d.logger.Info("Generated history statistics",
 		zap.Int("total_entries", len(allContents)),
 		zap.Int64("total_size", totalSize),
 		zap.Any("type_counts", stats["type_counts"]))
@@ -808,7 +820,7 @@ func (d *Daemon) handleClipSetRequest(req *ipc.Request) *ipc.Response {
 		// Parse from map
 		data, _ := contentMap["data"].(string)
 		contentType, _ := contentMap["type"].(string)
-		
+
 		content = &types.ClipboardContent{
 			Type: types.ContentType(contentType),
 			Data: []byte(data),
@@ -908,4 +920,4 @@ func ensureSingleInstance(cfg *config.Config) error {
 	}
 
 	return nil
-} 
+}
