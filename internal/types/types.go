@@ -24,7 +24,7 @@ const (
 
 // ClipboardContent represents a clipboard item
 type ClipboardContent struct {
-	Id          int64         `json:id,omitempty`
+	Id          int64         `json:"id"`
 	Type        ContentType   `json:"type"`
 	Data        []byte        `json:"data"`
 	Created     time.Time     `json:"created"`
