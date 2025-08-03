@@ -1,119 +1,117 @@
 package storage
 
-
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
-
-	"github.com/berrythewa/clipman-daemon/internal/types"
-	"github.com/berrythewa/clipman-daemon/pkg/compression"
-	"github.com/berrythewa/clipman-daemon/pkg/utils"
 
 	"go.etcd.io/bbolt"
 	"go.uber.org/zap"
+
+	"github.com/berrythewa/clipman-daemon/internal/types"
+	"github.com/berrythewa/clipman-daemon/pkg/utils" // For hashing
+	// Add other necessary imports if any
 )
 
-// SaveContent saves a clipboard content item to the database with hash-based deduplication and occurrence tracking
-func (s *BoltStorage) SaveContent(content *types.ClipboardContent) error {
-	now := time.Now()
-	// Generate hash based on content size
-	if len(content.Data) > 1024*1024 { // 1MB threshold
-		content.Hash = utils.HashContentBis(content.Data) // Use faster hash for large content
-	} else {
-		content.Hash = utils.HashContent(content.Data) // Use SHA-256 for normal content
+// AddContent adds or updates a clipboard item.
+// It ensures content has a hash and a unique ID, and updates the ID index.
+func (s *BoltStorage) AddContent(content *types.ClipboardContent) error {
+	if content == nil {
+		return fmt.Errorf("cannot add nil content")
 	}
 
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(clipboardBucket))
-		// Use hash as the key
-		v := b.Get([]byte(content.Hash))
-		if v != nil {
-			// Existing entry: update occurrences
-			var existing types.ClipboardContent
-			if err := json.Unmarshal(v, &existing); err == nil {
-				// Add new occurrence
-				existing.Occurrences = append(existing.Occurrences, now)
-				// Sort occurrences in descending order (newest first)
-				sort.Slice(existing.Occurrences, func(i, j int) bool {
-					return existing.Occurrences[i].After(existing.Occurrences[j])
-				})
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		clipboardB := tx.Bucket([]byte(clipboardBucket))
+		if clipboardB == nil {
+			return fmt.Errorf("clipboard bucket '%s' not found", clipboardBucket)
+		}
+		idIndexB := tx.Bucket([]byte(idIndexBucket))
+		if idIndexB == nil {
+			return fmt.Errorf("id index bucket '%s' not found", idIndexBucket)
+		}
 
-				// Update metadata
-				existing.Created = existing.Occurrences[0] // Most recent occurrence
-
-				s.logger.Debug("Updated content occurrences",
-					zap.String("hash", existing.Hash),
-					zap.Int("occurrence_count", len(existing.Occurrences)),
-					zap.Time("latest", existing.Created))
-
-				encoded, err := json.Marshal(existing)
-				if err != nil {
-					return fmt.Errorf("failed to marshal updated content: %w", err)
-				}
-				return b.Put([]byte(content.Hash), encoded)
+		// --- 1. Ensure content.Id is set and unique ---
+		if content.Id == 0 { // If ID is not set by the caller (common for new entries)
+			// Use BoltDB's NextSequence to generate a unique, monotonically increasing ID
+			nextID, err := clipboardB.NextSequence() // Get next sequence from the clipboard bucket
+			if err != nil {
+				s.logger.Error("Failed to generate next sequence ID for content", zap.Error(err))
+				return fmt.Errorf("failed to generate unique ID: %w", err)
 			}
-		}
-		// New entry
-		id, err := b.NextSequence()
-		if err != nil {
-			return fmt.Errorf("failed to get next sequence ID: %w", err)
+			content.Id = int64(nextID)
+			s.logger.Debug("Generated new ID for content", zap.Int64("id", content.Id))
+		} else {
+			// If an ID is provided, ensure it's not a duplicate.
+			// This check makes `AddContent` idempotent for existing IDs.
+			// If content with this ID already exists, we will retrieve its hash and update.
+			// This check becomes more complex if content.Hash can change for the same ID.
+			// For simplicity, we assume ID->Hash is a fixed mapping once created.
+			idKey := []byte(fmt.Sprintf("%d", content.Id))
+			existingHashBytes := idIndexB.Get(idKey)
+			if existingHashBytes != nil {
+				existingHash := string(existingHashBytes)
+				// Content with this ID already exists. Check if hash matches.
+				// If hash doesn't match, this is a complex case (ID reuse with different content).
+				// For this system, assume ID is tied to a specific hash/content.
+				s.logger.Debug("Content with ID already exists, treating as update",
+					zap.Int64("id", content.Id),
+					zap.String("existing_hash", existingHash))
+			}
+			// If ID is provided and unique, NextSequence is not advanced by this specific put.
+			// It might be better to just rely on NextSequence if you want truly monotonic unique IDs
+			// for *all* additions, even if they have an externally provided ID.
+			// For this current design, `NextSequence` is only called if `content.Id == 0`.
 		}
 
-		content.Created = now
-		content.Occurrences = []time.Time{now}
-		content.Id = int64(id)
-		s.logger.Debug("New content added",
-			zap.Int64("id", content.Id),
-			zap.String("hash", content.Hash),
-			zap.Time("created", content.Created),
-			zap.String("type", string(content.Type)))
 
-		encoded, err := json.Marshal(content)
-		if err != nil {
-			return fmt.Errorf("failed to marshal new content: %w", err)
+		// --- 2. Ensure content.Hash is set ---
+		if content.Hash == "" {
+			// This should ideally be handled before calling AddContent,
+			// but providing a fallback. Choose the appropriate hashing algo.
+			if len(content.Data) > 1024*1024 { // 1MB threshold
+				content.Hash = utils.HashContentBis(content.Data)
+			} else {
+				content.Hash = utils.HashContent(content.Data)
+			}
+			s.logger.Warn("Generated missing hash for content before adding",
+				zap.String("new_hash", content.Hash), zap.String("type", string(content.Type)))
 		}
-		return b.Put([]byte(content.Hash), encoded)
+
+		// --- 3. Manage Occurrences ---
+		if content.Occurrences == nil {
+			content.Occurrences = []time.Time{time.Now()}
+		} else {
+			// Prepend new occurrence to keep newest at Occurrences[0]
+			content.Occurrences = append([]time.Time{time.Now()}, content.Occurrences...)
+		}
+
+		// --- 4. Marshal content for storage ---
+		encoded, marshalErr := json.Marshal(content)
+		if marshalErr != nil {
+			s.logger.Error("Failed to marshal content for storage", zap.String("hash", content.Hash), zap.Error(marshalErr))
+			return fmt.Errorf("failed to marshal content for storage: %w", marshalErr)
+		}
+
+		// --- 5. Store content in primary bucket (hash as key) ---
+		if putErr := clipboardB.Put([]byte(content.Hash), encoded); putErr != nil {
+			return fmt.Errorf("failed to save content to clipboard bucket: %w", putErr)
+		}
+
+		// --- 6. Update ID index (ID -> Hash mapping) ---
+		idKey := []byte(fmt.Sprintf("%d", content.Id))
+		if putErr := idIndexB.Put(idKey, []byte(content.Hash)); putErr != nil {
+			// This is critical. If ID index fails, data becomes unretrievable by ID.
+			return fmt.Errorf("failed to save ID to hash index: %w", putErr)
+		}
+
+		return nil // Transaction successful
 	})
-}
 
-// UpdateContent updates existing content by hash, preserving occurrences
-func (s *BoltStorage) UpdateContent(hash string, newData []byte, newType types.ContentType) error {
-    return s.db.Update(func(tx *bbolt.Tx) error {
-        b := tx.Bucket([]byte(clipboardBucket))
+	if err != nil {
+		s.logger.Error("Failed to add/update content in BoltDB transaction", zap.String("hash", content.Hash), zap.Int64("id", content.Id), zap.Error(err))
+		return fmt.Errorf("failed to add/update content: %w", err)
+	}
 
-        // Get existing content
-        v := b.Get([]byte(hash))
-        if v == nil {
-            return fmt.Errorf("content with hash %s not found", hash)
-        }
-
-        var existing types.ClipboardContent
-        if err := json.Unmarshal(v, &existing); err != nil {
-            return fmt.Errorf("failed to unmarshal existing content: %w", err)
-        }
-
-        // Update the content but preserve metadata
-        existing.Data = newData
-        existing.Type = newType
-        // Generate new hash for the updated content
-        if len(newData) > 1024*1024 {
-            existing.Hash = utils.HashContentBis(newData)
-        } else {
-            existing.Hash = utils.HashContent(newData)
-        }
-
-        // Delete old entry and save with new hash
-        if err := b.Delete([]byte(hash)); err != nil {
-            return err
-        }
-
-        encoded, err := json.Marshal(existing)
-        if err != nil {
-            return fmt.Errorf("failed to marshal updated content: %w", err)
-        }
-
-        return b.Put([]byte(existing.Hash), encoded)
-    })
+	s.logger.Debug("Content successfully added/updated", zap.String("hash", content.Hash), zap.Int64("id", content.Id), zap.String("type", string(content.Type)))
+	return nil
 }

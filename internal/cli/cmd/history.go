@@ -227,7 +227,7 @@ Examples:
 			}
 
 			logger.Info("Deleting history entries",
-				zap.Bool("id", id)
+				zap.Int64s("ids", ids),
 				zap.Bool("all", all),
 				zap.Duration("older", older),
 				zap.String("type_filter", typeFilter),
@@ -253,7 +253,7 @@ Examples:
 	cmd.Flags().StringVarP(&typeFilter, "type", "t", "", "delete entries of specific type")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "skip confirmation prompt")
 	cmd.Flags().Int64SliceVar(&ids, "id", []int64{}, "delete entries by ID (can specify multiple: --id 1,2,3)")
-	cmd.Flags().StringSliceVar(&ids, "hash", []String{}, "delete entries by Hash (can specify multiple hashes seperated by comma ,)")
+	cmd.Flags().StringSliceVar(&hashes,"hash", []string{}, "delete entries by Hash: --hash hash1,hash2,hash3")
 
 	return cmd
 }
@@ -476,12 +476,12 @@ func deleteHistoryEntries(hashes []string, ids []int64, all bool, older time.Dur
 	}
 
 	logger.Info("Sending delete request to daemon",
+		zap.Int64s("ids", ids),
 		zap.Bool("all", all),
 		zap.Duration("older", older),
 		zap.String("type_filter", typeFilter),
-		zap.Strings("hashes", hashes)),
 		zap.Strings("hashes", hashes),
-		zap.Int64s("ids", ids)) ,
+		zap.Strings("hashes", hashes))
 
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 	if err != nil {
