@@ -59,8 +59,18 @@ type IStorage interface {
 	GetContentsByIDs(ids []int64) ([]*types.ClipboardContent, error)
 	GetContentsByHashes(hashes []string) ([]*types.ClipboardContent, error)
 	Query(options QueryOptions) ([]*types.ClipboardContent, error) // New flexible query method
+	
+	// Delete operations
+	DeleteContent(hash string) error
+	DeleteContentsByIDs(ids []int64) (int, error)
+	DeleteContentsByHashes(hashes []string) (int, error)
+	DeleteByTimestamp(options DeleteOptions) (int, error)
+	DeleteAllContent() error
+	
+	// Statistics
+	CountContent() (int, error)
+	
 	Close() error
-	// Add other methods like DeleteContent, Count, etc.
 }
 
 // BoltStorage implements the IStorage interface using BoltDB.

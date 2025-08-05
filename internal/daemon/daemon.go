@@ -29,7 +29,7 @@ type Daemon struct {
 
 	// Components
 	clipboard clipboard.Clipboard
-	storage   *storage.BoltStorage
+	storage   storage.IStorage
 	sync      *p2p.Node
 	ipc       func(*ipc.Request) *ipc.Response
 
@@ -60,17 +60,15 @@ func (d *Daemon) Initialize() error {
 
 	// Initialize storage
 	d.logger.Info("📦 Initializing storage...")
-	storage, err := storage.NewBoltStorage(storage.StorageConfig{
+	storageInstance, err := storage.NewBoltStorage(storage.StorageConfig{
 		DBPath:    d.cfg.Storage.DBPath,
-		MaxSize:   d.cfg.Storage.MaxSize,
 		DeviceID:  d.cfg.DeviceID,
 		Logger:    d.logger,
-		KeepItems: d.cfg.Storage.KeepItems,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
-	d.storage = storage
+	d.storage = storageInstance
 	d.logger.Info("✅ Storage initialized successfully")
 
 	// Initialize clipboard
@@ -176,7 +174,7 @@ func (d *Daemon) Run() error {
 					zap.String("type", string(content.Type)),
 					zap.Int("size", len(content.Data)))
 				// Save content to storage with hash generation
-				if err := d.storage.SaveContent(content); err != nil {
+				if err := d.storage.AddContent(content); err != nil {
 					d.logger.Error("❌ Failed to save clipboard content to storage", zap.Error(err))
 				} else {
 					d.logger.Info("✅ Saved clipboard content to storage",
@@ -424,8 +422,6 @@ func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 	switch req.Command {
 	case "history", "history.list":
 		return d.handleHistoryListRequest(req)
-	case "history.show":
-		return d.handleHistoryShowRequest(req)
 	case "history.delete":
 		return d.handleHistoryDeleteRequest(req)
 	case "history.stats":
@@ -436,8 +432,6 @@ func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 		return d.handleClipSetRequest(req)
 	case "clip.watch":
 		return d.handleClipWatchRequest(req)
-	case "clip.flush":
-		return d.handleClipFlushRequest(req)
 	default:
 		return &ipc.Response{
 			Status:  "error",
@@ -450,7 +444,36 @@ func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 	d.logger.Debug("Processing history list request")
 
-	// Parse request arguments
+	// Check for hash or hashes argument
+	var hashes []string
+	if h, ok := req.Args["hash"].(string); ok && h != "" {
+		hashes = append(hashes, h)
+	}
+	if hs, ok := req.Args["hashes"].([]interface{}); ok {
+		for _, hash := range hs {
+			if hashStr, ok := hash.(string); ok {
+				hashes = append(hashes, hashStr)
+			}
+		}
+	}
+
+	if len(hashes) > 0 {
+		// Use storage GetContentsByHashes for hash-based lookup
+		contents, err := d.storage.GetContentsByHashes(hashes)
+		if err != nil {
+			d.logger.Error("Failed to get contents by hashes", zap.Error(err))
+			return &ipc.Response{
+				Status:  "error",
+				Message: fmt.Sprintf("Failed to get content(s): %v", err),
+			}
+		}
+		return &ipc.Response{
+			Status: "ok",
+			Data:   contents,
+		}
+	}
+
+	// Parse request arguments for normal list
 	limit := int64(10) // default
 	if l, ok := req.Args["limit"].(float64); ok {
 		limit = int64(l)
@@ -461,22 +484,22 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 		reverse = r
 	}
 
-	contentType := ""
+	contentType := types.ContentType("")
 	if t, ok := req.Args["type"].(string); ok {
-		contentType = t
+		contentType = types.ContentType(t)
 	}
 
-	// Build history options
-	options := config.HistoryOptions{
+	// Build query options
+	options := storage.QueryOptions{
 		Limit:       limit,
 		Reverse:     reverse,
-		ContentType: types.ContentType(contentType),
+		ContentType: contentType,
 	}
 
 	// Parse time-based filters
 	if since, ok := req.Args["since"].(string); ok {
 		if sinceTime, err := time.Parse(time.RFC3339, since); err == nil {
-			options.Since = sinceTime
+			options.After = sinceTime
 		}
 	}
 
@@ -486,96 +509,19 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 		}
 	}
 
-	// Use daemon's existing storage instance - NO new DB connections!
-	contents, err := d.storage.GetHistory(options)
+	// Use storage Query method
+	contents, err := d.storage.Query(options)
 	if err != nil {
-		d.logger.Error("Failed to get history from storage", zap.Error(err))
+		d.logger.Error("Failed to query history from storage", zap.Error(err))
 		return &ipc.Response{
 			Status:  "error",
 			Message: fmt.Sprintf("Failed to get history: %v", err),
 		}
 	}
 
-	// Debug log each content entry
-	for i, content := range contents {
-		d.logger.Debug("History entry details",
-			zap.Int("index", i),
-			zap.String("type", string(content.Type)),
-			zap.Int("data_size", len(content.Data)),
-			zap.String("hash", content.Hash),
-			zap.Time("created", content.Created),
-			zap.Bool("has_data", content.Data != nil),
-			zap.Bool("has_type", content.Type != ""),
-			zap.Bool("has_hash", content.Hash != ""),
-			zap.Bool("has_created", !content.Created.IsZero()))
-	}
-
-	d.logger.Debug("Retrieved history",
-		zap.Int("count", len(contents)),
-		zap.Int64("limit", limit),
-		zap.Bool("reverse", reverse))
-
 	return &ipc.Response{
 		Status: "ok",
 		Data:   contents,
-	}
-}
-
-// handleHistoryShowRequest handles showing specific history entry
-func (d *Daemon) handleHistoryShowRequest(req *ipc.Request) *ipc.Response {
-	d.logger.Debug("Processing history show request", zap.Any("args", req.Args))
-
-	// Parse request arguments
-	hash := ""
-	if h, ok := req.Args["hash"].(string); ok {
-		hash = h
-	}
-
-	if hash == "" {
-		return &ipc.Response{
-			Status:  "error",
-			Message: "No hash provided",
-		}
-	}
-
-	d.logger.Info("History show request", zap.String("hash", hash))
-
-	// Get all content to find the specific hash
-	allContents, err := d.storage.GetAllContents()
-	if err != nil {
-		d.logger.Error("Failed to get all contents for show", zap.Error(err))
-		return &ipc.Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Failed to get contents: %v", err),
-		}
-	}
-
-	// Find the content with the specified hash
-	var foundContent *types.ClipboardContent
-	for _, content := range allContents {
-		if content.Hash == hash {
-			foundContent = content
-			break
-		}
-	}
-
-	if foundContent == nil {
-		d.logger.Warn("Content not found", zap.String("hash", hash))
-		return &ipc.Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Content with hash %s not found", hash),
-		}
-	}
-
-	d.logger.Info("Found content for show",
-		zap.String("hash", foundContent.Hash),
-		zap.String("type", string(foundContent.Type)),
-		zap.Int("size", len(foundContent.Data)),
-		zap.Time("created", foundContent.Created))
-
-	return &ipc.Response{
-		Status: "ok",
-		Data:   foundContent,
 	}
 }
 
@@ -595,11 +541,11 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 
 	var ids []int64
 	if i, ok := req.Args["ids"].([]interface{}); ok {
-	    for _, id := range i {
-	        if idFloat, ok := id.(float64); ok {
-	            ids = append(ids, int64(idFloat))
-	        }
-	    }
+		for _, id := range i {
+			if idFloat, ok := id.(float64); ok {
+				ids = append(ids, int64(idFloat))
+			}
+		}
 	}
 
 	all := false
@@ -614,73 +560,49 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 		}
 	}
 
-	typeFilter := ""
+	typeFilter := types.ContentType("")
 	if t, ok := req.Args["type"].(string); ok {
-		typeFilter = t
+		typeFilter = types.ContentType(t)
 	}
 
 	d.logger.Info("History delete request",
 		zap.Strings("hashes", hashes),
+		zap.Int64s("ids", ids),
 		zap.Bool("all", all),
 		zap.Time("older_than", olderThan),
-		zap.String("type", typeFilter))
+		zap.String("type", string(typeFilter)))
 
-	// Get all content to filter
-	allContents, err := d.storage.GetAllContents()
-	if err != nil {
-		d.logger.Error("Failed to get all contents for deletion", zap.Error(err))
+	var deletedCount int
+	var err error
+
+	// Handle different deletion scenarios
+	if all {
+		// Delete all content
+		err = d.storage.DeleteAllContent()
+		if err == nil {
+			// Get count before deletion for response
+			deletedCount, _ = d.storage.CountContent()
+		}
+	} else if len(hashes) > 0 {
+		// Delete by hashes
+		deletedCount, err = d.storage.DeleteContentsByHashes(hashes)
+	} else if len(ids) > 0 {
+		// Delete by IDs
+		deletedCount, err = d.storage.DeleteContentsByIDs(ids)
+	} else if !olderThan.IsZero() || typeFilter != "" {
+		// Delete by timestamp and/or type filter
+		options := storage.DeleteOptions{
+			Before:      olderThan,
+			ContentType: typeFilter,
+		}
+		deletedCount, err = d.storage.DeleteByTimestamp(options)
+	} else {
 		return &ipc.Response{
 			Status:  "error",
-			Message: fmt.Sprintf("Failed to get contents: %v", err),
+			Message: "No valid deletion criteria provided",
 		}
 	}
 
-	// Filter contents to delete
-	var contentsToDelete []*types.ClipboardContent
-	for _, content := range allContents {
-		shouldDelete := false
-
-		// Check if this content should be deleted based on criteria
-		if all {
-			shouldDelete = true
-		} else if len(hashes) > 0 {
-			// Check if this content's hash matches any of the requested hashes
-			for _, hash := range hashes {
-				if content.Hash == hash {
-					shouldDelete = true
-					break
-				}
-			}
-		} else if !olderThan.IsZero() {
-			// Check if content is older than the specified time
-			if content.Created.Before(olderThan) {
-				shouldDelete = true
-			}
-		} else if typeFilter != "" {
-			// Check if content type matches the filter
-			if string(content.Type) == typeFilter {
-				shouldDelete = true
-			}
-		}else if len(ids) > 0 {
-				for _, id := range ids {
-					
-				}
-		}
-		if shouldDelete {
-			contentsToDelete = append(contentsToDelete, content)
-		}
-	}
-
-	if len(contentsToDelete) == 0 {
-		d.logger.Info("No content found matching deletion criteria")
-		return &ipc.Response{
-			Status: "ok",
-			Data:   0,
-		}
-	}
-
-	// Delete the filtered contents
-	err = d.storage.DeleteContents(contentsToDelete)
 	if err != nil {
 		d.logger.Error("Failed to delete contents", zap.Error(err))
 		return &ipc.Response{
@@ -690,19 +612,14 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 	}
 
 	d.logger.Info("Successfully deleted history entries",
-		zap.Int("deleted_count", len(contentsToDelete)),
+		zap.Int("deleted_count", deletedCount),
 		zap.Bool("all", all),
-		zap.Strings("deleted_hashes", func() []string {
-			var hashes []string
-			for _, content := range contentsToDelete {
-				hashes = append(hashes, content.Hash)
-			}
-			return hashes
-		}()))
+		zap.Strings("deleted_hashes", hashes),
+		zap.Int64s("deleted_ids", ids))
 
 	return &ipc.Response{
 		Status: "ok",
-		Data:   len(contentsToDelete),
+		Data:   deletedCount,
 	}
 }
 
@@ -710,8 +627,20 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 func (d *Daemon) handleHistoryStatsRequest(req *ipc.Request) *ipc.Response {
 	d.logger.Debug("Processing history stats request")
 
-	// Get all content for statistics
-	allContents, err := d.storage.GetAllContents()
+	// Get total count first
+	totalCount, err := d.storage.CountContent()
+	if err != nil {
+		d.logger.Error("Failed to count contents for stats", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to count contents: %v", err),
+		}
+	}
+
+	// Get all content for detailed statistics using Query
+	allContents, err := d.storage.Query(storage.QueryOptions{
+		Limit: 0, // No limit to get all content
+	})
 	if err != nil {
 		d.logger.Error("Failed to get all contents for stats", zap.Error(err))
 		return &ipc.Response{
@@ -722,7 +651,7 @@ func (d *Daemon) handleHistoryStatsRequest(req *ipc.Request) *ipc.Response {
 
 	// Calculate statistics
 	stats := map[string]interface{}{
-		"total_entries": len(allContents),
+		"total_entries": totalCount,
 		"total_size":    0,
 		"type_counts":   make(map[string]int),
 		"oldest_entry":  nil,
@@ -771,7 +700,7 @@ func (d *Daemon) handleHistoryStatsRequest(req *ipc.Request) *ipc.Response {
 	}
 
 	d.logger.Info("Generated history statistics",
-		zap.Int("total_entries", len(allContents)),
+		zap.Int("total_entries", totalCount),
 		zap.Int64("total_size", totalSize),
 		zap.Any("type_counts", stats["type_counts"]))
 
@@ -856,25 +785,6 @@ func (d *Daemon) handleClipWatchRequest(req *ipc.Request) *ipc.Response {
 	}
 }
 
-// handleClipFlushRequest handles flushing clipboard history
-func (d *Daemon) handleClipFlushRequest(req *ipc.Request) *ipc.Response {
-	d.logger.Debug("Processing clip flush request")
-
-	// Use daemon's storage instance to flush
-	err := d.storage.FlushCache()
-	if err != nil {
-		d.logger.Error("Failed to flush clipboard history", zap.Error(err))
-		return &ipc.Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Failed to flush history: %v", err),
-		}
-	}
-
-	return &ipc.Response{
-		Status:  "ok",
-		Message: "Clipboard history flushed successfully",
-	}
-}
 
 // RunForeground runs the daemon in the foreground
 func RunForeground() error {
