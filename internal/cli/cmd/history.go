@@ -70,12 +70,12 @@ func historyListCmd() *cobra.Command {
 		Long: `List clipboard history entries with various filtering and formatting options.
 
 Examples:
-  clipman history list                    # Show last 10 entries
-  clipman history list -n/--limit 20      # Show last 20 entries
-  clipman history list --since 1h         # Show entries from last hour
-  clipman history list --type text        # Show only text entries
-  clipman history list --compact          # Compact single-line format,
-	clipman history list --json/-j 					# Display content in JSON format`,
+	clipman history list                    # Show last 10 entries
+	clipman history list -n/--limit 20      # Show last 20 entries
+	clipman history list --since 1h         # Show entries from last hour
+	clipman history list --type text        # Show only text entries
+	clipman history list --compact          # Compact single-line format,
+	clipman history list --json/-j 			# Display content in JSON format`,
 
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Build formatting options
@@ -195,16 +195,17 @@ func historyDeleteCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "Delete [hash...][id...]",
+		Use:   "delete [hash...][id...]",
 		Short: "Delete history entries",
 		Long: `Delete history entries by hash,id or using filters.
 
 Examples:
-	clipman history delete 34              # Delete using id
-  clipman history delete abc123def       # Delete specific entry
+	clipman history delete --id 34              # Delete using id
+  clipman history delete --hash abc123def       # Delete specific entry
   clipman history delete --all           # Delete all history
   clipman history delete --older 7d      # Delete entries older than 7 days
-  clipman history delete --type image    # Delete all image entries`,
+  clipman history delete --type image    # Delete all image entries
+  clipman history delete --json/-j       # Delete all image entries`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger, err := GetLogger()
 			if err != nil {
@@ -457,10 +458,10 @@ func deleteHistoryEntries(hashes []string, ids []int64, all bool, older time.Dur
 	}
 
 	if len(ids) > 0 {
-    req.Args["hashes"] = hashes
+    req.Args["ids"] = ids
 	}
 	if len(hashes) > 0 {
-    req.Args["ids"] = ids
+    req.Args["hashes"] = hashes
 	}
 	if all {
 		req.Args["all"] = true
@@ -471,9 +472,6 @@ func deleteHistoryEntries(hashes []string, ids []int64, all bool, older time.Dur
 	if typeFilter != "" {
 		req.Args["type"] = typeFilter
 	}
-	if len(hashes) > 0 {
-		req.Args["hashes"] = hashes
-	}
 
 	logger.Info("Sending delete request to daemon",
 		zap.Int64s("ids", ids),
@@ -482,7 +480,7 @@ func deleteHistoryEntries(hashes []string, ids []int64, all bool, older time.Dur
 		zap.String("type_filter", typeFilter),
 		zap.Strings("hashes", hashes),
 		zap.Strings("hashes", hashes))
-
+	fmt.Println("req: ", req)
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 	if err != nil {
 		logger.Error("Failed to connect to daemon", zap.Error(err))
@@ -550,6 +548,7 @@ func parseClipboardContentList(data interface{}) ([]*types.ClipboardContent, err
 	}
 
 	// Handle JSON unmarshaling
+	fmt.Println("data: ", data)
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		logger.Error("Failed to marshal data", zap.Error(err))
