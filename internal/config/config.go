@@ -100,11 +100,73 @@ type LogConfig struct {
 	Format            string `json:"format" yaml:"format"` // "json" or "text"
 }
 
-// StorageConfig holds storage-related configuration
+// StorageConfig holds storage-related configuration for any backend
 type StorageConfig struct {
-	DBPath    string `json:"db_path" yaml:"db_path"`
-	MaxSize   int64  `json:"max_size" yaml:"max_size"`
-	KeepItems int    `json:"keep_items" yaml:"keep_items"`
+	// Storage backend selection
+	Type             string `json:"type" yaml:"type"`                           // "boltdb", "sqlite", "postgres", "mongodb", "memory"
+	ConnectionString string `json:"connection_string" yaml:"connection_string"` // For SQL/NoSQL databases
+	
+	// File-based storage (BoltDB, SQLite)
+	DBPath string `json:"db_path" yaml:"db_path"`
+	
+	// Legacy BoltDB options (maintained for backward compatibility)
+	MaxSize   int64 `json:"max_size" yaml:"max_size"`     // Cache size limit (BoltDB legacy)
+	KeepItems int   `json:"keep_items" yaml:"keep_items"` // Items to keep on flush (BoltDB legacy)
+	
+	// Advanced storage options (all backends)
+	Advanced AdvancedStorageConfig `json:"advanced" yaml:"advanced"`
+	
+	// Pool and connection settings (SQL/NoSQL)
+	PoolConfig PoolConfig `json:"pool" yaml:"pool"`
+	
+	// Security settings
+	Security SecurityConfig `json:"security" yaml:"security"`
+}
+
+// AdvancedStorageConfig holds advanced storage settings
+type AdvancedStorageConfig struct {
+	// Performance tuning
+	BatchSize          int   `json:"batch_size" yaml:"batch_size"`                     // Batch operations size
+	CacheSize          int64 `json:"cache_size" yaml:"cache_size"`                     // In-memory cache size
+	Compression        bool  `json:"compression" yaml:"compression"`                   // Enable compression
+	CompressionLevel   int   `json:"compression_level" yaml:"compression_level"`       // 1-9, higher = better compression
+	
+	// Data retention policies
+	MaxItems           int64 `json:"max_items" yaml:"max_items"`                       // Maximum items to store (0 = unlimited)
+	MaxAge             int64 `json:"max_age_hours" yaml:"max_age_hours"`               // Auto-delete items older than N hours (0 = never)
+	CleanupInterval    int64 `json:"cleanup_interval_hours" yaml:"cleanup_interval_hours"` // How often to run cleanup (default: 24)
+	
+	// Query optimization
+	Indexes            []string `json:"indexes" yaml:"indexes"`                       // Fields to create indexes on
+	QueryTimeout       int      `json:"query_timeout_seconds" yaml:"query_timeout_seconds"` // Query timeout (default: 30)
+	
+	// Backup and recovery
+	AutoBackup         bool   `json:"auto_backup" yaml:"auto_backup"`                 // Enable automatic backups
+	BackupInterval     int64  `json:"backup_interval_hours" yaml:"backup_interval_hours"` // Hours between backups
+	BackupRetention    int    `json:"backup_retention_days" yaml:"backup_retention_days"` // Days to keep backups
+	BackupPath         string `json:"backup_path" yaml:"backup_path"`                 // Backup directory
+	
+	// Experimental features
+	EnableStatistics   bool `json:"enable_statistics" yaml:"enable_statistics"`     // Track usage statistics
+	EnableFullTextSearch bool `json:"enable_fts" yaml:"enable_fts"`                 // Full-text search capabilities
+}
+
+// PoolConfig holds database connection pool settings
+type PoolConfig struct {
+	MaxOpenConnections int   `json:"max_open_connections" yaml:"max_open_connections"` // Max open connections
+	MaxIdleConnections int   `json:"max_idle_connections" yaml:"max_idle_connections"` // Max idle connections
+	ConnMaxLifetime    int64 `json:"conn_max_lifetime_minutes" yaml:"conn_max_lifetime_minutes"` // Minutes
+	ConnMaxIdleTime    int64 `json:"conn_max_idle_minutes" yaml:"conn_max_idle_minutes"` // Minutes
+}
+
+// SecurityConfig holds storage security settings
+type SecurityConfig struct {
+	Encryption         bool   `json:"encryption" yaml:"encryption"`                   // Enable at-rest encryption
+	EncryptionKey      string `json:"encryption_key" yaml:"encryption_key"`           // Encryption key (use env var!)
+	TLSEnabled         bool   `json:"tls_enabled" yaml:"tls_enabled"`                 // Enable TLS for network connections
+	TLSCertPath        string `json:"tls_cert_path" yaml:"tls_cert_path"`             // TLS certificate path
+	TLSKeyPath         string `json:"tls_key_path" yaml:"tls_key_path"`               // TLS key path
+	TLSSkipVerify      bool   `json:"tls_skip_verify" yaml:"tls_skip_verify"`         // Skip TLS verification (dangerous!)
 }
 
 // HistoryOptions defines options for retrieving clipboard history
@@ -207,7 +269,25 @@ func GetConfigPaths() (*ConfigPaths, error) {
 
 // DefaultConfig returns a new Config with default values
 func DefaultConfig() *Config {
-	paths, _ := GetConfigPaths() // Ignore error, will use fallback paths
+	paths, err := GetConfigPaths()
+	if err != nil {
+		// Fallback paths if we can't get proper ones
+		homeDir, _ := os.UserHomeDir()
+		if homeDir == "" {
+			homeDir = "/tmp"
+		}
+		paths = &ConfigPaths{
+			BaseDir:      filepath.Join(homeDir, ".config", "clipman"),
+			ConfigsDir:   filepath.Join(homeDir, ".config", "clipman", "configs"),
+			ActiveDir:    filepath.Join(homeDir, ".config", "clipman", "active"),
+			CacheDir:     filepath.Join(homeDir, ".config", "clipman", "cache"),
+			ActiveConfig: filepath.Join(homeDir, ".config", "clipman", "active", "config.yaml"),
+			DataDir:      filepath.Join(homeDir, ".clipman"),
+			DBFile:       filepath.Join(homeDir, ".clipman", "clipman.db"),
+			LogDir:       filepath.Join(homeDir, ".clipman", "logs"),
+			TempDir:      filepath.Join(homeDir, ".clipman", "temp"),
+		}
+	}
 
 	// Get hostname
 	hostname, err := os.Hostname()
@@ -235,11 +315,7 @@ func DefaultConfig() *Config {
 			Limit:   0, // No limit
 			Reverse: true,
 		},
-		Storage: StorageConfig{
-			DBPath:    paths.DBFile,
-			MaxSize:   platformDefaults.MaxContentSize,
-			KeepItems: 50,
-		},
+		Storage: DefaultStorageConfig(paths),
 		Server: ServerConfig{
 			Port: 8080,
 			Host: "localhost",
@@ -326,6 +402,11 @@ func Load(configPath string) (*Config, error) {
 
 	// Override with environment variables
 	overrideFromEnv(&cfg)
+
+	// Set default storage type if missing
+	if cfg.Storage.Type == "" {
+		cfg.Storage.Type = "boltdb"
+	}
 
 	return &cfg, nil
 }
@@ -458,6 +539,149 @@ func overrideFromEnv(config *Config) {
 			config.PollingInterval = ms
 		}
 	}
+	
+	// Storage settings
+	if val := os.Getenv("CLIPMAN_STORAGE_TYPE"); val != "" {
+		config.Storage.Type = val
+	}
+	if val := os.Getenv("CLIPMAN_DB_PATH"); val != "" {
+		config.Storage.DBPath = val
+	}
+	if val := os.Getenv("CLIPMAN_CONNECTION_STRING"); val != "" {
+		config.Storage.ConnectionString = val
+	}
+	if val := os.Getenv("CLIPMAN_STORAGE_MAX_SIZE"); val != "" {
+		if size, err := strconv.ParseInt(val, 10, 64); err == nil {
+			config.Storage.MaxSize = size
+		}
+	}
+	if val := os.Getenv("CLIPMAN_STORAGE_KEEP_ITEMS"); val != "" {
+		if items, err := strconv.Atoi(val); err == nil {
+			config.Storage.KeepItems = items
+		}
+	}
+	
+	// Advanced storage settings
+	if val := os.Getenv("CLIPMAN_STORAGE_COMPRESSION"); val != "" {
+		config.Storage.Advanced.Compression = val == "true"
+	}
+	if val := os.Getenv("CLIPMAN_STORAGE_MAX_ITEMS"); val != "" {
+		if items, err := strconv.ParseInt(val, 10, 64); err == nil {
+			config.Storage.Advanced.MaxItems = items
+		}
+	}
+	if val := os.Getenv("CLIPMAN_STORAGE_MAX_AGE_HOURS"); val != "" {
+		if hours, err := strconv.ParseInt(val, 10, 64); err == nil {
+			config.Storage.Advanced.MaxAge = hours
+		}
+	}
+	if val := os.Getenv("CLIPMAN_STORAGE_AUTO_BACKUP"); val != "" {
+		config.Storage.Advanced.AutoBackup = val == "true"
+	}
+	if val := os.Getenv("CLIPMAN_STORAGE_BACKUP_PATH"); val != "" {
+		config.Storage.Advanced.BackupPath = val
+	}
+	
+	// Security settings
+	if val := os.Getenv("CLIPMAN_STORAGE_ENCRYPTION"); val != "" {
+		config.Storage.Security.Encryption = val == "true"
+	}
+	if val := os.Getenv("CLIPMAN_STORAGE_ENCRYPTION_KEY"); val != "" {
+		config.Storage.Security.EncryptionKey = val
+	}
+	if val := os.Getenv("CLIPMAN_STORAGE_TLS"); val != "" {
+		config.Storage.Security.TLSEnabled = val == "true"
+	}
+}
+
+// DefaultStorageConfig creates a default storage configuration
+func DefaultStorageConfig(paths *ConfigPaths) StorageConfig {
+	platformDefaults := GetPlatformDefaults()
+	
+	return StorageConfig{
+		// Default to BoltDB for backward compatibility
+		Type:   "boltdb",
+		DBPath: paths.DBFile,
+		
+		// Legacy BoltDB settings (maintained for backward compatibility)
+		MaxSize:   platformDefaults.MaxContentSize,
+		KeepItems: 50,
+		
+		// Advanced settings with sensible defaults
+		Advanced: AdvancedStorageConfig{
+			// Performance tuning
+			BatchSize:        100,  // Batch operations
+			CacheSize:        platformDefaults.CacheSize,
+			Compression:      true, // Enable compression by default
+			CompressionLevel: 6,    // Balanced compression
+			
+			// Data retention (disabled by default)
+			MaxItems:        0,  // Unlimited items
+			MaxAge:          0,  // Never auto-delete
+			CleanupInterval: 24, // Daily cleanup check
+			
+			// Query optimization
+			Indexes:      []string{"type", "device_id", "created"}, // Common indexes
+			QueryTimeout: 30, // 30 second timeout
+			
+			// Backup (disabled by default)
+			AutoBackup:      false,
+			BackupInterval:  24 * 7, // Weekly backups
+			BackupRetention: 30,     // Keep 30 days
+			BackupPath:      filepath.Join(paths.DataDir, "backups"),
+			
+			// Experimental features (disabled by default)
+			EnableStatistics:    true,  // Enable statistics
+			EnableFullTextSearch: false, // Disable FTS by default
+		},
+		
+		// Connection pool (for SQL/NoSQL databases)
+		PoolConfig: PoolConfig{
+			MaxOpenConnections: 10,  // Conservative
+			MaxIdleConnections: 2,   // Keep few idle
+			ConnMaxLifetime:    60,  // 60 minutes
+			ConnMaxIdleTime:    10,  // 10 minutes idle
+		},
+		
+		// Security (minimal by default)
+		Security: SecurityConfig{
+			Encryption:    false, // Disabled by default
+			TLSEnabled:    false, // Disabled by default
+			TLSSkipVerify: false, // Safe default
+		},
+	}
+}
+
+// CreateStorageFromConfig creates a storage instance from config using the factory pattern
+func CreateStorageFromConfig(cfg *Config, logger interface{}) (interface{}, error) {
+	// This would typically be imported from storage package, but to avoid circular imports,
+	// we'll return the configuration that the caller can use with the storage factory
+	return &StorageFactoryParams{
+		Type:             cfg.Storage.Type,
+		DBPath:           cfg.Storage.DBPath,
+		ConnectionString: cfg.Storage.ConnectionString,
+		DeviceID:         cfg.DeviceID,
+		Logger:           logger,
+		Advanced:         cfg.Storage.Advanced,
+		Pool:             cfg.Storage.PoolConfig,
+		Security:         cfg.Storage.Security,
+		LegacyMaxSize:    cfg.Storage.MaxSize,
+		LegacyKeepItems:  cfg.Storage.KeepItems,
+	}, nil
+}
+
+// StorageFactoryParams holds all parameters needed for the storage factory
+type StorageFactoryParams struct {
+	Type             string
+	DBPath           string
+	ConnectionString string
+	DeviceID         string
+	Logger           interface{}
+	Advanced         AdvancedStorageConfig
+	Pool             PoolConfig
+	Security         SecurityConfig
+	LegacyMaxSize    int64
+	LegacyKeepItems  int
 }
 
 // GetPaths returns the system paths for this config

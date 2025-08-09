@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"strconv"
+	// "encoding/json"
 
 	"github.com/berrythewa/clipman-daemon/internal/clipboard"
 	"github.com/berrythewa/clipman-daemon/internal/config"
@@ -54,17 +56,77 @@ func NewDaemon(cfg *config.Config, logger *zap.Logger) *Daemon {
 	}
 }
 
+// convertStorageOptions converts config storage options to storage factory options
+func (d *Daemon) convertStorageOptions() map[string]interface{} {
+	options := make(map[string]interface{})
+	
+	// Legacy BoltDB options
+	options["max_size"] = d.cfg.Storage.MaxSize
+	options["keep_items"] = d.cfg.Storage.KeepItems
+	
+	// Advanced options
+	options["batch_size"] = d.cfg.Storage.Advanced.BatchSize
+	options["cache_size"] = d.cfg.Storage.Advanced.CacheSize
+	options["compression"] = d.cfg.Storage.Advanced.Compression
+	options["compression_level"] = d.cfg.Storage.Advanced.CompressionLevel
+	options["max_items"] = d.cfg.Storage.Advanced.MaxItems
+	options["max_age_hours"] = d.cfg.Storage.Advanced.MaxAge
+	options["cleanup_interval_hours"] = d.cfg.Storage.Advanced.CleanupInterval
+	options["indexes"] = d.cfg.Storage.Advanced.Indexes
+	options["query_timeout_seconds"] = d.cfg.Storage.Advanced.QueryTimeout
+	options["auto_backup"] = d.cfg.Storage.Advanced.AutoBackup
+	options["backup_interval_hours"] = d.cfg.Storage.Advanced.BackupInterval
+	options["backup_retention_days"] = d.cfg.Storage.Advanced.BackupRetention
+	options["backup_path"] = d.cfg.Storage.Advanced.BackupPath
+	options["enable_statistics"] = d.cfg.Storage.Advanced.EnableStatistics
+	options["enable_fts"] = d.cfg.Storage.Advanced.EnableFullTextSearch
+	
+	// Pool configuration
+	options["max_open_connections"] = d.cfg.Storage.PoolConfig.MaxOpenConnections
+	options["max_idle_connections"] = d.cfg.Storage.PoolConfig.MaxIdleConnections
+	options["conn_max_lifetime_minutes"] = d.cfg.Storage.PoolConfig.ConnMaxLifetime
+	options["conn_max_idle_minutes"] = d.cfg.Storage.PoolConfig.ConnMaxIdleTime
+	
+	// Security configuration
+	options["encryption"] = d.cfg.Storage.Security.Encryption
+	options["encryption_key"] = d.cfg.Storage.Security.EncryptionKey
+	options["tls_enabled"] = d.cfg.Storage.Security.TLSEnabled
+	options["tls_cert_path"] = d.cfg.Storage.Security.TLSCertPath
+	options["tls_key_path"] = d.cfg.Storage.Security.TLSKeyPath
+	options["tls_skip_verify"] = d.cfg.Storage.Security.TLSSkipVerify
+	
+	return options
+}
+
 // Initialize sets up all daemon components
 func (d *Daemon) Initialize() error {
 	d.logger.Info("🔧 Initializing daemon components")
 
-	// Initialize storage
-	d.logger.Info("📦 Initializing storage...")
-	storageInstance, err := storage.NewBoltStorage(storage.StorageConfig{
-		DBPath:    d.cfg.Storage.DBPath,
-		DeviceID:  d.cfg.DeviceID,
-		Logger:    d.logger,
-	})
+	// Initialize storage using factory pattern
+	d.logger.Info("📦 Initializing storage...", 
+		zap.String("type", d.cfg.Storage.Type),
+		zap.String("db_path", d.cfg.Storage.DBPath))
+	
+	// Create storage factory
+	storageFactory := storage.NewStorageFactory(d.logger)
+	
+	// Convert config to factory config
+	storageType, err := storage.ParseStorageType(d.cfg.Storage.Type)
+	if err != nil {
+		return fmt.Errorf("invalid storage type '%s': %w", d.cfg.Storage.Type, err)
+	}
+	
+	factoryConfig := storage.FactoryConfig{
+		Type:             storageType,
+		DBPath:           d.cfg.Storage.DBPath,
+		ConnectionString: d.cfg.Storage.ConnectionString,
+		DeviceID:         d.cfg.DeviceID,
+		Logger:           d.logger,
+		Options:          d.convertStorageOptions(),
+	}
+	
+	// Create storage instance through factory
+	storageInstance, err := storageFactory.CreateStorage(factoryConfig)
 	if err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
@@ -424,6 +486,8 @@ func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 		return d.handleHistoryListRequest(req)
 	case "history.delete":
 		return d.handleHistoryDeleteRequest(req)
+	case "history.show":
+		return d.handleHistoryShowRequest(req)
 	case "history.stats":
 		return d.handleHistoryStatsRequest(req)
 	case "clip.get":
@@ -437,6 +501,189 @@ func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 			Status:  "error",
 			Message: fmt.Sprintf("Unknown command: %s", req.Command),
 		}
+	}
+}
+
+// handleHistoryShowRequest handles showing specific history entries by IDs or hashes
+func (d *Daemon) handleHistoryShowRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing history show request", zap.Any("args", req.Args))
+
+	// Check for single ID argument
+	if singleID, ok := req.Args["id"]; ok {
+		return d.handleShowByIDs([]interface{}{singleID})
+	}
+
+	d.logger.Warn("History show request missing valid arguments")
+	return &ipc.Response{
+		Status:  "error",
+		Message: "Missing required arguments. Use 'ids', 'hashes', 'id', or 'hash'",
+	}
+}
+
+// handleShowByIDs handles showing content by IDs
+func (d *Daemon) handleShowByIDs(rawIDs interface{}) *ipc.Response {
+	// Parse IDs from various possible formats
+	var ids []int64
+
+	switch v := rawIDs.(type) {
+	case []interface{}:
+		// Array of mixed types (most common from JSON)
+		for i, rawID := range v {
+			id, err := d.parseID(rawID, i)
+			if err != nil {
+				return &ipc.Response{
+					Status:  "error",
+					Message: err.Error(),
+				}
+			}
+			ids = append(ids, id)
+		}
+	case []int64:
+		// Already in correct format
+		ids = v
+	case []int:
+		// Convert int to int64
+		for _, id := range v {
+			ids = append(ids, int64(id))
+		}
+	case []float64:
+		// Convert float64 to int64 (common from JSON)
+		for i, id := range v {
+			if id != float64(int64(id)) {
+				return &ipc.Response{
+					Status:  "error",
+					Message: fmt.Sprintf("ID at index %d has fractional part: %v", i, id),
+				}
+			}
+			ids = append(ids, int64(id))
+		}
+	default:
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Invalid type for 'ids' argument: expected array, got %T", rawIDs),
+		}
+	}
+
+	if len(ids) == 0 {
+		d.logger.Debug("No valid IDs provided in request")
+		return &ipc.Response{
+			Status: "ok",
+			Data:   []*types.ClipboardContent{},
+		}
+	}
+
+	// Retrieve content from storage
+	contents, err := d.storage.GetContentsByIDs(ids)
+	if err != nil {
+		d.logger.Error("Failed to get contents by IDs", zap.Int64s("ids", ids), zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to retrieve contents: %v", err),
+		}
+	}
+
+	d.logger.Debug("Successfully retrieved contents by IDs", 
+		zap.Int("count", len(contents)), 
+		zap.Int64s("requested_ids", ids))
+
+	return &ipc.Response{
+		Status: "ok",
+		Data:   contents,
+	}
+}
+
+// handleShowByHashes handles showing content by hashes
+func (d *Daemon) handleShowByHashes(rawHashes interface{}) *ipc.Response {
+	// Parse hashes from various possible formats
+	var hashes []string
+
+	switch v := rawHashes.(type) {
+	case []interface{}:
+		// Array of mixed types (most common from JSON)
+		for i, rawHash := range v {
+			if hash, ok := rawHash.(string); ok && hash != "" {
+				hashes = append(hashes, hash)
+			} else {
+				return &ipc.Response{
+					Status:  "error",
+					Message: fmt.Sprintf("Invalid hash at index %d: expected non-empty string, got %T", i, rawHash),
+				}
+			}
+		}
+	case []string:
+		// Already in correct format
+		hashes = v
+	default:
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Invalid type for 'hashes' argument: expected array, got %T", rawHashes),
+		}
+	}
+
+	if len(hashes) == 0 {
+		d.logger.Debug("No valid hashes provided in request")
+		return &ipc.Response{
+			Status: "ok",
+			Data:   []*types.ClipboardContent{},
+		}
+	}
+
+	// Retrieve content from storage
+	contents, err := d.storage.GetContentsByHashes(hashes)
+	if err != nil {
+		d.logger.Error("Failed to get contents by hashes", zap.Strings("hashes", hashes), zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to retrieve contents: %v", err),
+		}
+	}
+
+	d.logger.Debug("Successfully retrieved contents by hashes", 
+		zap.Int("count", len(contents)), 
+		zap.Strings("requested_hashes", hashes))
+
+	return &ipc.Response{
+		Status: "ok",
+		Data:   contents,
+	}
+}
+
+// parseID parses a single ID from various possible types
+func (d *Daemon) parseID(rawID interface{}, index int) (int64, error) {
+	switch v := rawID.(type) {
+	case float64:
+		// Most common for JSON numbers
+		if v != float64(int64(v)) {
+			return 0, fmt.Errorf("ID at index %d has fractional part: %v", index, v)
+		}
+		id := int64(v)
+		if id <= 0 {
+			return 0, fmt.Errorf("ID at index %d must be positive, got %d", index, id)
+		}
+		return id, nil
+	case int:
+		id := int64(v)
+		if id <= 0 {
+			return 0, fmt.Errorf("ID at index %d must be positive, got %d", index, id)
+		}
+		return id, nil
+	case int64:
+		if v <= 0 {
+			return 0, fmt.Errorf("ID at index %d must be positive, got %d", index, v)
+		}
+		return v, nil
+	case string:
+		// Allow string IDs like "123"
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("ID at index %d is not a valid integer: %s", index, v)
+		}
+		if id <= 0 {
+			return 0, fmt.Errorf("ID at index %d must be positive, got %d", index, id)
+		}
+		return id, nil
+	default:
+		return 0, fmt.Errorf("ID at index %d has unsupported type: %T (value: %v)", index, v, v)
 	}
 }
 
@@ -492,8 +739,15 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 	// Build query options
 	options := storage.QueryOptions{
 		Limit:       limit,
-		Reverse:     reverse,
 		ContentType: contentType,
+		SortBy:      storage.SortByCreated,
+	}
+	
+	// Set sort order based on reverse flag
+	if reverse {
+		options.SortOrder = storage.SortAsc
+	} else {
+		options.SortOrder = storage.SortDesc
 	}
 
 	// Parse time-based filters

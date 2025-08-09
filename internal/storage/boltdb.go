@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv" // Needed for converting int64 to string for ID key
+	"strings"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -35,42 +37,54 @@ type StorageConfig struct {
 	DeviceID string
 }
 
-// QueryOptions defines criteria for querying clipboard content.
-// This replaces CLI-specific options and makes the API more flexible.
-type QueryOptions struct {
-	Before      time.Time   // Retrieve content created before this time
-	After       time.Time   // Retrieve content created after this time
-	ContentType types.ContentType // Filter by content type (e.g., "text", "image")
-	MinSize     int64       // Minimum data size in bytes
-	MaxSize     int64       // Maximum data size in bytes
-	Limit       int64       // Maximum number of results to return
-	Reverse     bool        // Sort by oldest first (default is newest first)
-	// Add specific ID or Hash filters here if they become complex,
-	// but for single/multiple specific IDs/hashes, dedicated methods are often clearer.
-}
+// Note: QueryOptions is now defined in query.go with enhanced capabilities
 
 // IStorage defines the interface for clipboard content storage operations.
 // This makes the storage layer testable and interchangeable.
 type IStorage interface {
 	AddContent(content *types.ClipboardContent) error
-	GetContent(hash string) (*types.ClipboardContent, error) // Renamed from getContentByHash
+	GetContent(id int64) (*types.ClipboardContent, error) // Renamed from getContentByHash
 	GetLatestContent() (*types.ClipboardContent, error)
 	GetContentSince(since time.Time) ([]*types.ClipboardContent, error) // Deprecated by Query(options)? Or keep for simple cases.
 	GetContentsByIDs(ids []int64) ([]*types.ClipboardContent, error)
 	GetContentsByHashes(hashes []string) ([]*types.ClipboardContent, error)
 	Query(options QueryOptions) ([]*types.ClipboardContent, error) // New flexible query method
-	
+
 	// Delete operations
 	DeleteContent(hash string) error
 	DeleteContentsByIDs(ids []int64) (int, error)
 	DeleteContentsByHashes(hashes []string) (int, error)
 	DeleteByTimestamp(options DeleteOptions) (int, error)
 	DeleteAllContent() error
-	
+
 	// Statistics
 	CountContent() (int, error)
-	
+
 	Close() error
+}
+
+// IAggregateStorage extends IStorage with aggregation capabilities
+// Storages that support native aggregation can implement this interface
+type IAggregateStorage interface {
+	IStorage
+	Aggregate(options QueryOptions) ([]AggregateResult, error)
+}
+
+// ITransactionalStorage extends IStorage with transaction support
+// For batch operations and consistency guarantees
+type ITransactionalStorage interface {
+	IStorage
+	BeginTransaction() (Transaction, error)
+}
+
+// Transaction represents a storage transaction
+type Transaction interface {
+	AddContent(content *types.ClipboardContent) error
+	DeleteContent(hash string) error
+	DeleteContentsByIDs(ids []int64) (int, error)
+	Query(options QueryOptions) ([]*types.ClipboardContent, error)
+	Commit() error
+	Rollback() error
 }
 
 // BoltStorage implements the IStorage interface using BoltDB.
@@ -122,42 +136,83 @@ func (s *BoltStorage) Close() error {
 // IStorage Implementations
 // ============================================================================
 
-// GetContent retrieves single clipboard content by its hash.
-func (s *BoltStorage) GetContent(hash string) (*types.ClipboardContent, error) {
-	var contentBytes []byte
+// GetContent retrieves a single clipboard content item solely by its ID.
+func (s *BoltStorage) GetContent(id int64) (*types.ClipboardContent, error) {
+	if id == 0 {
+		return nil, fmt.Errorf("ID cannot be zero for GetContent")
+	}
+
+	var contentBytes []byte // Will hold the raw JSON bytes of the content
+	var retrievedHash string // The hash that will be retrieved from the ID index
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(clipboardBucket))
-		if b == nil {
-			s.logger.Error("Clipboard bucket not found in DB view for GetContent", zap.String("bucket", clipboardBucket))
+		// Ensure clipboard bucket exists
+		clipboardB := tx.Bucket([]byte(clipboardBucket))
+		if clipboardB == nil {
+			s.logger.Error("Clipboard bucket not found in DB view for GetContent by ID", zap.String("bucket", clipboardBucket))
 			return fmt.Errorf("clipboard bucket '%s' not found", clipboardBucket)
 		}
 
-		v := b.Get([]byte(hash))
-		if v == nil {
-			s.logger.Debug("Content not found for hash", zap.String("hash", hash))
-			return fmt.Errorf("content with hash '%s' not found", hash)
+		// Ensure ID index bucket exists for lookup
+		idIndexB := tx.Bucket([]byte(idIndexBucket))
+		if idIndexB == nil {
+			s.logger.Error("ID index bucket not found for GetContent by ID", zap.String("bucket", idIndexBucket))
+			return fmt.Errorf("ID index bucket '%s' not found, cannot retrieve content by ID", idIndexBucket)
 		}
 
+		// --- 1. Look up the hash using the provided ID from the ID index ---
+		idKey := []byte(strconv.FormatInt(id, 10)) // Convert int64 ID to []byte key for BoltDB
+		hashFromIndex := idIndexB.Get(idKey)
+		if hashFromIndex == nil {
+			s.logger.Debug("Hash not found for ID in index", zap.Int64("id", id))
+			return fmt.Errorf("content with ID '%d' not found in index", id)
+		}
+		retrievedHash = string(hashFromIndex) // Convert byte slice to string for use as key
+
+		// --- 2. Retrieve the actual content from the main clipboard bucket using the retrieved hash ---
+		v := clipboardB.Get([]byte(retrievedHash)) // Use the hash (converted back to []byte) as the key
+		if v == nil {
+			s.logger.Error("Content hash found in index but actual content not in main bucket",
+				zap.Int64("id", id), zap.String("retrieved_hash", retrievedHash),
+				zap.String("details", "data inconsistency: index points to non-existent content"))
+			return fmt.Errorf("content with ID '%d' (hash '%s') not found in main storage (data inconsistency)", id, retrievedHash)
+		}
+
+		// Make a defensive copy of the value from the database
 		contentBytes = make([]byte, len(v))
 		copy(contentBytes, v)
-		return nil
+		return nil // Success within the transaction
 	})
 
+	// Handle errors that occurred during the BoltDB View transaction.
 	if err != nil {
-		s.logger.Error("Database error during GetContent", zap.String("hash", hash), zap.Error(err))
+		s.logger.Error("Database error during GetContent lookup by ID", zap.Int64("id", id), zap.Error(err))
 		return nil, err
 	}
 
+	// --- 3. Unmarshal the retrieved bytes into the ClipboardContent struct ---
 	var content types.ClipboardContent
 	if unmarshalErr := json.Unmarshal(contentBytes, &content); unmarshalErr != nil {
-		s.logger.Error("Failed to unmarshal content from DB", zap.String("hash", hash), zap.Error(unmarshalErr))
-		return nil, fmt.Errorf("failed to unmarshal content for hash '%s': %w", hash, unmarshalErr)
+		s.logger.Error("Failed to unmarshal content from DB after ID lookup",
+			zap.Int64("id", id), zap.String("hash_used", retrievedHash), zap.Error(unmarshalErr))
+		return nil, fmt.Errorf("failed to unmarshal content for ID '%d' (hash '%s'): %w", id, retrievedHash, unmarshalErr)
 	}
 
-	s.logger.Debug("Successfully retrieved raw content by hash", zap.String("hash", hash))
+	// --- 4. Optional: Validate that the ID in the unmarshaled content matches the requested ID ---
+	// This is a crucial consistency check to ensure the ID index isn't corrupted or pointing to the wrong data.
+	if content.Id != id {
+		s.logger.Error("Mismatched ID after retrieving content by ID",
+			zap.Int64("id_requested", id),
+			zap.Int64("id_in_content", content.Id),
+			zap.String("hash_used", retrievedHash),
+			zap.String("details", "Content ID does not match requested ID - potential data inconsistency"))
+		return nil, fmt.Errorf("data inconsistency: content retrieved by ID '%d' has actual ID '%d'", id, content.Id)
+	}
+
+	// --- 5. Process and return the content ---
+	s.logger.Debug("Successfully retrieved content by ID", zap.Int64("id", content.Id), zap.String("hash", content.Hash))
 	return s.processContent(&content), nil
 }
-
 
 // GetLatestContent retrieves the most recent clipboard content (by occurrence).
 // Iterates all entries, which can be inefficient for very large databases.
@@ -311,6 +366,19 @@ func (s *BoltStorage) GetContentsByHashes(hashes []string) ([]*types.ClipboardCo
 // Query retrieves clipboard history based on the provided options.
 // This is the most flexible method for filtering and sorting.
 func (s *BoltStorage) Query(options QueryOptions) ([]*types.ClipboardContent, error) {
+	return s.executeEnhancedQuery(options)
+}
+
+// executeEnhancedQuery performs the enhanced query with all filtering capabilities
+func (s *BoltStorage) executeEnhancedQuery(options QueryOptions) ([]*types.ClipboardContent, error) {
+	// Handle specific ID/Hash queries first (more efficient)
+	if len(options.IDs) > 0 {
+		return s.GetContentsByIDs(options.IDs)
+	}
+	if len(options.Hashes) > 0 {
+		return s.GetContentsByHashes(options.Hashes)
+	}
+
 	var allContents []*types.ClipboardContent
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
@@ -339,52 +407,292 @@ func (s *BoltStorage) Query(options QueryOptions) ([]*types.ClipboardContent, er
 		return nil, fmt.Errorf("failed to query history: %w", err)
 	}
 
-	// Apply filtering and processing in memory
-	var filteredAndProcessedContents []*types.ClipboardContent
-	for _, content := range allContents {
-		// Apply time filters based on content.Created or latest occurrence
-		// (Using Created for consistency with filter options)
-		if !options.After.IsZero() && content.Created.Before(options.After) {
-			continue
-		}
-		if !options.Before.IsZero() && content.Created.After(options.Before) {
-			continue
-		}
+	// Apply all filters
+	filteredContents := s.applyFilters(allContents, options)
+	
+	// Sort the results
+	sortedContents := s.applySorting(filteredContents, options)
+	
+	// Apply pagination
+	paginatedContents := s.applyPagination(sortedContents, options)
 
-		// Apply content type filter
-		if options.ContentType != "" && content.Type != options.ContentType {
-			continue
-		}
+	s.logger.Debug("Query completed",
+		zap.Int("total_found", len(allContents)),
+		zap.Int("after_filtering", len(filteredContents)),
+		zap.Int("final_count", len(paginatedContents)),
+		zap.Any("options", options))
 
-		// Apply size filters (based on raw data size for efficiency, before decompression)
-		contentSize := int64(len(content.Data))
-		if options.MinSize > 0 && contentSize < options.MinSize {
-			continue
-		}
-		if options.MaxSize > 0 && contentSize > options.MaxSize {
-			continue
-		}
+	return paginatedContents, nil
+}
 
-		// Process content (decompress/decode)
-		processedContent := s.processContent(content)
-		if processedContent != nil {
-			filteredAndProcessedContents = append(filteredAndProcessedContents, processedContent)
+// applyFilters applies all filtering options to the content list
+func (s *BoltStorage) applyFilters(contents []*types.ClipboardContent, options QueryOptions) []*types.ClipboardContent {
+	var filtered []*types.ClipboardContent
+
+	for _, content := range contents {
+		if s.passesAllFilters(content, options) {
+			// Process content (decompress/decode)
+			processedContent := s.processContent(content)
+			if processedContent != nil {
+				filtered = append(filtered, processedContent)
+			}
 		}
 	}
 
-	// Sort by creation time
-	sort.Slice(filteredAndProcessedContents, func(i, j int) bool {
-		if options.Reverse { // Oldest first
-			return filteredAndProcessedContents[i].Created.Before(filteredAndProcessedContents[j].Created)
+	return filtered
+}
+
+// passesAllFilters checks if content passes all specified filters
+func (s *BoltStorage) passesAllFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	// Time filters
+	if !s.passesTimeFilters(content, options) {
+		return false
+	}
+
+	// Content type filters
+	if !s.passesContentTypeFilters(content, options) {
+		return false
+	}
+
+	// Size filters
+	if !s.passesSizeFilters(content, options) {
+		return false
+	}
+
+	// Device ID filters
+	if !s.passesDeviceFilters(content, options) {
+		return false
+	}
+
+	// Text search filters
+	if !s.passesTextFilters(content, options) {
+		return false
+	}
+
+	// Occurrence filters
+	if !s.passesOccurrenceFilters(content, options) {
+		return false
+	}
+
+	// Compression filters
+	if !s.passesCompressionFilters(content, options) {
+		return false
+	}
+
+	return true
+}
+
+// passesTimeFilters checks time-based filters
+func (s *BoltStorage) passesTimeFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	// Handle "Since" as alias for "After"
+	after := options.After
+	if options.Since.After(after) {
+		after = options.Since
+	}
+
+	if !after.IsZero() && content.Created.Before(after) {
+		return false
+	}
+	if !options.Before.IsZero() && content.Created.After(options.Before) {
+		return false
+	}
+
+	return true
+}
+
+// passesContentTypeFilters checks content type filters
+func (s *BoltStorage) passesContentTypeFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	// Single content type filter
+	if options.ContentType != "" && content.Type != options.ContentType {
+		return false
+	}
+
+	// Multiple content types filter
+	if len(options.ContentTypes) > 0 {
+		found := false
+		for _, ct := range options.ContentTypes {
+			if content.Type == ct {
+				found = true
+				break
+			}
 		}
-		return filteredAndProcessedContents[i].Created.After(filteredAndProcessedContents[j].Created) // Newest first (default)
+		if !found {
+			return false
+		}
+	}
+
+	return true
+}
+
+// passesSizeFilters checks size-based filters
+func (s *BoltStorage) passesSizeFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	contentSize := int64(len(content.Data))
+	if options.MinSize > 0 && contentSize < options.MinSize {
+		return false
+	}
+	if options.MaxSize > 0 && contentSize > options.MaxSize {
+		return false
+	}
+	return true
+}
+
+// passesDeviceFilters checks device ID filters
+func (s *BoltStorage) passesDeviceFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	if len(options.DeviceIDs) > 0 {
+		found := false
+		for _, deviceID := range options.DeviceIDs {
+			if content.DeviceID == deviceID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// passesTextFilters checks text search filters
+func (s *BoltStorage) passesTextFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	if options.Contains != "" {
+		text := string(content.Data)
+		if !options.CaseSensitive {
+			text = strings.ToLower(text)
+			search := strings.ToLower(options.Contains)
+			if !strings.Contains(text, search) {
+				return false
+			}
+		} else {
+			if !strings.Contains(text, options.Contains) {
+				return false
+			}
+		}
+	}
+
+	// TODO: Add regex support when needed
+	if options.Regex != "" {
+		// For now, log that regex is not implemented
+		s.logger.Debug("Regex filtering not yet implemented", zap.String("pattern", options.Regex))
+	}
+
+	return true
+}
+
+// passesOccurrenceFilters checks occurrence-based filters
+func (s *BoltStorage) passesOccurrenceFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	occurrenceCount := len(content.Occurrences)
+
+	if options.HasOccurrences != nil {
+		hasOcc := occurrenceCount > 0
+		if *options.HasOccurrences != hasOcc {
+			return false
+		}
+	}
+
+	if options.MinOccurrences > 0 && occurrenceCount < options.MinOccurrences {
+		return false
+	}
+
+	if options.MaxOccurrences > 0 && occurrenceCount > options.MaxOccurrences {
+		return false
+	}
+
+	return true
+}
+
+// passesCompressionFilters checks compression status filters
+func (s *BoltStorage) passesCompressionFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	if options.CompressedOnly != nil {
+		if *options.CompressedOnly != content.Compressed {
+			return false
+		}
+	}
+	return true
+}
+
+// applySorting sorts the content based on the specified options
+func (s *BoltStorage) applySorting(contents []*types.ClipboardContent, options QueryOptions) []*types.ClipboardContent {
+	if len(contents) <= 1 {
+		return contents
+	}
+
+	sort.Slice(contents, func(i, j int) bool {
+		return s.compareContent(contents[i], contents[j], options)
 	})
 
-	// Apply limit
-	if options.Limit > 0 && int64(len(filteredAndProcessedContents)) > options.Limit {
-		filteredAndProcessedContents = filteredAndProcessedContents[:options.Limit]
+	return contents
+}
+
+// compareContent compares two content items based on sorting options
+func (s *BoltStorage) compareContent(a, b *types.ClipboardContent, options QueryOptions) bool {
+	var result bool
+
+	switch options.SortBy {
+	case SortByCreated, "":
+		result = a.Created.After(b.Created) // Default: newest first
+
+	case SortByLastSeen:
+		// Find latest occurrence for each
+		latestA := a.Created
+		for _, occ := range a.Occurrences {
+			if occ.After(latestA) {
+				latestA = occ
+			}
+		}
+
+		latestB := b.Created
+		for _, occ := range b.Occurrences {
+			if occ.After(latestB) {
+				latestB = occ
+			}
+		}
+
+		result = latestA.After(latestB)
+
+	case SortBySize:
+		result = len(a.Data) > len(b.Data) // Larger first
+
+	case SortByType:
+		result = string(a.Type) < string(b.Type) // Alphabetical
+
+	case SortById:
+		result = a.Id > b.Id // Higher ID first
+
+	case SortByOccurrence:
+		result = len(a.Occurrences) > len(b.Occurrences) // More occurrences first
+
+	default:
+		result = a.Created.After(b.Created) // Fallback to creation time
 	}
 
-	s.logger.Debug("Query completed filtering and processing", zap.Int("total_found", len(allContents)), zap.Int("filtered_count", len(filteredAndProcessedContents)), zap.Any("options", options))
-	return filteredAndProcessedContents, nil
+	// Apply sort order
+	if options.SortOrder == SortAsc {
+		result = !result
+	}
+
+	return result
+}
+
+// applyPagination applies limit and offset to the content list
+func (s *BoltStorage) applyPagination(contents []*types.ClipboardContent, options QueryOptions) []*types.ClipboardContent {
+	if len(contents) == 0 {
+		return contents
+	}
+
+	// Apply offset
+	start := int(options.Offset)
+	if start >= len(contents) {
+		return []*types.ClipboardContent{}
+	}
+	if start > 0 {
+		contents = contents[start:]
+	}
+
+	// Apply limit
+	if options.Limit > 0 && int64(len(contents)) > options.Limit {
+		contents = contents[:options.Limit]
+	}
+
+	return contents
 }

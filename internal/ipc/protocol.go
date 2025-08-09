@@ -11,8 +11,10 @@ type Response struct {
 	Status  string      `json:"status"` // "ok" or "error"
 	Message string      `json:"message,omitempty"` // Human-readable message or error
 	Data    interface{} `json:"data,omitempty"`    // Command-specific data (history, etc.)
+	Error  string      `json:"error,omitempty"` // More specific error message
 }
+
 
 // Example usage:
 // req := &Request{Command: "history", Args: map[string]interface{}{ "limit": 10 }}
-// resp := &Response{Status: "ok", Data: historySlice} 
+// resp := &Response{Status: "ok", Data: historySlice}

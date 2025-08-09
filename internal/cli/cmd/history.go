@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"os"
 	"time"
-
+	"strconv"
+	
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
@@ -127,21 +128,26 @@ func historyShowCmd() *cobra.Command {
 		raw      bool
 		noColors bool
 		noIcons  bool
+		useJSON  bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "show <hash>",
+		Use:   "show [id]",
 		Short: "Show specific history entry",
-		Long: `Show a specific history entry by its hash.
+		Long: `Show a specific history entry by its int64 id.
 
 Examples:
-  clipman history show abc123def        # Show entry with hash abc123def
-  clipman history show abc123def --raw  # Show raw content only`,
+  clipman history show [id]  # Show entry with id
+  clipman history show [id] --raw  # Show entry with id`,
+
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			hash := args[0]
+			if len(args) == 0 {
+				return fmt.Errorf("specify entry to show by hash/ID")
+			}
 
-			entry, err := getHistoryEntry(hash)
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			entry, err := getHistoryEntry(id)
 			if err != nil {
 				return err
 			}
@@ -179,6 +185,7 @@ Examples:
 	cmd.Flags().BoolVar(&raw, "raw", false, "output raw content without metadata")
 	cmd.Flags().BoolVar(&noColors, "no-colors", false, "disable colored output")
 	cmd.Flags().BoolVar(&noIcons, "no-icons", false, "disable icons in output")
+	cmd.Flags().BoolVarP(&useJSON, "json","j", false, "Output history as JSON")
 
 	return cmd
 }
@@ -406,18 +413,18 @@ func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter
 }
 
 // getHistoryEntry retrieves a specific history entry by hash via IPC
-func getHistoryEntry(hash string) (*types.ClipboardContent, error) {
+func getHistoryEntry(id int64) (*types.ClipboardContent, error) {
 	logger, err := GetLogger()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get logger: %w", err)
 	}
 
-	logger.Info("Retrieving history entry", zap.String("hash", hash))
+	logger.Info("Retrieving history entry", zap.Int64("id", id))
 
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, &ipc.Request{
 		Command: "history.show",
 		Args: map[string]interface{}{
-			"hash": hash,
+			"id": id,
 		},
 	})
 	if err != nil {
@@ -430,19 +437,20 @@ func getHistoryEntry(hash string) (*types.ClipboardContent, error) {
 		return nil, fmt.Errorf("daemon error: %s", resp.Message)
 	}
 
-	// Parse single entry
-	entry, err := parseClipboardContent(resp.Data)
+	// Parse the entry list (daemon returns an array even for single entries)
+	entries, err := parseClipboardContentList(resp.Data)
 	if err != nil {
 		logger.Error("Failed to parse entry", zap.Error(err))
 		return nil, fmt.Errorf("failed to parse entry: %w", err)
 	}
 
-	logger.Info("Successfully retrieved history entry",
-		zap.String("hash", hash),
-		zap.String("type", string(entry.Type)),
-		zap.Int("size", len(entry.Data)))
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no entry found with ID %d", id)
+	}
 
-	return entry, nil
+	logger.Info("Successfully retrieved history entry", zap.Int64("id", id))
+
+	return entries[0], nil
 }
 
 // deleteHistoryEntries deletes history entries via IPC
@@ -480,7 +488,7 @@ func deleteHistoryEntries(hashes []string, ids []int64, all bool, older time.Dur
 		zap.String("type_filter", typeFilter),
 		zap.Strings("hashes", hashes),
 		zap.Strings("hashes", hashes))
-	fmt.Println("req: ", req)
+
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
 	if err != nil {
 		logger.Error("Failed to connect to daemon", zap.Error(err))
