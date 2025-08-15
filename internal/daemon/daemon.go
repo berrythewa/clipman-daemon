@@ -31,7 +31,7 @@ type Daemon struct {
 
 	// Components
 	clipboard clipboard.Clipboard
-	storage   storage.IStorage
+	storage   storage.Storage
 	sync      *p2p.Node
 	ipc       func(*ipc.Request) *ipc.Response
 
@@ -56,82 +56,29 @@ func NewDaemon(cfg *config.Config, logger *zap.Logger) *Daemon {
 	}
 }
 
-// convertStorageOptions converts config storage options to storage factory options
-func (d *Daemon) convertStorageOptions() map[string]interface{} {
-	options := make(map[string]interface{})
-	
-	// Legacy BoltDB options
-	options["max_size"] = d.cfg.Storage.MaxSize
-	options["keep_items"] = d.cfg.Storage.KeepItems
-	
-	// Advanced options
-	options["batch_size"] = d.cfg.Storage.Advanced.BatchSize
-	options["cache_size"] = d.cfg.Storage.Advanced.CacheSize
-	options["compression"] = d.cfg.Storage.Advanced.Compression
-	options["compression_level"] = d.cfg.Storage.Advanced.CompressionLevel
-	options["max_items"] = d.cfg.Storage.Advanced.MaxItems
-	options["max_age_hours"] = d.cfg.Storage.Advanced.MaxAge
-	options["cleanup_interval_hours"] = d.cfg.Storage.Advanced.CleanupInterval
-	options["indexes"] = d.cfg.Storage.Advanced.Indexes
-	options["query_timeout_seconds"] = d.cfg.Storage.Advanced.QueryTimeout
-	options["auto_backup"] = d.cfg.Storage.Advanced.AutoBackup
-	options["backup_interval_hours"] = d.cfg.Storage.Advanced.BackupInterval
-	options["backup_retention_days"] = d.cfg.Storage.Advanced.BackupRetention
-	options["backup_path"] = d.cfg.Storage.Advanced.BackupPath
-	options["enable_statistics"] = d.cfg.Storage.Advanced.EnableStatistics
-	options["enable_fts"] = d.cfg.Storage.Advanced.EnableFullTextSearch
-	
-	// Pool configuration
-	options["max_open_connections"] = d.cfg.Storage.PoolConfig.MaxOpenConnections
-	options["max_idle_connections"] = d.cfg.Storage.PoolConfig.MaxIdleConnections
-	options["conn_max_lifetime_minutes"] = d.cfg.Storage.PoolConfig.ConnMaxLifetime
-	options["conn_max_idle_minutes"] = d.cfg.Storage.PoolConfig.ConnMaxIdleTime
-	
-	// Security configuration
-	options["encryption"] = d.cfg.Storage.Security.Encryption
-	options["encryption_key"] = d.cfg.Storage.Security.EncryptionKey
-	options["tls_enabled"] = d.cfg.Storage.Security.TLSEnabled
-	options["tls_cert_path"] = d.cfg.Storage.Security.TLSCertPath
-	options["tls_key_path"] = d.cfg.Storage.Security.TLSKeyPath
-	options["tls_skip_verify"] = d.cfg.Storage.Security.TLSSkipVerify
-	
-	return options
-}
 
 // Initialize sets up all daemon components
 func (d *Daemon) Initialize() error {
 	d.logger.Info("🔧 Initializing daemon components")
 
-	// Initialize storage using factory pattern
-	d.logger.Info("📦 Initializing storage...", 
-		zap.String("type", d.cfg.Storage.Type),
+	// Initialize BoltDB storage directly (simplified for MVP)
+	d.logger.Info("📦 Initializing BoltDB storage...", 
 		zap.String("db_path", d.cfg.Storage.DBPath))
 	
-	// Create storage factory
-	storageFactory := storage.NewStorageFactory(d.logger)
-	
-	// Convert config to factory config
-	storageType, err := storage.ParseStorageType(d.cfg.Storage.Type)
-	if err != nil {
-		return fmt.Errorf("invalid storage type '%s': %w", d.cfg.Storage.Type, err)
+	// Create storage configuration
+	storageConfig := storage.StorageConfig{
+		DBPath:   d.cfg.Storage.DBPath,
+		Logger:   d.logger,
+		DeviceID: d.cfg.DeviceID,
 	}
 	
-	factoryConfig := storage.FactoryConfig{
-		Type:             storageType,
-		DBPath:           d.cfg.Storage.DBPath,
-		ConnectionString: d.cfg.Storage.ConnectionString,
-		DeviceID:         d.cfg.DeviceID,
-		Logger:           d.logger,
-		Options:          d.convertStorageOptions(),
-	}
-	
-	// Create storage instance through factory
-	storageInstance, err := storageFactory.CreateStorage(factoryConfig)
+	// Create storage instance directly
+	storageInstance, err := storage.NewBoltStorage(storageConfig)
 	if err != nil {
-		return fmt.Errorf("failed to initialize storage: %w", err)
+		return fmt.Errorf("failed to initialize BoltDB storage: %w", err)
 	}
 	d.storage = storageInstance
-	d.logger.Info("✅ Storage initialized successfully")
+	d.logger.Info("✅ BoltDB storage initialized successfully")
 
 	// Initialize clipboard
 	d.logger.Info("📋 Initializing clipboard...")
@@ -572,8 +519,10 @@ func (d *Daemon) handleShowByIDs(rawIDs interface{}) *ipc.Response {
 		}
 	}
 
-	// Retrieve content from storage
-	contents, err := d.storage.GetContentsByIDs(ids)
+	// Use Query method with ID filter for better abstraction
+	contents, err := d.storage.Query(storage.QueryOptions{
+		IDs: ids,
+	})
 	if err != nil {
 		d.logger.Error("Failed to get contents by IDs", zap.Int64s("ids", ids), zap.Error(err))
 		return &ipc.Response{
@@ -582,7 +531,7 @@ func (d *Daemon) handleShowByIDs(rawIDs interface{}) *ipc.Response {
 		}
 	}
 
-	d.logger.Debug("Successfully retrieved contents by IDs", 
+	d.logger.Debug("Successfully retrieved contents by IDs using Query", 
 		zap.Int("count", len(contents)), 
 		zap.Int64s("requested_ids", ids))
 
@@ -628,8 +577,10 @@ func (d *Daemon) handleShowByHashes(rawHashes interface{}) *ipc.Response {
 		}
 	}
 
-	// Retrieve content from storage
-	contents, err := d.storage.GetContentsByHashes(hashes)
+	// Use Query method with hash filter for better abstraction
+	contents, err := d.storage.Query(storage.QueryOptions{
+		Hashes: hashes,
+	})
 	if err != nil {
 		d.logger.Error("Failed to get contents by hashes", zap.Strings("hashes", hashes), zap.Error(err))
 		return &ipc.Response{
@@ -638,7 +589,7 @@ func (d *Daemon) handleShowByHashes(rawHashes interface{}) *ipc.Response {
 		}
 	}
 
-	d.logger.Debug("Successfully retrieved contents by hashes", 
+	d.logger.Debug("Successfully retrieved contents by hashes using Query", 
 		zap.Int("count", len(contents)), 
 		zap.Strings("requested_hashes", hashes))
 
@@ -705,10 +656,12 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 	}
 
 	if len(hashes) > 0 {
-		// Use storage GetContentsByHashes for hash-based lookup
-		contents, err := d.storage.GetContentsByHashes(hashes)
+		// Use Query method with hash filter for better abstraction
+		contents, err := d.storage.Query(storage.QueryOptions{
+			Hashes: hashes,
+		})
 		if err != nil {
-			d.logger.Error("Failed to get contents by hashes", zap.Error(err))
+			d.logger.Error("Failed to get contents by hashes using Query", zap.Error(err))
 			return &ipc.Response{
 				Status:  "error",
 				Message: fmt.Sprintf("Failed to get content(s): %v", err),
@@ -829,27 +782,34 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 	var deletedCount int
 	var err error
 
-	// Handle different deletion scenarios
+	// Handle different deletion scenarios using unified Delete method
 	if all {
-		// Delete all content
+		// Delete all content - still use explicit method for safety
 		err = d.storage.DeleteAllContent()
 		if err == nil {
 			// Get count before deletion for response
 			deletedCount, _ = d.storage.CountContent()
 		}
-	} else if len(hashes) > 0 {
-		// Delete by hashes
-		deletedCount, err = d.storage.DeleteContentsByHashes(hashes)
-	} else if len(ids) > 0 {
-		// Delete by IDs
-		deletedCount, err = d.storage.DeleteContentsByIDs(ids)
-	} else if !olderThan.IsZero() || typeFilter != "" {
-		// Delete by timestamp and/or type filter
-		options := storage.DeleteOptions{
-			Before:      olderThan,
-			ContentType: typeFilter,
+	} else if len(hashes) > 0 || len(ids) > 0 || !olderThan.IsZero() || typeFilter != "" {
+		// Use unified query-based deletion for all other cases
+		queryOptions := storage.QueryOptions{}
+		
+		// Add filters based on provided criteria
+		if len(hashes) > 0 {
+			queryOptions.Hashes = hashes
 		}
-		deletedCount, err = d.storage.DeleteByTimestamp(options)
+		if len(ids) > 0 {
+			queryOptions.IDs = ids
+		}
+		if !olderThan.IsZero() {
+			queryOptions.Before = olderThan
+		}
+		if typeFilter != "" {
+			queryOptions.ContentType = typeFilter
+		}
+		
+		// Execute unified deletion
+		deletedCount, err = d.storage.Delete(queryOptions)
 	} else {
 		return &ipc.Response{
 			Status:  "error",
@@ -881,82 +841,82 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 func (d *Daemon) handleHistoryStatsRequest(req *ipc.Request) *ipc.Response {
 	d.logger.Debug("Processing history stats request")
 
-	// Get total count first
-	totalCount, err := d.storage.CountContent()
+	// Use the comprehensive GetStats method from our storage implementation
+	storageStats, err := d.storage.GetStats()
 	if err != nil {
-		d.logger.Error("Failed to count contents for stats", zap.Error(err))
+		d.logger.Error("Failed to get storage statistics", zap.Error(err))
 		return &ipc.Response{
 			Status:  "error",
-			Message: fmt.Sprintf("Failed to count contents: %v", err),
+			Message: fmt.Sprintf("Failed to get statistics: %v", err),
 		}
 	}
 
-	// Get all content for detailed statistics using Query
-	allContents, err := d.storage.Query(storage.QueryOptions{
-		Limit: 0, // No limit to get all content
-	})
-	if err != nil {
-		d.logger.Error("Failed to get all contents for stats", zap.Error(err))
-		return &ipc.Response{
-			Status:  "error",
-			Message: fmt.Sprintf("Failed to get contents: %v", err),
-		}
-	}
-
-	// Calculate statistics
+	// Convert to the format expected by the CLI
 	stats := map[string]interface{}{
-		"total_entries": totalCount,
-		"total_size":    0,
-		"type_counts":   make(map[string]int),
-		"oldest_entry":  nil,
-		"newest_entry":  nil,
+		"total_entries":    storageStats.TotalItems,
+		"total_size":       storageStats.TotalSize,
+		"average_size":     storageStats.AverageSize,
+		"compressed_items": storageStats.CompressedItems,
+		"compression_ratio": storageStats.CompressionRatio,
+		"type_counts":      make(map[string]interface{}),
+		"device_counts":    make(map[string]interface{}),
+		"oldest_entry":     nil,
+		"newest_entry":     nil,
 	}
 
-	var totalSize int64
-	var oldestTime, newestTime time.Time
-	var oldestContent, newestContent *types.ClipboardContent
-
-	for _, content := range allContents {
-		// Count total size
-		totalSize += int64(len(content.Data))
-
-		// Count by type
-		typeStr := string(content.Type)
-		stats["type_counts"].(map[string]int)[typeStr]++
-
-		// Track oldest and newest
-		if oldestTime.IsZero() || content.Created.Before(oldestTime) {
-			oldestTime = content.Created
-			oldestContent = content
-		}
-		if newestTime.IsZero() || content.Created.After(newestTime) {
-			newestTime = content.Created
-			newestContent = content
+	// Convert type stats
+	for contentType, typeStat := range storageStats.ByType {
+		stats["type_counts"].(map[string]interface{})[string(contentType)] = map[string]interface{}{
+			"count":        typeStat.Count,
+			"total_size":   typeStat.TotalSize,
+			"average_size": typeStat.AverageSize,
+			"min_size":     typeStat.MinSize,
+			"max_size":     typeStat.MaxSize,
 		}
 	}
 
-	stats["total_size"] = totalSize
-	if oldestContent != nil {
-		stats["oldest_entry"] = map[string]interface{}{
-			"hash":    oldestContent.Hash,
-			"type":    string(oldestContent.Type),
-			"created": oldestContent.Created.Format(time.RFC3339),
-			"size":    len(oldestContent.Data),
-		}
-	}
-	if newestContent != nil {
-		stats["newest_entry"] = map[string]interface{}{
-			"hash":    newestContent.Hash,
-			"type":    string(newestContent.Type),
-			"created": newestContent.Created.Format(time.RFC3339),
-			"size":    len(newestContent.Data),
+	// Convert device stats
+	for deviceID, deviceStat := range storageStats.ByDevice {
+		stats["device_counts"].(map[string]interface{})[deviceID] = map[string]interface{}{
+			"count":      deviceStat.Count,
+			"total_size": deviceStat.TotalSize,
+			"first_seen": deviceStat.FirstSeen.Format(time.RFC3339),
+			"last_seen":  deviceStat.LastSeen.Format(time.RFC3339),
 		}
 	}
 
-	d.logger.Info("Generated history statistics",
-		zap.Int("total_entries", totalCount),
-		zap.Int64("total_size", totalSize),
-		zap.Any("type_counts", stats["type_counts"]))
+	// Add oldest/newest entries
+	if !storageStats.OldestItem.IsZero() {
+		stats["oldest_entry"] = storageStats.OldestItem.Format(time.RFC3339)
+	}
+	if !storageStats.NewestItem.IsZero() {
+		stats["newest_entry"] = storageStats.NewestItem.Format(time.RFC3339)
+	}
+
+	// Add top occurrences if available
+	if len(storageStats.TopOccurrences) > 0 {
+		topOccurrences := make([]interface{}, len(storageStats.TopOccurrences))
+		for i, occ := range storageStats.TopOccurrences {
+			topOccurrences[i] = map[string]interface{}{
+				"hash":              occ.Hash,
+				"total_occurrences": occ.TotalOccurrences,
+				"content_type":      string(occ.ContentType),
+				"first_seen":        occ.FirstSeen.Format(time.RFC3339),
+				"last_seen":         occ.LastSeen.Format(time.RFC3339),
+			}
+			if occ.AverageFrequency > 0 {
+				topOccurrences[i].(map[string]interface{})["average_frequency_seconds"] = occ.AverageFrequency.Seconds()
+			}
+		}
+		stats["top_occurrences"] = topOccurrences
+	}
+
+	d.logger.Info("Generated comprehensive storage statistics",
+		zap.Int64("total_entries", storageStats.TotalItems),
+		zap.Int64("total_size", storageStats.TotalSize),
+		zap.Float64("average_size", storageStats.AverageSize),
+		zap.Int("content_types", len(storageStats.ByType)),
+		zap.Int("devices", len(storageStats.ByDevice)))
 
 	return &ipc.Response{
 		Status: "ok",

@@ -420,22 +420,105 @@ func (s *BoltStorage) DeleteAllContent() error {
 	return nil
 }
 
-// CountContent returns the total number of content items in the storage.
-func (s *BoltStorage) CountContent() (int, error) {
-	count := 0
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(clipboardBucket))
-		if b == nil {
-			return nil // Bucket not found means 0 items
+// Delete provides a unified query-based deletion interface.
+// It uses the same QueryOptions as the Query method for consistency.
+// Returns the count of successfully deleted items.
+func (s *BoltStorage) Delete(options QueryOptions) (int, error) {
+	s.logger.Debug("Starting unified query-based deletion", zap.Any("options", options))
+	
+	// Special case: if no filters are provided, this would delete everything
+	if isEmptyQueryOptions(options) {
+		s.logger.Warn("Attempted to delete with empty query options - would delete all content. Use DeleteAllContent() explicitly for safety.")
+		return 0, fmt.Errorf("empty query options provided for deletion - this would delete all content. Use DeleteAllContent() explicitly if intended")
+	}
+
+	// First, find all content that matches the query criteria
+	// We reuse the query logic to identify what should be deleted
+	contentsToDelete, err := s.Query(options)
+	if err != nil {
+		s.logger.Error("Failed to query content for deletion", zap.Error(err), zap.Any("options", options))
+		return 0, fmt.Errorf("failed to query content for deletion: %w", err)
+	}
+
+	if len(contentsToDelete) == 0 {
+		s.logger.Debug("No content found matching deletion criteria", zap.Any("options", options))
+		return 0, nil
+	}
+
+	// Extract hashes and IDs for deletion
+	var hashesToDelete []string
+	var idsToDelete []int64
+	for _, content := range contentsToDelete {
+		hashesToDelete = append(hashesToDelete, content.Hash)
+		idsToDelete = append(idsToDelete, content.Id)
+	}
+
+	// Perform the actual deletion using our existing batch deletion logic
+	deletedCount := 0
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		clipboardB := tx.Bucket([]byte(clipboardBucket))
+		idIndexB := tx.Bucket([]byte(idIndexBucket))
+
+		if clipboardB == nil {
+			return fmt.Errorf("clipboard bucket '%s' not found during query-based deletion", clipboardBucket)
 		}
-		stats := b.Stats()
-		count = stats.KeyN
+
+		for i, hash := range hashesToDelete {
+			// Delete from main clipboard bucket
+			if delErr := clipboardB.Delete([]byte(hash)); delErr != nil {
+				s.logger.Warn("Failed to delete content from clipboard bucket during query-based delete",
+					zap.String("hash", hash), zap.Error(delErr))
+				// Continue with other deletions even if one fails
+			} else {
+				deletedCount++
+				s.logger.Debug("Deleted content from clipboard bucket (query-based)", zap.String("hash", hash))
+
+				// Delete from ID index bucket if it exists and we have a valid ID
+				if idIndexB != nil && i < len(idsToDelete) {
+					id := idsToDelete[i]
+					if id != 0 {
+						idKey := []byte(fmt.Sprintf("%d", id))
+						if delErr := idIndexB.Delete(idKey); delErr != nil {
+							s.logger.Warn("Failed to delete ID from ID index bucket during query-based delete",
+								zap.String("hash", hash), zap.Int64("id", id), zap.Error(delErr))
+						} else {
+							s.logger.Debug("Deleted ID from ID index bucket (query-based)", zap.Int64("id", id))
+						}
+					}
+				}
+			}
+		}
 		return nil
 	})
+
 	if err != nil {
-		s.logger.Error("Failed to count content", zap.Error(err))
-		return 0, fmt.Errorf("failed to count content: %w", err)
+		s.logger.Error("Failed to execute query-based deletion", zap.Any("options", options), zap.Error(err))
+		return deletedCount, fmt.Errorf("failed to execute query-based deletion: %w", err)
 	}
-	s.logger.Debug("Content count", zap.Int("count", count))
-	return count, nil
+
+	s.logger.Info("Successfully completed query-based deletion",
+		zap.Int("deleted_count", deletedCount),
+		zap.Int("found_count", len(contentsToDelete)),
+		zap.Any("options", options))
+	return deletedCount, nil
+}
+
+// isEmptyQueryOptions checks if QueryOptions has no filtering criteria
+func isEmptyQueryOptions(options QueryOptions) bool {
+	return options.Before.IsZero() &&
+		options.After.IsZero() &&
+		options.Since.IsZero() &&
+		options.ContentType == "" &&
+		len(options.ContentTypes) == 0 &&
+		options.MinSize == 0 &&
+		options.MaxSize == 0 &&
+		len(options.IDs) == 0 &&
+		len(options.Hashes) == 0 &&
+		len(options.DeviceIDs) == 0 &&
+		options.Contains == "" &&
+		options.Regex == "" &&
+		options.HasOccurrences == nil &&
+		options.MinOccurrences == 0 &&
+		options.MaxOccurrences == 0 &&
+		options.CompressedOnly == nil
 }
