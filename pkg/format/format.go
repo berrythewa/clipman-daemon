@@ -3,6 +3,7 @@ package format
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/berrythewa/clipman-daemon/internal/types"
 )
@@ -63,6 +64,22 @@ func (f *Formatter) FormatContentList(contents []*types.ClipboardContent) string
 		return ColorizeIf("No clipboard history", Gray, f.options.UseColors)
 	}
 
+	// Handle different display modes
+	switch f.options.DisplayMode {
+	case DisplayTable:
+		return f.formatContentListTable(contents)
+	case DisplayGrid:
+		return f.formatContentListGrid(contents)
+	case DisplayCompact:
+		f.options.Compact = true // Ensure compatibility
+		return f.formatContentListDefault(contents)
+	default:
+		return f.formatContentListDefault(contents)
+	}
+}
+
+// formatContentListDefault formats content list in default mode
+func (f *Formatter) formatContentListDefault(contents []*types.ClipboardContent) string {
 	var parts []string
 	
 	// Header
@@ -89,6 +106,69 @@ func (f *Formatter) FormatContentList(contents []*types.ClipboardContent) string
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+// formatContentListTable formats content list in table mode
+func (f *Formatter) formatContentListTable(contents []*types.ClipboardContent) string {
+	return FormatContentTable(contents, f.options)
+}
+
+// formatContentListGrid formats content list in grid mode
+func (f *Formatter) formatContentListGrid(contents []*types.ClipboardContent) string {
+	// Grid mode: show entries in a grid layout
+	var parts []string
+	
+	header := f.formatListHeader(len(contents))
+	parts = append(parts, header)
+	parts = append(parts, "")
+	
+	// Calculate grid dimensions
+	cols := 2 // Default 2 columns
+	if f.options.MaxWidth > 120 {
+		cols = 3
+	}
+	
+	for i := 0; i < len(contents); i += cols {
+		var rowParts []string
+		
+		for j := 0; j < cols && i+j < len(contents); j++ {
+			content := contents[i+j]
+			cell := f.formatGridCell(content, i+j+1)
+			rowParts = append(rowParts, cell)
+		}
+		
+		parts = append(parts, strings.Join(rowParts, "  "))
+		if i+cols < len(contents) {
+			parts = append(parts, "")
+		}
+	}
+	
+	return strings.Join(parts, "\n")
+}
+
+// formatGridCell formats a single content item for grid display
+func (f *Formatter) formatGridCell(content *types.ClipboardContent, index int) string {
+	var parts []string
+	
+	// Header with index and type
+	header := fmt.Sprintf("[%d] %s", index, f.formatHeader(content))
+	parts = append(parts, header)
+	
+	// Preview
+	preview := f.formatContentPreview(content, 35)
+	if preview != "" {
+		parts = append(parts, DimIf(preview, f.options.UseColors))
+	}
+	
+	// Size and age
+	size := FormatSize(int64(len(content.Data)))
+	age := formatAgeForTable(content)
+	info := fmt.Sprintf("%s • %s", size, age)
+	parts = append(parts, DimIf(info, f.options.UseColors))
+	
+	// Create a box around the cell
+	cellContent := strings.Join(parts, "\n")
+	return CreateBox("", cellContent, f.options)
 }
 
 // FormatStats formats clipboard statistics using the stats formatter
@@ -154,25 +234,56 @@ func (f *Formatter) formatMetadata(content *types.ClipboardContent) string {
 		} else {
 			previewStr = "Extracted Text: (empty)"
 		}
+	case types.TypePassword:
+		// For passwords, never show content
+		previewStr = FormatPasswordPreview(content, 0)
 	default:
 		// Generic preview for unknown types
 		preview := TruncateText(string(content.Data), 40)
-		previewStr = fmt.Sprintf("Content: %s", preview)
+		if preview != "" {
+			previewStr = fmt.Sprintf("Content: %s", preview)
+		} else {
+			previewStr = "Content: (empty)"
+		}
 	}
 	
 	if previewStr != "" {
 		parts = append(parts, DimIf(previewStr, f.options.UseColors))
 	}
 
-	// Timestamps
-	createdStr := fmt.Sprintf("Created: %s", FormatRelativeTime(content.Created))
-	parts = append(parts, DimIf(createdStr, f.options.UseColors))
+	// Timestamps - use creation time or first occurrence
+	var creationTime time.Time
+	if !content.Created.IsZero() {
+		creationTime = content.Created
+	} else if len(content.Occurrences) > 0 {
+		// Use first occurrence as creation time if Created is zero
+		creationTime = content.Occurrences[0]
+		for _, occurrence := range content.Occurrences {
+			if occurrence.Before(creationTime) {
+				creationTime = occurrence
+			}
+		}
+	}
+	
+	if !creationTime.IsZero() {
+		createdStr := fmt.Sprintf("Created: %s", FormatRelativeTime(creationTime))
+		parts = append(parts, DimIf(createdStr, f.options.UseColors))
+	}
 
-	// Last occurrence (if multiple)
+	// Last occurrence (if multiple and different from creation)
 	if len(content.Occurrences) > 0 {
 		lastOccurrence := content.Occurrences[len(content.Occurrences)-1]
-		lastStr := fmt.Sprintf("Last seen: %s", FormatRelativeTime(lastOccurrence))
-		parts = append(parts, DimIf(lastStr, f.options.UseColors))
+		// Find the most recent occurrence
+		for _, occurrence := range content.Occurrences {
+			if occurrence.After(lastOccurrence) {
+				lastOccurrence = occurrence
+			}
+		}
+		// Only show "Last seen" if it's different from creation time
+		if len(content.Occurrences) > 1 || (!creationTime.IsZero() && !lastOccurrence.Equal(creationTime)) {
+			lastStr := fmt.Sprintf("Last seen: %s", FormatRelativeTime(lastOccurrence))
+			parts = append(parts, DimIf(lastStr, f.options.UseColors))
+		}
 	}
 
 	// Size
@@ -206,6 +317,8 @@ func (f *Formatter) formatContentData(content *types.ClipboardContent) string {
 		return FormatHTML(content, f.options)
 	case types.TypeHTMLText:
 		return FormatHTMLText(content, f.options)
+	case types.TypePassword:
+		return FormatPassword(content, f.options)
 	default:
 		return FormatText(content, f.options)
 	}
@@ -229,6 +342,8 @@ func (f *Formatter) formatContentPreview(content *types.ClipboardContent, maxLen
 		return FormatHTMLPreview(content, maxLen)
 	case types.TypeHTMLText:
 		return FormatTextPreview(content, maxLen)
+	case types.TypePassword:
+		return FormatPasswordPreview(content, maxLen)
 	default:
 		return TruncateText(string(content.Data), maxLen)
 	}

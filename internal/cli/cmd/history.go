@@ -63,6 +63,8 @@ func historyListCmd() *cobra.Command {
 		maxLines   int
 		maxWidth   int
 		useJSON		 bool
+		tableMode  bool
+		gridMode   bool
 	)
 
 	cmd := &cobra.Command{
@@ -81,9 +83,17 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Build formatting options
 			opts := format.DefaultOptions()
-			if compact {
+			
+			// Handle display mode selection (mutually exclusive)
+			if tableMode {
+				opts = format.TableOptions()
+			} else if gridMode {
+				opts = format.GridOptions()
+			} else if compact {
 				opts = format.CompactOptions()
 			}
+			
+			// Apply other formatting options
 			if noColors {
 				opts.UseColors = false
 			}
@@ -113,6 +123,8 @@ Examples:
 
 	// Formatting flags
 	cmd.Flags().BoolVarP(&compact, "compact", "c", false, "use compact single-line format")
+	cmd.Flags().BoolVar(&tableMode, "table", false, "display in table format")
+	cmd.Flags().BoolVar(&gridMode, "grid", false, "display in grid layout")
 	cmd.Flags().BoolVar(&noColors, "no-colors", false, "disable colored output")
 	cmd.Flags().BoolVar(&noIcons, "no-icons", false, "disable icons in output")
 	cmd.Flags().IntVar(&maxLines, "max-lines", 10, "maximum lines to show per entry (0 = no limit)")

@@ -15,27 +15,56 @@ func decodeIfBase64(data []byte) []byte {
 	
 	dataStr := string(data)
 	
-	// Check if it looks like base64:
-	// 1. Reasonable length (base64 encoded data is usually longer)
-	// 2. Only contains base64 characters (A-Z, a-z, 0-9, +, /, =)
-	// 3. Proper padding with = at the end
-	if len(dataStr) > 20 && len(dataStr)%4 == 0 {
-		// Check if all characters are valid base64
+	// Enhanced base64 detection:
+	// 1. Minimum reasonable length (base64 encoded data is usually longer)
+	// 2. Only contains valid base64 characters
+	// 3. Proper length (must be divisible by 4 for valid base64)
+	// 4. Check for reasonable padding
+	if len(dataStr) >= 8 && len(dataStr)%4 == 0 {
+		// Count padding characters
+		paddingCount := 0
+		for i := len(dataStr) - 1; i >= 0 && dataStr[i] == '='; i-- {
+			paddingCount++
+		}
+		
+		// Base64 can have at most 2 padding characters
+		if paddingCount > 2 {
+			return data
+		}
+		
+		// Check if all non-padding characters are valid base64
 		validBase64 := true
-		for _, char := range dataStr {
+		for i, char := range dataStr {
+			// Skip padding at the end
+			if char == '=' && i >= len(dataStr)-paddingCount {
+				continue
+			}
+			
 			if !((char >= 'A' && char <= 'Z') || 
 				 (char >= 'a' && char <= 'z') || 
 				 (char >= '0' && char <= '9') || 
-				 char == '+' || char == '/' || char == '=') {
+				 char == '+' || char == '/' || char == '-' || char == '_') {
 				validBase64 = false
 				break
 			}
 		}
 		
 		if validBase64 {
-			if decoded, err := base64.StdEncoding.DecodeString(dataStr); err == nil {
-				// Additional check: decoded data should be reasonable
-				if len(decoded) > 0 && len(decoded) < len(dataStr) {
+			// Try both standard and URL-safe base64 decoding
+			var decoded []byte
+			var err error
+			
+			// Try standard base64 first
+			decoded, err = base64.StdEncoding.DecodeString(dataStr)
+			if err != nil {
+				// Try URL-safe base64
+				decoded, err = base64.URLEncoding.DecodeString(dataStr)
+			}
+			
+			if err == nil && len(decoded) > 0 {
+				// Additional heuristics: decoded data should make sense
+				// Check if decoded data is printable text or reasonable binary
+				if isReasonableDecoded(decoded) {
 					return decoded
 				}
 			}
@@ -43,6 +72,31 @@ func decodeIfBase64(data []byte) []byte {
 	}
 	
 	return data
+}
+
+// isReasonableDecoded checks if decoded data looks reasonable
+func isReasonableDecoded(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	
+	// Check for common patterns that suggest this is meaningful decoded content
+	printableCount := 0
+	controlCharCount := 0
+	
+	for _, b := range data {
+		if (b >= 32 && b <= 126) || b == '\t' || b == '\n' || b == '\r' {
+			// Printable ASCII or common whitespace
+			printableCount++
+		} else if b < 32 {
+			// Control characters
+			controlCharCount++
+		}
+	}
+	
+	// If most characters are printable, it's likely text
+	printableRatio := float64(printableCount) / float64(len(data))
+	return printableRatio >= 0.7 // At least 70% printable characters
 }
 
 // FormatText formats text content for display
