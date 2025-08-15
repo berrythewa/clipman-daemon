@@ -28,9 +28,9 @@ func historyCmd() *cobra.Command {
 		Short: "Manage clipboard history",
 		Long: `Manage clipboard history:
   • List clipboard history entries
-  • Show specific history entries
+  • View specific history entries
   • Delete history entries
-  • Show history statistics`,
+  • Display history statistics`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Default behavior: list recent history
 			return executeHistoryList(format.DefaultOptions(), 10, false, "", 0, 0, 0, 0, false)
@@ -145,7 +145,7 @@ func historyShowCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "show [id]",
-		Short: "Show specific history entry",
+		Short: "View specific history entry",
 		Long: `Show a specific history entry by its int64 id.
 
 Examples:
@@ -280,9 +280,11 @@ Examples:
 
 // historyStatsCmd creates the stats subcommand
 func historyStatsCmd() *cobra.Command {
+	var useJSON bool
+	
 	cmd := &cobra.Command{
 		Use:   "stats",
-		Short: "Show history statistics",
+		Short: "Display history statistics",
 		Long: `Show statistics about clipboard history.
 
 Examples:
@@ -340,6 +342,8 @@ Examples:
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVarP(&useJSON, "json", "j", false, "Output statistics as JSON")
 
 	return cmd
 }
@@ -498,7 +502,6 @@ func deleteHistoryEntries(hashes []string, ids []int64, all bool, older time.Dur
 		zap.Bool("all", all),
 		zap.Duration("older", older),
 		zap.String("type_filter", typeFilter),
-		zap.Strings("hashes", hashes),
 		zap.Strings("hashes", hashes))
 
 	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)

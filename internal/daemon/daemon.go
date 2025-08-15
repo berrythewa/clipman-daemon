@@ -734,25 +734,43 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 
 // handleHistoryDeleteRequest handles deleting history entries
 func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
-	d.logger.Debug("Processing history delete request", zap.Any("args", req.Args))
+	d.logger.Info("=== DELETE REQUEST STARTED ===", zap.Any("raw_args", req.Args))
 
-	// Parse request arguments
+	// Parse request arguments with detailed logging
+	d.logger.Info("=== PARSING ARGUMENTS ===")
+	for key, value := range req.Args {
+		d.logger.Info("Arg", zap.String("key", key), zap.Any("value", value), zap.String("type", fmt.Sprintf("%T", value)))
+	}
+
 	var hashes []string
 	if h, ok := req.Args["hashes"].([]interface{}); ok {
+		d.logger.Info("Found hashes argument", zap.Int("count", len(h)))
 		for _, hash := range h {
 			if hashStr, ok := hash.(string); ok {
 				hashes = append(hashes, hashStr)
+				d.logger.Info("Parsed hash", zap.String("hash", hashStr))
+			} else {
+				d.logger.Warn("Invalid hash type", zap.Any("hash", hash), zap.String("type", fmt.Sprintf("%T", hash)))
 			}
 		}
+	} else {
+		d.logger.Info("No hashes argument found or wrong type")
 	}
 
 	var ids []int64
 	if i, ok := req.Args["ids"].([]interface{}); ok {
+		d.logger.Info("Found ids argument", zap.Int("count", len(i)))
 		for _, id := range i {
 			if idFloat, ok := id.(float64); ok {
-				ids = append(ids, int64(idFloat))
+				idInt := int64(idFloat)
+				ids = append(ids, idInt)
+				d.logger.Info("Parsed ID", zap.Float64("original", idFloat), zap.Int64("converted", idInt))
+			} else {
+				d.logger.Warn("Invalid ID type", zap.Any("id", id), zap.String("type", fmt.Sprintf("%T", id)))
 			}
 		}
+	} else {
+		d.logger.Info("No ids argument found or wrong type")
 	}
 
 	all := false
@@ -797,19 +815,27 @@ func (d *Daemon) handleHistoryDeleteRequest(req *ipc.Request) *ipc.Response {
 		// Add filters based on provided criteria
 		if len(hashes) > 0 {
 			queryOptions.Hashes = hashes
+			d.logger.Info("Added hashes to query options", zap.Strings("hashes", hashes))
 		}
 		if len(ids) > 0 {
 			queryOptions.IDs = ids
+			d.logger.Info("Added IDs to query options", zap.Int64s("ids", ids))
 		}
 		if !olderThan.IsZero() {
 			queryOptions.Before = olderThan
+			d.logger.Info("Added Before timestamp to query options", zap.Time("before", olderThan))
 		}
 		if typeFilter != "" {
 			queryOptions.ContentType = typeFilter
+			d.logger.Info("Added content type filter to query options", zap.String("type", string(typeFilter)))
 		}
+		
+		d.logger.Info("=== CALLING STORAGE.DELETE ===", zap.Any("query_options", queryOptions))
 		
 		// Execute unified deletion
 		deletedCount, err = d.storage.Delete(queryOptions)
+		
+		d.logger.Info("=== STORAGE.DELETE RESULT ===", zap.Int("deleted_count", deletedCount), zap.Error(err))
 	} else {
 		return &ipc.Response{
 			Status:  "error",
