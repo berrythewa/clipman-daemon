@@ -11,6 +11,7 @@ func GetCommands() []*cobra.Command {
 		newServiceCmd(),
 		newClipCmd(),
 		historyCmd(),
+		newPairCmd(),
 		newConfigCmd(),
 	}
-} 
+}

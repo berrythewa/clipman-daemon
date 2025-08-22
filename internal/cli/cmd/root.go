@@ -52,6 +52,7 @@ func init() {
 		newServiceCmd(),
 		newClipCmd(),
 		historyCmd(),
+		newPairCmd(),
 		newConfigCmd(),
 	)
 }
