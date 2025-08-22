@@ -24,13 +24,13 @@ paths:
 # Sync and P2P settings
 sync:
   # Enable synchronization functionality (disables P2P when false)
-  enabled: false
+  enabled: true
   # Sync over internet
   sync_over_internet: false
   # Use relay nodes
   use_relay_nodes: true
   # Listen port (0 for dynamic)
-  listen_port: 0
+  listen_port: 5400
   # Discovery method (mdns, dht, manual, paired)
   discovery_method: "paired"
   # Pairing enabled

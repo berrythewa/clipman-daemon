@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"github.com/berrythewa/clipman-daemon/internal/config"
+	"github.com/berrythewa/clipman-daemon/internal/ipc"
 )
 
 // newConfigCmd creates the config command
@@ -36,6 +37,7 @@ func newConfigCmd() *cobra.Command {
 	cmd.AddCommand(newConfigValidateCmd())
 	cmd.AddCommand(newConfigExportCmd())
 	cmd.AddCommand(newConfigLoadCmd())
+	cmd.AddCommand(newConfigReloadCmd())
 
 	return cmd
 }
@@ -311,6 +313,59 @@ func newConfigLoadCmd() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "force overwrite existing config")
 	return cmd
+}
+
+func newConfigReloadCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reload",
+		Short: "Reload configuration in running daemon",
+		Long: `Send a reload signal to the running Clipman daemon to reload its configuration.
+This allows you to apply configuration changes without restarting the daemon.
+
+The daemon will:
+  • Reload the configuration file
+  • Apply new settings where possible
+  • Restart components that require it (sync, clipboard monitoring, etc.)
+  • Log any errors or warnings during the reload process`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logger := GetZapLogger()
+			
+			// First validate the config file before sending reload signal
+			configPath, err := config.GetActiveConfigPath()
+			if err != nil {
+				return fmt.Errorf("failed to get active config path: %w", err)
+			}
+			
+			if err := validateConfig(configPath); err != nil {
+				return fmt.Errorf("configuration validation failed, not sending reload signal: %w", err)
+			}
+			
+			fmt.Println("✓ Configuration validation passed")
+			
+			// Try to send reload command via IPC
+			logger.Info("Sending config reload request to daemon")
+			
+			req := &ipc.Request{
+				Command: "config.reload",
+			}
+			
+			resp, err := ipc.SendRequest("", req) // Use default socket path
+			if err != nil {
+				return fmt.Errorf("failed to send reload request to daemon: %w\n\nIs the daemon running? Check with: clipman daemon status", err)
+			}
+			
+			if resp.Status != "ok" {
+				return fmt.Errorf("daemon rejected reload request: %s", resp.Message)
+			}
+			
+			fmt.Println("✅ Configuration reload successful")
+			if resp.Message != "" {
+				fmt.Printf("   %s\n", resp.Message)
+			}
+			
+			return nil
+		},
+	}
 }
 
 func validateConfig(configPath string) error {

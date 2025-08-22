@@ -443,6 +443,8 @@ func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 		return d.handleClipSetRequest(req)
 	case "clip.watch":
 		return d.handleClipWatchRequest(req)
+	case "config.reload":
+		return d.handleConfigReloadRequest(req)
 	default:
 		return &ipc.Response{
 			Status:  "error",
@@ -1022,6 +1024,154 @@ func (d *Daemon) handleClipWatchRequest(req *ipc.Request) *ipc.Response {
 	return &ipc.Response{
 		Status:  "error",
 		Message: "clip.watch not implemented yet - use daemon monitoring instead",
+	}
+}
+
+// handleConfigReloadRequest handles config reload requests
+func (d *Daemon) handleConfigReloadRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Info("Received configuration reload request")
+
+	// Load new configuration
+	newCfg, err := config.Load("")
+	if err != nil {
+		d.logger.Error("Failed to load new configuration", zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to load configuration: %v", err),
+		}
+	}
+
+	d.logger.Info("Successfully loaded new configuration")
+
+	// Check what needs to be reloaded/restarted
+	var changes []string
+	var restartSync bool
+	var restartClipboard bool
+
+	// Compare sync configuration
+	if d.cfg.Sync.Enabled != newCfg.Sync.Enabled {
+		changes = append(changes, "sync enabled status")
+		restartSync = true
+	}
+	if d.cfg.Sync.DeviceName != newCfg.Sync.DeviceName {
+		changes = append(changes, "device name")
+		restartSync = true
+	}
+	if d.cfg.Sync.PairingEnabled != newCfg.Sync.PairingEnabled {
+		changes = append(changes, "pairing enabled status")
+		restartSync = true
+	}
+	if d.cfg.Sync.DiscoveryMethod != newCfg.Sync.DiscoveryMethod {
+		changes = append(changes, "discovery method")
+		restartSync = true
+	}
+	if d.cfg.Sync.ListenPort != newCfg.Sync.ListenPort {
+		changes = append(changes, "listen port")
+		restartSync = true
+	}
+
+	// Compare clipboard configuration
+	if d.cfg.StealthMode != newCfg.StealthMode {
+		changes = append(changes, "stealth mode")
+		restartClipboard = true
+	}
+	if d.cfg.PollingInterval != newCfg.PollingInterval {
+		changes = append(changes, "polling interval")
+		restartClipboard = true
+	}
+	if d.cfg.HTML.ExtractText != newCfg.HTML.ExtractText {
+		changes = append(changes, "HTML text extraction")
+		restartClipboard = true
+	}
+
+	// Compare logging configuration
+	if d.cfg.Log.Level != newCfg.Log.Level {
+		changes = append(changes, "log level")
+	}
+
+	if len(changes) == 0 {
+		d.logger.Info("No configuration changes detected")
+		return &ipc.Response{
+			Status:  "ok",
+			Message: "Configuration reloaded - no changes detected",
+		}
+	}
+
+	d.logger.Info("Configuration changes detected", zap.Strings("changes", changes))
+
+	// Apply the new configuration
+	d.cfg = newCfg
+
+	// Restart sync component if needed
+	if restartSync {
+		d.logger.Info("Restarting sync component due to configuration changes")
+		
+		// Stop existing sync
+		if d.sync != nil {
+			if err := d.sync.Stop(); err != nil {
+				d.logger.Warn("Failed to stop sync component", zap.Error(err))
+			}
+			d.sync = nil
+		}
+
+		// Start new sync if enabled
+		if d.cfg.Sync.Enabled {
+			syncNode, err := p2p.NewNode(d.ctx, d.cfg, d.logger)
+			if err != nil {
+				d.logger.Error("Failed to create new sync component", zap.Error(err))
+				return &ipc.Response{
+					Status:  "error",
+					Message: fmt.Sprintf("Failed to restart sync: %v", err),
+				}
+			}
+			d.sync = syncNode
+
+			if err := d.sync.Start(); err != nil {
+				d.logger.Error("Failed to start new sync component", zap.Error(err))
+				return &ipc.Response{
+					Status:  "error",
+					Message: fmt.Sprintf("Failed to start sync: %v", err),
+				}
+			}
+			d.logger.Info("Successfully restarted sync component")
+		} else {
+			d.logger.Info("Sync disabled in new configuration")
+		}
+	}
+
+	// Restart clipboard monitoring if needed
+	if restartClipboard {
+		d.logger.Info("Restarting clipboard monitoring due to configuration changes")
+		
+		// Create new clipboard instance
+		newClipboard := clipboard.NewClipboardWithFullConfig(d.logger, d.cfg)
+		if newClipboard == nil {
+			d.logger.Error("Failed to create new clipboard instance")
+			return &ipc.Response{
+				Status:  "error",
+				Message: "Failed to create new clipboard instance",
+			}
+		}
+
+		// Stop old clipboard monitoring
+		if d.clipboard != nil {
+			d.clipboard.Close()
+		}
+
+		// Update to new clipboard
+		d.clipboard = newClipboard
+
+		// Restart monitoring with existing channels
+		go d.clipboard.MonitorChanges(d.contentCh, d.stopCh)
+		d.logger.Info("Successfully restarted clipboard monitoring")
+	}
+
+	message := fmt.Sprintf("Configuration reloaded successfully. Changes applied: %s", strings.Join(changes, ", "))
+	d.logger.Info("Configuration reload completed", zap.String("summary", message))
+
+	return &ipc.Response{
+		Status:  "ok",
+		Message: message,
 	}
 }
 
