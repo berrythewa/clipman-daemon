@@ -33,7 +33,7 @@ func (f *Formatter) FormatContent(content *types.ClipboardContent) string {
 
 	var parts []string
 
-	// Header with icon and type
+	// Header with icon, type, and ID
 	header := f.formatHeader(content)
 	parts = append(parts, header)
 
@@ -150,7 +150,7 @@ func (f *Formatter) formatContentListGrid(contents []*types.ClipboardContent) st
 func (f *Formatter) formatGridCell(content *types.ClipboardContent, index int) string {
 	var parts []string
 	
-	// Header with index and type
+	// Header with index, ID and type
 	header := fmt.Sprintf("[%d] %s", index, f.formatHeader(content))
 	parts = append(parts, header)
 	
@@ -176,9 +176,15 @@ func (f *Formatter) FormatStats(stats map[string]interface{}) string {
 	return FormatStats(stats, f.options)
 }
 
-// formatHeader creates the header with icon and type information
+// formatHeader creates the header with icon, type, and ID information
 func (f *Formatter) formatHeader(content *types.ClipboardContent) string {
 	var parts []string
+
+	// Content ID (compact format)
+	if content.Id > 0 {
+		idStr := fmt.Sprintf("[%d]", content.Id)
+		parts = append(parts, ColorizeIf(idStr, Cyan, f.options.UseColors))
+	}
 
 	// Icon
 	if f.options.UseIcons {
@@ -202,6 +208,12 @@ func (f *Formatter) formatHeader(content *types.ClipboardContent) string {
 // formatMetadata creates metadata information
 func (f *Formatter) formatMetadata(content *types.ClipboardContent) string {
 	var parts []string
+
+	// Content ID - always show this for reference
+	if content.Id > 0 {
+		idStr := fmt.Sprintf("ID: %d", content.Id)
+		parts = append(parts, ColorizeIf(idStr, Cyan, f.options.UseColors))
+	}
 
 	// Content preview instead of hash - much more useful for users
 	previewStr := ""
