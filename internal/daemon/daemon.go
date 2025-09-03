@@ -693,10 +693,26 @@ func (d *Daemon) handleHistoryListRequest(req *ipc.Request) *ipc.Response {
 		contentType = types.ContentType(t)
 	}
 
+	// Parse tags filter
+	var tagsFilter []string
+	if tagsRaw, hasTags := req.Args["tags"]; hasTags {
+		switch v := tagsRaw.(type) {
+		case []interface{}:
+			for _, tag := range v {
+				if tagStr, ok := tag.(string); ok {
+					tagsFilter = append(tagsFilter, tagStr)
+				}
+			}
+		case []string:
+			tagsFilter = v
+		}
+	}
+
 	// Build query options
 	options := storage.QueryOptions{
 		Limit:       limit,
 		ContentType: contentType,
+		Tags:        tagsFilter,
 		SortBy:      storage.SortByCreated,
 	}
 	
@@ -994,10 +1010,11 @@ func (d *Daemon) handleClipSetRequest(req *ipc.Request) *ipc.Response {
 		data, _ := contentMap["data"].(string)
 		contentType, _ := contentMap["type"].(string)
 
-		content = &types.ClipboardContent{
-			Type: types.ContentType(contentType),
-			Data: []byte(data),
-		}
+	content = &types.ClipboardContent{
+		Type: types.ContentType(contentType),
+		Data: []byte(data),
+		Tags: []string{}, // Initialize tags as empty slice
+	}
 	} else {
 		return &ipc.Response{
 			Status:  "error",

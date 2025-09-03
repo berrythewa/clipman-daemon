@@ -43,6 +43,11 @@ func (s *BoltStorage) processContent(content *types.ClipboardContent) *types.Cli
 	contentCopy := *content
 	processedContent := &contentCopy
 
+	// Ensure Tags field is initialized (backward compatibility)
+	if processedContent.Tags == nil {
+		processedContent.Tags = []string{}
+	}
+
 	if processedContent.Compressed {
 		decompressed, err := compression.DecompressContent(processedContent)
 		if err == nil {
@@ -77,6 +82,11 @@ func (s *BoltStorage) decodeContent(content *types.ClipboardContent) *types.Clip
 	}
 	// Create a copy to avoid modifying the original struct
 	decodedContent := *content
+
+	// Ensure Tags field is initialized (backward compatibility)
+	if decodedContent.Tags == nil {
+		decodedContent.Tags = []string{}
+	}
 
 	if !decodedContent.Compressed && len(decodedContent.Data) > 0 {
 		decodedData, err := base64.StdEncoding.DecodeString(string(decodedContent.Data))

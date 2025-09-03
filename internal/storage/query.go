@@ -43,6 +43,7 @@ type QueryOptions struct {
 	ContentTypes []types.ContentType
 	MinSize      int64
 	MaxSize      int64
+	Tags         []string
 
 	// ID filters
 	IDs       []int64
@@ -122,6 +123,12 @@ func (qb *QueryBuilder) WithIDs(ids ...int64) *QueryBuilder {
 
 func (qb *QueryBuilder) WithHashes(hashes ...string) *QueryBuilder {
 	qb.options.Hashes = hashes
+	return qb
+}
+
+// Tag-based filtering
+func (qb *QueryBuilder) WithTags(tags ...string) *QueryBuilder {
+	qb.options.Tags = tags
 	return qb
 }
 

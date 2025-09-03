@@ -33,6 +33,7 @@ func CompressContent(content *types.ClipboardContent) (*types.ClipboardContent, 
 		Data:       []byte(compressedData), // Store the base64-encoded data as []byte
 		Created:    content.Created,
 		Compressed: true,
+		Tags:       content.Tags, // Preserve the original tags
 	}, nil
 }
 
@@ -62,5 +63,6 @@ func DecompressContent(content *types.ClipboardContent) (*types.ClipboardContent
 		Data:       uncompressed, // Use uncompressed []byte directly
 		Created:    content.Created,
 		Compressed: false,
+		Tags:       content.Tags, // Preserve the original tags
 	}, nil
 }

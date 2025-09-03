@@ -102,5 +102,6 @@ func NewClipboardContent(contentType types.ContentType, data []byte) *types.Clip
 		Hash:        HashContent(data),
 		Created:     now,
 		Occurrences: []time.Time{now},
+		Tags:        []string{},
 	}
 }

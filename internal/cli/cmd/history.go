@@ -33,7 +33,7 @@ func historyCmd() *cobra.Command {
   • Display history statistics`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Default behavior: list recent history
-			return executeHistoryList(format.DefaultOptions(), 10, false, "", 0, 0, 0, 0, false)
+			return executeHistoryList(format.DefaultOptions(), 10, false, "", []string{}, 0, 0, 0, 0, false)
 		},
 	}
 
@@ -56,6 +56,7 @@ func historyListCmd() *cobra.Command {
 		before     time.Duration
 		reverse    bool
 		typeFilter string
+		tagsFilter []string
 		minSize    int64
 		maxSize    int64
 		compact    bool
@@ -107,7 +108,7 @@ Examples:
 			if maxWidth > 0 {
 				opts.MaxWidth = maxWidth
 			}
-			return executeHistoryList(opts, limit, reverse, typeFilter, since, before, minSize, maxSize, useJSON)
+			return executeHistoryList(opts, limit, reverse, typeFilter, tagsFilter, since, before, minSize, maxSize, useJSON)
 		},
 	}
 
@@ -119,6 +120,7 @@ Examples:
 	cmd.Flags().DurationVar(&before, "before", 0, "show entries before duration")
 	cmd.Flags().BoolVarP(&reverse, "reverse", "r", false, "reverse order (newest first)")
 	cmd.Flags().StringVarP(&typeFilter, "type", "t", "", "filter by content type (text, image, file, url, html)")
+	cmd.Flags().StringSliceVar(&tagsFilter, "tags", []string{}, "filter by tags (comma-separated)")
 	cmd.Flags().Int64Var(&minSize, "min-size", 0, "minimum content size in bytes")
 	cmd.Flags().Int64Var(&maxSize, "max-size", 0, "maximum content size in bytes")
 
@@ -462,7 +464,7 @@ Examples:
 }
 
 // executeHistoryList handles the history list functionality
-func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter string, since, before time.Duration, minSize, maxSize int64, useJSON bool) error {
+func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter string, tagsFilter []string, since, before time.Duration, minSize, maxSize int64, useJSON bool) error {
 	logger, err := GetLogger()
 	if err != nil {
 		return fmt.Errorf("failed to get logger: %w", err)
@@ -489,6 +491,9 @@ func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter
 	if typeFilter != "" {
 		req.Args["type"] = typeFilter
 	}
+	if len(tagsFilter) > 0 {
+		req.Args["tags"] = tagsFilter
+	}
 	if minSize > 0 {
 		req.Args["min_size"] = minSize
 	}
@@ -500,6 +505,7 @@ func executeHistoryList(opts format.Options, limit int, reverse bool, typeFilter
 		zap.Int("limit", limit),
 		zap.Bool("reverse", reverse),
 		zap.String("type_filter", typeFilter),
+		zap.Strings("tags_filter", tagsFilter),
 		zap.Duration("since", since),
 		zap.Duration("before", before),
 		zap.Int64("min_size", minSize),

@@ -166,6 +166,12 @@ func (f *Formatter) formatGridCell(content *types.ClipboardContent, index int) s
 	info := fmt.Sprintf("%s • %s", size, age)
 	parts = append(parts, DimIf(info, f.options.UseColors))
 	
+	// Tags for grid mode
+	if len(content.Tags) > 0 {
+		tagsStr := fmt.Sprintf("Tags: %s", strings.Join(content.Tags, ", "))
+		parts = append(parts, ColorizeIf(tagsStr, Yellow, f.options.UseColors))
+	}
+	
 	// Create a box around the cell
 	cellContent := strings.Join(parts, "\n")
 	return CreateBox("", cellContent, f.options)
@@ -201,6 +207,12 @@ func (f *Formatter) formatHeader(content *types.ClipboardContent) string {
 		}
 	}
 	parts = append(parts, typeStr)
+
+	// Add tags in compact mode (for better visibility in list)
+	if f.options.Compact && len(content.Tags) > 0 {
+		tagsStr := fmt.Sprintf("[%s]", strings.Join(content.Tags, ", "))
+		parts = append(parts, ColorizeIf(tagsStr, Yellow, f.options.UseColors))
+	}
 
 	return strings.Join(parts, " ")
 }

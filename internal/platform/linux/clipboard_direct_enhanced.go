@@ -195,6 +195,7 @@ func (c *EnhancedDirectClipboard) readWithWaylandCLI() (*types.ClipboardContent,
 		return &types.ClipboardContent{
 			Type: types.TypeText,
 			Data: []byte(text),
+			Tags: []string{},
 		}, nil
 	}
 	
@@ -279,6 +280,7 @@ func (c *EnhancedDirectClipboard) readWithX11CLI() (*types.ClipboardContent, err
 		return &types.ClipboardContent{
 			Type: types.TypeText,
 			Data: []byte(text),
+			Tags: []string{},
 		}, nil
 	}
 	
@@ -391,6 +393,7 @@ func (c *EnhancedDirectClipboard) detectContentWithHTMLProcessing(text string) (
 	return &types.ClipboardContent{
 		Type: contentType,
 		Data: []byte(text),
+		Tags: []string{},
 	}, nil
 }
 

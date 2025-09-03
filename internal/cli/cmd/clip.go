@@ -106,6 +106,7 @@ func newClipSetCmd() *cobra.Command {
 				Type:    types.ContentType(contentType),
 				Data:    data,
 				Created: time.Now(),
+				Tags:    []string{},
 			}
 
 			resp, err := ipc.SendRequest("", &ipc.Request{

@@ -54,6 +54,12 @@ func (s *BoltStorage) AddContent(content *types.ClipboardContent) error {
 				return fmt.Errorf("failed to unmarshal existing content: %w", unmarshalErr)
 			}
 
+			// Ensure existing content has Tags field initialized (backward compatibility)
+			if existingContent.Tags == nil {
+				existingContent.Tags = []string{}
+				s.logger.Debug("Initialized empty tags for existing content", zap.String("hash", content.Hash))
+			}
+
 			// Add new occurrence timestamp to the existing content
 			now := time.Now()
 			if existingContent.Occurrences == nil {
@@ -123,6 +129,12 @@ func (s *BoltStorage) AddContent(content *types.ClipboardContent) error {
 		// --- 5. Set creation time if not set ---
 		if content.Created.IsZero() {
 			content.Created = time.Now()
+		}
+
+		// --- 5.1. Initialize Tags field if nil ---
+		if content.Tags == nil {
+			content.Tags = []string{}
+			s.logger.Debug("Initialized empty tags for new content", zap.String("hash", content.Hash))
 		}
 
 		// --- 6. Marshal new content for storage ---

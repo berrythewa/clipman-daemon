@@ -611,6 +611,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 			return &types.ClipboardContent{
 				Type: types.TypeText,
 				Data: []byte(plainText),
+				Tags: []string{},
 			}, nil
 		}
 		
@@ -618,6 +619,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 		return &types.ClipboardContent{
 			Type: types.TypeHTML,
 			Data: []byte(html),
+			Tags: []string{},
 		}, nil
 	}
 	
@@ -627,6 +629,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 		return &types.ClipboardContent{
 			Type: types.TypeRTF,
 			Data: []byte(rtf),
+			Tags: []string{},
 		}, nil
 	}
 	
@@ -636,6 +639,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 		return &types.ClipboardContent{
 			Type: types.TypeFile,
 			Data: []byte(files),
+			Tags: []string{},
 		}, nil
 	}
 	
@@ -645,6 +649,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 		return &types.ClipboardContent{
 			Type: types.TypeImage,
 			Data: image,
+			Tags: []string{},
 		}, nil
 	}
 	
@@ -658,6 +663,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 		return &types.ClipboardContent{
 			Type: contentType,
 			Data: []byte(text),
+			Tags: []string{},
 		}, nil
 	}
 	

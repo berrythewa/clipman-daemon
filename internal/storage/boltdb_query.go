@@ -359,6 +359,11 @@ func (s *BoltStorage) passesAllFilters(content *types.ClipboardContent, options 
 		return false
 	}
 
+	// Tags filters
+	if !s.passesTagsFilters(content, options) {
+		return false
+	}
+
 	return true
 }
 
@@ -489,6 +494,30 @@ func (s *BoltStorage) passesCompressionFilters(content *types.ClipboardContent, 
 		}
 	}
 	return true
+}
+
+// passesTagsFilters checks if content matches tag filters
+func (s *BoltStorage) passesTagsFilters(content *types.ClipboardContent, options QueryOptions) bool {
+	// If no tags filter is specified, pass all content
+	if len(options.Tags) == 0 {
+		return true
+	}
+
+	// Check if content has ALL the specified tags (AND logic)
+	for _, requiredTag := range options.Tags {
+		found := false
+		for _, contentTag := range content.Tags {
+			if contentTag == requiredTag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false // Content doesn't have this required tag
+		}
+	}
+
+	return true // Content has all required tags
 }
 
 // applySorting sorts the content based on the specified options
