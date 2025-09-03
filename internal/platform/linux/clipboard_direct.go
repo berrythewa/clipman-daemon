@@ -602,14 +602,6 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 			zap.Int("plain_text_length", len(plainText)),
 			zap.Bool("has_plain_text", plainText != ""))
 		
-		// Check if this is password content
-		if DetectPasswordContent(html, plainText) {
-			d.logger.Debug("Detected password content from clipboard")
-			return &types.ClipboardContent{
-				Type: types.TypePassword,
-				Data: []byte(plainText),
-			}, nil
-		}
 		
 		// If we have both HTML and plain text, we can make a smart decision
 		if plainText != "" {

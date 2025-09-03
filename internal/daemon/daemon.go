@@ -437,6 +437,8 @@ func (d *Daemon) handleIPCRequest(req *ipc.Request) *ipc.Response {
 		return d.handleHistoryShowRequest(req)
 	case "history.stats":
 		return d.handleHistoryStatsRequest(req)
+	case "history.edit":
+		return d.handleHistoryEditRequest(req)
 	case "clip.get":
 		return d.handleClipGetRequest(req)
 	case "clip.set":
@@ -1172,6 +1174,170 @@ func (d *Daemon) handleConfigReloadRequest(req *ipc.Request) *ipc.Response {
 	return &ipc.Response{
 		Status:  "ok",
 		Message: message,
+	}
+}
+
+// handleHistoryEditRequest handles editing history entries (e.g., tags)
+func (d *Daemon) handleHistoryEditRequest(req *ipc.Request) *ipc.Response {
+	d.logger.Debug("Processing history edit request", zap.Any("args", req.Args))
+
+	// Parse ID from request
+	idRaw, hasID := req.Args["id"]
+	if !hasID {
+		return &ipc.Response{
+			Status:  "error",
+			Message: "Missing required 'id' parameter",
+		}
+	}
+
+	id, err := d.parseID(idRaw, 0)
+	if err != nil {
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Invalid ID: %v", err),
+		}
+	}
+
+	// Parse operation type
+	operation, hasOp := req.Args["operation"].(string)
+	if !hasOp {
+		return &ipc.Response{
+			Status:  "error",
+			Message: "Missing required 'operation' parameter",
+		}
+	}
+
+	// Parse tags based on operation
+	var tags []string
+	if tagsRaw, hasTags := req.Args["tags"]; hasTags {
+		switch v := tagsRaw.(type) {
+		case []interface{}:
+			for _, tag := range v {
+				if tagStr, ok := tag.(string); ok {
+					tags = append(tags, tagStr)
+				}
+			}
+		case []string:
+			tags = v
+		case string:
+			tags = []string{v}
+		default:
+			return &ipc.Response{
+				Status:  "error",
+				Message: "Invalid 'tags' parameter format",
+			}
+		}
+	}
+
+	d.logger.Info("Edit request details",
+		zap.Int64("id", id),
+		zap.String("operation", operation),
+		zap.Strings("tags", tags))
+
+	// Get existing content to verify it exists and get current tags
+	contents, err := d.storage.Query(storage.QueryOptions{
+		IDs: []int64{id},
+	})
+	if err != nil {
+		d.logger.Error("Failed to get content for edit", zap.Int64("id", id), zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to get content: %v", err),
+		}
+	}
+
+	if len(contents) == 0 {
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("No content found with ID %d", id),
+		}
+	}
+
+	content := contents[0]
+	currentTags := make([]string, len(content.Tags))
+	copy(currentTags, content.Tags)
+
+	// Apply the operation
+	switch operation {
+	case "add":
+		// Add new tags, avoiding duplicates
+		for _, newTag := range tags {
+			found := false
+			for _, existing := range currentTags {
+				if existing == newTag {
+					found = true
+					break
+				}
+			}
+			if !found {
+				currentTags = append(currentTags, newTag)
+			}
+		}
+	case "remove":
+		// Remove specified tags
+		var filtered []string
+		for _, existing := range currentTags {
+			shouldKeep := true
+			for _, toRemove := range tags {
+				if existing == toRemove {
+					shouldKeep = false
+					break
+				}
+			}
+			if shouldKeep {
+				filtered = append(filtered, existing)
+			}
+		}
+		currentTags = filtered
+	case "set":
+		// Replace all tags with the new ones
+		currentTags = tags
+	case "clear":
+		// Remove all tags
+		currentTags = []string{}
+	default:
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Unknown operation: %s. Valid operations are: add, remove, set, clear", operation),
+		}
+	}
+
+	// Update the content with new tags
+	updates := map[string]interface{}{
+		"tags": currentTags,
+	}
+
+	err = d.storage.UpdateContent(id, updates)
+	if err != nil {
+		d.logger.Error("Failed to update content", zap.Int64("id", id), zap.Error(err))
+		return &ipc.Response{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to update content: %v", err),
+		}
+	}
+
+	d.logger.Info("Successfully updated content tags",
+		zap.Int64("id", id),
+		zap.String("operation", operation),
+		zap.Strings("new_tags", currentTags))
+
+	// Get updated content to return
+	updatedContents, err := d.storage.Query(storage.QueryOptions{
+		IDs: []int64{id},
+	})
+	if err != nil || len(updatedContents) == 0 {
+		// Still return success even if we can't get the updated content
+		return &ipc.Response{
+			Status:  "ok",
+			Message: fmt.Sprintf("Successfully updated tags for content ID %d", id),
+		}
+	}
+
+	// Return the updated content
+	return &ipc.Response{
+		Status:  "ok",
+		Data:    updatedContents[0],
+		Message: fmt.Sprintf("Successfully updated tags for content ID %d", id),
 	}
 }
 

@@ -19,7 +19,6 @@ const (
 	TypeHTML     ContentType = "html"
 	TypeHTMLText ContentType = "html_text"
 	TypeRTF      ContentType = "rtf"
-	TypePassword ContentType = "password"
 )
 
 // ClipboardContent represents a clipboard item
@@ -32,6 +31,7 @@ type ClipboardContent struct {
 	Hash        string        `json:"hash,omitempty"`
 	Compressed  bool          `json:"compressed,omitempty"`
 	Occurrences []time.Time   `json:"occurrences,omitempty"`
+	Tags        []string      `json:"tags,omitempty"`
 
 }
 

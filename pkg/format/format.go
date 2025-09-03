@@ -246,9 +246,6 @@ func (f *Formatter) formatMetadata(content *types.ClipboardContent) string {
 		} else {
 			previewStr = "Extracted Text: (empty)"
 		}
-	case types.TypePassword:
-		// For passwords, never show content
-		previewStr = FormatPasswordPreview(content, 0)
 	default:
 		// Generic preview for unknown types
 		preview := TruncateText(string(content.Data), 40)
@@ -311,6 +308,12 @@ func (f *Formatter) formatMetadata(content *types.ClipboardContent) string {
 		parts = append(parts, DimIf(occStr, f.options.UseColors))
 	}
 
+	// Tags
+	if len(content.Tags) > 0 {
+		tagStr := fmt.Sprintf("Tags: %s", strings.Join(content.Tags, ", "))
+		parts = append(parts, ColorizeIf(tagStr, Yellow, f.options.UseColors))
+	}
+
 	return strings.Join(parts, " • ")
 }
 
@@ -329,8 +332,6 @@ func (f *Formatter) formatContentData(content *types.ClipboardContent) string {
 		return FormatHTML(content, f.options)
 	case types.TypeHTMLText:
 		return FormatHTMLText(content, f.options)
-	case types.TypePassword:
-		return FormatPassword(content, f.options)
 	default:
 		return FormatText(content, f.options)
 	}
@@ -354,8 +355,6 @@ func (f *Formatter) formatContentPreview(content *types.ClipboardContent, maxLen
 		return FormatHTMLPreview(content, maxLen)
 	case types.TypeHTMLText:
 		return FormatTextPreview(content, maxLen)
-	case types.TypePassword:
-		return FormatPasswordPreview(content, maxLen)
 	default:
 		return TruncateText(string(content.Data), maxLen)
 	}

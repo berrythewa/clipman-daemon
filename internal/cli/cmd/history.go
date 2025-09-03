@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 	"strconv"
-	
+
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
@@ -43,6 +43,7 @@ func historyCmd() *cobra.Command {
 	cmd.AddCommand(historyShowCmd())
 	cmd.AddCommand(historyDeleteCmd())
 	cmd.AddCommand(historyStatsCmd())
+	cmd.AddCommand(historyEditCmd())
 
 	return cmd
 }
@@ -83,7 +84,7 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Build formatting options
 			opts := format.DefaultOptions()
-			
+
 			// Handle display mode selection (mutually exclusive)
 			if tableMode {
 				opts = format.TableOptions()
@@ -92,7 +93,7 @@ Examples:
 			} else if compact {
 				opts = format.CompactOptions()
 			}
-			
+
 			// Apply other formatting options
 			if noColors {
 				opts.UseColors = false
@@ -281,7 +282,7 @@ Examples:
 // historyStatsCmd creates the stats subcommand
 func historyStatsCmd() *cobra.Command {
 	var useJSON bool
-	
+
 	cmd := &cobra.Command{
 		Use:   "stats",
 		Short: "Display history statistics",
@@ -344,6 +345,118 @@ Examples:
 	}
 
 	cmd.Flags().BoolVarP(&useJSON, "json", "j", false, "Output statistics as JSON")
+
+	return cmd
+}
+
+// historyEditCmd creates the edit subcommand
+func historyEditCmd() *cobra.Command {
+	var (
+		addTags     []string
+		removeTags  []string
+		setTags     []string
+		clearTags   bool
+		useJSON     bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "edit <id>",
+		Short: "Edit history entry (tags)",
+		Long: `Edit a clipboard history entry, currently supports modifying tags.
+
+Examples:
+  clipman history edit 123 --add-tags work,important      # Add tags to entry
+  clipman history edit 123 --remove-tags work             # Remove specific tags
+  clipman history edit 123 --set-tags personal,notes      # Replace all tags
+  clipman history edit 123 --clear-tags                   # Remove all tags
+  clipman history edit 123 --json                         # Show result in JSON`,
+
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			logger, err := GetLogger()
+			if err != nil {
+				return fmt.Errorf("failed to get logger: %w", err)
+			}
+
+			// Parse the ID
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid ID: %s", args[0])
+			}
+
+			// Validate that exactly one operation is specified
+			operationCount := 0
+			var operation string
+			var tags []string
+
+			if len(addTags) > 0 {
+				operationCount++
+				operation = "add"
+				tags = addTags
+			}
+			if len(removeTags) > 0 {
+				operationCount++
+				operation = "remove"
+				tags = removeTags
+			}
+			if len(setTags) > 0 {
+				operationCount++
+				operation = "set"
+				tags = setTags
+			}
+			if clearTags {
+				operationCount++
+				operation = "clear"
+				tags = []string{}
+			}
+
+			if operationCount == 0 {
+				return fmt.Errorf("specify one tag operation: --add-tags, --remove-tags, --set-tags, or --clear-tags")
+			}
+			if operationCount > 1 {
+				return fmt.Errorf("specify only one tag operation at a time")
+			}
+
+			logger.Info("Editing history entry",
+				zap.Int64("id", id),
+				zap.String("operation", operation),
+				zap.Strings("tags", tags))
+
+			// Send edit request to daemon
+			updatedEntry, err := editHistoryEntry(id, operation, tags)
+			if err != nil {
+				logger.Error("Failed to edit history entry", zap.Error(err))
+				return err
+			}
+
+			logger.Info("Successfully edited history entry", zap.Int64("id", id))
+
+			// Display result
+			if useJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(updatedEntry)
+			} else {
+				fmt.Printf("✓ Updated tags for entry %d\n", id)
+				if len(updatedEntry.Tags) > 0 {
+					fmt.Printf("  Current tags: %v\n", updatedEntry.Tags)
+				} else {
+					fmt.Printf("  No tags set\n")
+				}
+			}
+
+			return nil
+		},
+	}
+
+	// Tag operation flags (mutually exclusive)
+	cmd.Flags().StringSliceVar(&addTags, "add-tags", []string{}, "add tags to the entry (comma-separated)")
+	cmd.Flags().StringSliceVar(&removeTags, "remove-tags", []string{}, "remove specific tags from the entry (comma-separated)")
+	cmd.Flags().StringSliceVar(&setTags, "set-tags", []string{}, "replace all tags with these (comma-separated)")
+	cmd.Flags().BoolVar(&clearTags, "clear-tags", false, "remove all tags from the entry")
+
+	// Output format flags
+	cmd.Flags().BoolVarP(&useJSON, "json", "j", false, "output result as JSON")
 
 	return cmd
 }
@@ -571,7 +684,6 @@ func parseClipboardContentList(data interface{}) ([]*types.ClipboardContent, err
 	}
 
 	// Handle JSON unmarshaling
-	fmt.Println("data: ", data)
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		logger.Error("Failed to marshal data", zap.Error(err))
@@ -616,4 +728,47 @@ func parseClipboardContent(data interface{}) (*types.ClipboardContent, error) {
 
 	logger.Debug("Successfully parsed clipboard content")
 	return &content, nil
+}
+
+// editHistoryEntry edits a history entry via IPC
+func editHistoryEntry(id int64, operation string, tags []string) (*types.ClipboardContent, error) {
+	logger, err := GetLogger()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logger: %w", err)
+	}
+
+	req := &ipc.Request{
+		Command: "history.edit",
+		Args: map[string]interface{}{
+			"id":        id,
+			"operation": operation,
+			"tags":      tags,
+		},
+	}
+
+	logger.Info("Sending edit request to daemon",
+		zap.Int64("id", id),
+		zap.String("operation", operation),
+		zap.Strings("tags", tags))
+
+	resp, err := ipc.SendRequest(ipc.DefaultSocketPath, req)
+	if err != nil {
+		logger.Error("Failed to connect to daemon", zap.Error(err))
+		return nil, fmt.Errorf("failed to connect to daemon: %w", err)
+	}
+
+	if resp.Status != "ok" {
+		logger.Error("Daemon returned error", zap.String("status", resp.Status), zap.String("message", resp.Message))
+		return nil, fmt.Errorf("daemon error: %s", resp.Message)
+	}
+
+	// Parse the updated content from response
+	updatedContent, err := parseClipboardContent(resp.Data)
+	if err != nil {
+		logger.Error("Failed to parse updated content", zap.Error(err))
+		return nil, fmt.Errorf("failed to parse updated content: %w", err)
+	}
+
+	logger.Info("Successfully edited history entry", zap.Int64("id", id))
+	return updatedContent, nil
 }

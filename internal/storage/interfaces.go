@@ -11,6 +11,7 @@ import (
 type Storage interface {
 	// Core operations
 	AddContent(content *types.ClipboardContent) error
+	UpdateContent(id int64, updates map[string]interface{}) error
 	Query(options QueryOptions) ([]*types.ClipboardContent, error)
 	// Unified query-based deletion (new approach)
 	Delete(options QueryOptions) (int, error)
@@ -21,6 +22,10 @@ type Storage interface {
 	GetContentSince(since time.Time) ([]*types.ClipboardContent, error)
 	GetContentsByIDs(ids []int64) ([]*types.ClipboardContent, error)
 	GetContentsByHashes(hashes []string) ([]*types.ClipboardContent, error)
+
+	// tags
+	AddTagsToContent(hash string, tags []string) error
+	RemoveTagsFromContent(hash string, tags []string) error
 
 	// Delete operations
 	DeleteContent(hash string) error

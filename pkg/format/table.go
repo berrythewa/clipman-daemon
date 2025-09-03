@@ -34,9 +34,10 @@ func FormatContentTable(contents []*types.ClipboardContent, opts Options) string
 	columns := []TableColumn{
 		{Header: "ID", Width: 5, Align: "right"},
 		{Header: "Type", Width: 12, Align: "left"},
-		{Header: "Preview", Width: 45, Align: "left"},
+		{Header: "Preview", Width: 35, Align: "left"},
+		{Header: "Tags", Width: 15, Align: "left"},
 		{Header: "Size", Width: 8, Align: "right"},
-		{Header: "Age", Width: 14, Align: "right"},
+		{Header: "Age", Width: 12, Align: "right"},
 	}
 
 	var rows [][]string
@@ -53,7 +54,8 @@ func FormatContentTable(contents []*types.ClipboardContent, opts Options) string
 		row := []string{
 			fmt.Sprintf("%d", content.Id),
 			formatTypeForTable(content.Type, opts),
-			formatPreviewForTable(content, 42),
+			formatPreviewForTable(content, 32), // Reduced width for preview
+			formatTagsForTable(content, opts),
 			FormatSize(int64(len(content.Data))),
 			formatAgeForTable(content),
 		}
@@ -93,8 +95,6 @@ func formatTypeForTable(contentType types.ContentType, opts Options) string {
 // formatPreviewForTable formats content preview for table display
 func formatPreviewForTable(content *types.ClipboardContent, maxLen int) string {
 	switch content.Type {
-	case types.TypePassword:
-		return DimIf("[HIDDEN]", true)
 	case types.TypeText:
 		preview := FormatTextPreview(content, maxLen)
 		if preview == "" {
@@ -110,6 +110,24 @@ func formatPreviewForTable(content *types.ClipboardContent, maxLen int) string {
 	default:
 		return TruncateText(string(content.Data), maxLen)
 	}
+}
+
+// formatTagsForTable formats tags for table display
+func formatTagsForTable(content *types.ClipboardContent, opts Options) string {
+	if len(content.Tags) == 0 {
+		return DimIf("(none)", opts.UseColors)
+	}
+	
+	// Join tags with comma, truncate if too long
+	tagsText := strings.Join(content.Tags, ", ")
+	if len(tagsText) > 13 { // Leave some space for truncation indicator
+		tagsText = tagsText[:10] + "..."
+	}
+	
+	if opts.UseColors {
+		return ColorizeIf(tagsText, Yellow, opts.UseColors)
+	}
+	return tagsText
 }
 
 // formatAgeForTable formats the age of content for table display

@@ -72,7 +72,6 @@ var ContentIcons = map[types.ContentType]string{
 	types.TypeHTML:     "🌐",
 	types.TypeHTMLText: "📄",
 	types.TypeRTF:      "📄",
-	types.TypePassword: "🔒",
 }
 
 // ContentColors maps content types to colors
@@ -85,5 +84,4 @@ var ContentColors = map[types.ContentType]string{
 	types.TypeHTML:     Green,
 	types.TypeHTMLText: BrightCyan,
 	types.TypeRTF:      Gray,
-	types.TypePassword: BrightRed,
 }

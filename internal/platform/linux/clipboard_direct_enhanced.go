@@ -198,18 +198,6 @@ func (c *EnhancedDirectClipboard) readWithWaylandCLI() (*types.ClipboardContent,
 		}, nil
 	}
 	
-	// Try to get HTML content to check for password fields
-	html, err := c.getHTMLFromWaylandCLI()
-	if err == nil && html != "" {
-		// Check if this is password content
-		if DetectPasswordContent(html, text) {
-			c.logger.Debug("Detected password content from Wayland CLI")
-			return &types.ClipboardContent{
-				Type: types.TypePassword,
-				Data: []byte(text),
-			}, nil
-		}
-	}
 	
 	// Fallback to raw clipboard content
 	cmd := exec.Command("wl-paste")
@@ -294,18 +282,6 @@ func (c *EnhancedDirectClipboard) readWithX11CLI() (*types.ClipboardContent, err
 		}, nil
 	}
 	
-	// Try to get HTML content to check for password fields
-	html, err := c.getHTMLFromX11CLI()
-	if err == nil && html != "" {
-		// Check if this is password content
-		if DetectPasswordContent(html, text) {
-			c.logger.Debug("Detected password content from X11 CLI")
-			return &types.ClipboardContent{
-				Type: types.TypePassword,
-				Data: []byte(text),
-			}, nil
-		}
-	}
 	
 	// Fallback to raw clipboard content
 	cmd := exec.Command("xclip", "-selection", "clipboard", "-o")

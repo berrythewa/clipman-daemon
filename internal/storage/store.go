@@ -159,3 +159,131 @@ func (s *BoltStorage) AddContent(content *types.ClipboardContent) error {
 	s.logger.Debug("Content successfully added/updated", zap.String("hash", content.Hash), zap.Int64("id", content.Id), zap.String("type", string(content.Type)))
 	return nil
 }
+
+// UpdateContent updates specific fields of an existing clipboard item by ID
+func (s *BoltStorage) UpdateContent(id int64, updates map[string]interface{}) error {
+	if id == 0 {
+		return fmt.Errorf("ID cannot be zero for UpdateContent")
+	}
+
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		clipboardB := tx.Bucket([]byte(clipboardBucket))
+		if clipboardB == nil {
+			return fmt.Errorf("clipboard bucket '%s' not found", clipboardBucket)
+		}
+		idIndexB := tx.Bucket([]byte(idIndexBucket))
+		if idIndexB == nil {
+			return fmt.Errorf("id index bucket '%s' not found", idIndexBucket)
+		}
+
+		// Get hash from ID index
+		idKey := []byte(fmt.Sprintf("%d", id))
+		hashBytes := idIndexB.Get(idKey)
+		if hashBytes == nil {
+			return fmt.Errorf("content with ID '%d' not found in index", id)
+		}
+		hash := string(hashBytes)
+
+		// Get existing content
+		contentBytes := clipboardB.Get(hashBytes)
+		if contentBytes == nil {
+			return fmt.Errorf("content with ID '%d' (hash '%s') not found", id, hash)
+		}
+
+		// Unmarshal existing content
+		var content types.ClipboardContent
+		if err := json.Unmarshal(contentBytes, &content); err != nil {
+			return fmt.Errorf("failed to unmarshal existing content: %w", err)
+		}
+
+		// Apply updates
+		if tags, ok := updates["tags"]; ok {
+			if tagSlice, ok := tags.([]string); ok {
+				content.Tags = tagSlice
+			} else if tagInterface, ok := tags.([]interface{}); ok {
+				// Handle JSON unmarshaling ([]interface{} to []string)
+				var tagStrings []string
+				for _, tag := range tagInterface {
+					if tagStr, ok := tag.(string); ok {
+						tagStrings = append(tagStrings, tagStr)
+					}
+				}
+				content.Tags = tagStrings
+			} else {
+				return fmt.Errorf("invalid tags format: expected []string, got %T", tags)
+			}
+			s.logger.Debug("Updated tags for content", zap.Int64("id", id), zap.Strings("new_tags", content.Tags))
+		}
+
+		// Marshal updated content
+		updatedBytes, err := json.Marshal(&content)
+		if err != nil {
+			return fmt.Errorf("failed to marshal updated content: %w", err)
+		}
+
+		// Save updated content
+		if err := clipboardB.Put(hashBytes, updatedBytes); err != nil {
+			return fmt.Errorf("failed to save updated content: %w", err)
+		}
+
+		s.logger.Debug("Successfully updated content", zap.Int64("id", id), zap.String("hash", hash))
+		return nil
+	})
+
+	if err != nil {
+		s.logger.Error("Failed to update content", zap.Int64("id", id), zap.Error(err))
+		return fmt.Errorf("failed to update content with ID %d: %w", id, err)
+	}
+
+	s.logger.Info("Content updated successfully", zap.Int64("id", id))
+	return nil
+}
+
+// AddTagsToContent adds tags to content identified by hash
+func (s *BoltStorage) AddTagsToContent(hash string, tags []string) error {
+	// Get content by hash, add tags, then update
+	contents, err := s.GetContentsByHashes([]string{hash})
+	if err != nil || len(contents) == 0 {
+		return fmt.Errorf("content with hash '%s' not found", hash)
+	}
+
+	content := contents[0]
+	// Add new tags (avoid duplicates)
+	existingTags := make(map[string]bool)
+	for _, tag := range content.Tags {
+		existingTags[tag] = true
+	}
+
+	for _, tag := range tags {
+		if !existingTags[tag] {
+			content.Tags = append(content.Tags, tag)
+		}
+	}
+
+	return s.UpdateContent(content.Id, map[string]interface{}{"tags": content.Tags})
+}
+
+// RemoveTagsFromContent removes tags from content identified by hash
+func (s *BoltStorage) RemoveTagsFromContent(hash string, tags []string) error {
+	// Get content by hash, remove tags, then update
+	contents, err := s.GetContentsByHashes([]string{hash})
+	if err != nil || len(contents) == 0 {
+		return fmt.Errorf("content with hash '%s' not found", hash)
+	}
+
+	content := contents[0]
+	// Remove specified tags
+	tagsToRemove := make(map[string]bool)
+	for _, tag := range tags {
+		tagsToRemove[tag] = true
+	}
+
+	var newTags []string
+	for _, tag := range content.Tags {
+		if !tagsToRemove[tag] {
+			newTags = append(newTags, tag)
+		}
+	}
+
+	return s.UpdateContent(content.Id, map[string]interface{}{"tags": newTags})
+}
