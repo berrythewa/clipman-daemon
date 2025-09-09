@@ -132,8 +132,8 @@ func (s *BoltStorage) AddContent(content *types.ClipboardContent) error {
 		}
 
 		// --- 5.1. Initialize Tags field if nil ---
-		if content.Tags == nil {
-			content.Tags = []string{}
+		if content.Tags == nil || len(content.Tags) == 0 {
+			content.Tags = []string{string(content.Type)}
 			s.logger.Debug("Initialized empty tags for new content", zap.String("hash", content.Hash))
 		}
 
