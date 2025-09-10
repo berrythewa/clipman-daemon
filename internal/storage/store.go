@@ -160,6 +160,7 @@ func (s *BoltStorage) AddContent(content *types.ClipboardContent) error {
 			zap.String("hash", content.Hash),
 			zap.Int64("id", content.Id),
 			zap.String("type", string(content.Type)))
+			zap.Any("Tags", content.Tags)
 		return nil
 	})
 

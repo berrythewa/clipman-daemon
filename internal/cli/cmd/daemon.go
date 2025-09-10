@@ -177,7 +177,7 @@ func startDaemonProcess(background bool) error {
 		}
 
 		// Wait briefly and check if it's running
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(1000 * time.Millisecond)
 		if isRunning, pid, _ := getDaemonStatus(); isRunning {
 			fmt.Printf("Daemon started successfully (PID: %d)\n", pid)
 			return nil
@@ -286,7 +286,7 @@ func getDaemonStatus() (bool, int, error) {
 func getPIDFilePath() string {
 	dataDir := os.Getenv("CLIPMAN_DATA_DIR")
 	if dataDir == "" {
-		dataDir = filepath.Join(os.Getenv("HOME"), ".local", "share", "clipman")
+		dataDir = filepath.Join(os.Getenv("HOME"), ".clipman")
 	}
 	return filepath.Join(dataDir, "run", "clipman.pid")
 }
