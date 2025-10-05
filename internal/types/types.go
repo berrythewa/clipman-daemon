@@ -70,3 +70,11 @@ type MonitoringStatus struct {
 	ErrorCount   int       `json:"error_count"`
 	LastError    string    `json:"last_error"`
 }
+
+type DeviceRecord struct {
+	Id        int64     `json:"id"`   // internal sequence
+	Name      string    `json:"name"` // libp2p peer-ID / domain / user-supplied string
+	Hash      string    `json:"hash"` // sha-256 of Name (duplicate guard)
+	Created   time.Time `json:"created"`
+	LastSeen  time.Time `json:"lastSeen"`
+}

@@ -300,3 +300,67 @@ func (s *BoltStorage) RemoveTagsFromContent(hash string, tags []string) error {
 
 	return s.UpdateContent(content.Id, map[string]interface{}{"tags": newTags})
 }
+
+// StoreDevice upserts a device identified by `name`.
+// If the device already exists (hash match) we only update LastSeen.
+// Returns the final record (with ID filled in).
+func (s *BoltStorage) StoreDevice(name string) (*DeviceRecord, error) {
+	if name == "" {
+		return nil, fmt.Errorf("device name cannot be empty")
+	}
+
+	rec := &DeviceRecord{
+		Name:     name,
+		Hash:     utils.HashContent([]byte(name)), // re-use your helper
+		LastSeen: time.Now(),
+	}
+
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		// 1. buckets
+		devB, err := tx.CreateBucketIfNotExists([]byte(DeviceBucket))
+		if err != nil {
+			return err
+		}
+		idIdxB, err := tx.CreateBucketIfNotExists([]byte(deviceIDIndexBucket))
+		if err != nil {
+			return err
+		}
+
+		// 2. duplicate check (hash key)
+		existingRaw := devB.Get([]byte(rec.Hash))
+		if existingRaw != nil {
+			var existing DeviceRecord
+			if err := json.Unmarshal(existingRaw, &existing); err != nil {
+				return fmt.Errorf("corrupt device record: %w", err)
+			}
+			existing.LastSeen = rec.LastSeen
+			updatedRaw, _ := json.Marshal(&existing)
+			if err := devB.Put([]byte(rec.Hash), updatedRaw); err != nil {
+				return err
+			}
+			*rec = existing // return the existing ID etc.
+			return nil
+		}
+
+		// 3. new device 
+		id, _ := devB.NextSequence()
+		rec.Id = int64(id)
+		rec.Created = rec.LastSeen
+
+		raw, _ := json.Marshal(rec)
+		if err := devB.Put([]byte(rec.Hash), raw); err != nil {
+			return err
+		}
+		// id -> hash index
+		return idIdxB.Put([]byte(fmt.Sprintf("%d", rec.Id)), []byte(rec.Hash))
+	})
+
+	if err != nil {
+		s.logger.Error("StoreDevice failed", zap.String("name", name), zap.Error(err))
+		return nil, fmt.Errorf("StoreDevice: %w", err)
+	}
+
+	s.logger.Debug("device stored", zap.String("name", rec.Name),
+		zap.Int64("id", rec.Id), zap.String("hash", rec.Hash))
+	return rec, nil
+}

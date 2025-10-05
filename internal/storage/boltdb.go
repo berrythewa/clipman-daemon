@@ -14,6 +14,8 @@ const (
 	clipboardBucket = "clipboard"
 	// Optional: Use a separate bucket for ID to Hash mapping if ID lookups are critical and frequent
 	idIndexBucket = "id_index"
+	devicesBucket = "devices"
+	deviceIDIndexBucket ="device_index"
 )
 
 // Record represents the raw data stored in BoltDB.
@@ -57,6 +59,13 @@ func NewBoltStorage(config StorageConfig) (Storage, error) {
 		}
 		// Create ID index bucket (optional, for efficient ID lookups)
 		_, err = tx.CreateBucketIfNotExists([]byte(idIndexBucket))
+		if err != nil {
+			return err``
+		}
+		_, err = tx.CreateBucketIfNotExists([]byte(devicesBucket))
+		if err != nil {
+			return err
+		}
 		return err
 	}); err != nil {
 		db.Close()
