@@ -587,6 +587,13 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 	
 	// Get available targets to determine content type
 	targets, err := d.dc.GetTargets()
+	
+	// debug 
+	fmt.Println("Clipboard offers:")
+	for _, t := range targets {
+		fmt.Printf("  - %s\n", t)
+	}
+	
 	if err != nil {
 		d.logger.Debug("Failed to get clipboard targets", zap.Error(err))
 	}
@@ -594,6 +601,16 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 	d.logger.Debug("Available clipboard targets", zap.Strings("targets", targets))
 	
 	// Try to read different content types in priority order
+	
+	// 4. Try image
+	if image, err := d.dc.ReadImage(); err == nil && len(image) > 0 {
+		d.logger.Debug("Read image from clipboard", zap.Int("size", len(image)))
+		return &types.ClipboardContent{
+			Type: types.TypeImage,
+			Data: image,
+			Tags: []string{},
+		}, nil
+	}
 	
 	// 1. Try HTML and check for plain text simultaneously
 	if html, plainText, err := d.dc.ReadHTMLAndText(); err == nil && html != "" {
@@ -643,15 +660,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 		}, nil
 	}
 	
-	// 4. Try image
-	if image, err := d.dc.ReadImage(); err == nil && len(image) > 0 {
-		d.logger.Debug("Read image from clipboard", zap.Int("size", len(image)))
-		return &types.ClipboardContent{
-			Type: types.TypeImage,
-			Data: image,
-			Tags: []string{},
-		}, nil
-	}
+	
 	
 	// 5. Try text (fallback)
 	if text, err := d.dc.ReadText(); err == nil && text != "" {
@@ -671,6 +680,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 }
 
 // Write implements clipboard writing
+// TODO: why only text handled ?
 func (d *DirectClipboardBackend) Write(content *types.ClipboardContent) error {
 	if d.dc == nil {
 		return fmt.Errorf("direct clipboard not initialized")

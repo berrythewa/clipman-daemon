@@ -60,7 +60,7 @@ func NewBoltStorage(config StorageConfig) (Storage, error) {
 		// Create ID index bucket (optional, for efficient ID lookups)
 		_, err = tx.CreateBucketIfNotExists([]byte(idIndexBucket))
 		if err != nil {
-			return err``
+			return err
 		}
 		_, err = tx.CreateBucketIfNotExists([]byte(devicesBucket))
 		if err != nil {

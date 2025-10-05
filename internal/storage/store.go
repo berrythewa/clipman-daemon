@@ -304,12 +304,12 @@ func (s *BoltStorage) RemoveTagsFromContent(hash string, tags []string) error {
 // StoreDevice upserts a device identified by `name`.
 // If the device already exists (hash match) we only update LastSeen.
 // Returns the final record (with ID filled in).
-func (s *BoltStorage) StoreDevice(name string) (*DeviceRecord, error) {
+func (s *BoltStorage) StoreDevice(name string) (*types.DeviceRecord, error) {
 	if name == "" {
 		return nil, fmt.Errorf("device name cannot be empty")
 	}
 
-	rec := &DeviceRecord{
+	rec := &types.DeviceRecord{
 		Name:     name,
 		Hash:     utils.HashContent([]byte(name)), // re-use your helper
 		LastSeen: time.Now(),
@@ -317,7 +317,7 @@ func (s *BoltStorage) StoreDevice(name string) (*DeviceRecord, error) {
 
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		// 1. buckets
-		devB, err := tx.CreateBucketIfNotExists([]byte(DeviceBucket))
+		devB, err := tx.CreateBucketIfNotExists([]byte(devicesBucket))
 		if err != nil {
 			return err
 		}
@@ -329,7 +329,7 @@ func (s *BoltStorage) StoreDevice(name string) (*DeviceRecord, error) {
 		// 2. duplicate check (hash key)
 		existingRaw := devB.Get([]byte(rec.Hash))
 		if existingRaw != nil {
-			var existing DeviceRecord
+			var existing types.DeviceRecord
 			if err := json.Unmarshal(existingRaw, &existing); err != nil {
 				return fmt.Errorf("corrupt device record: %w", err)
 			}
