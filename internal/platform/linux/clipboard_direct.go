@@ -611,6 +611,27 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 			Tags: []string{},
 		}, nil
 	}
+
+	
+	// 2. Try RTF
+	if rtf, err := d.dc.ReadRTF(); err == nil && rtf != "" {
+		d.logger.Debug("Read RTF content from clipboard", zap.Int("length", len(rtf)))
+		return &types.ClipboardContent{
+			Type: types.TypeRTF,
+			Data: []byte(rtf),
+			Tags: []string{},
+		}, nil
+	}
+	
+	// 3. Try files
+	if files, err := d.dc.ReadFiles(); err == nil && files != "" {
+		d.logger.Debug("Read file list from clipboard", zap.String("files", files))
+		return &types.ClipboardContent{
+			Type: types.TypeFile,
+			Data: []byte(files),
+			Tags: []string{},
+		}, nil
+	}
 	
 	// 1. Try HTML and check for plain text simultaneously
 	if html, plainText, err := d.dc.ReadHTMLAndText(); err == nil && html != "" {
@@ -639,29 +660,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 			Tags: []string{},
 		}, nil
 	}
-	
-	// 2. Try RTF
-	if rtf, err := d.dc.ReadRTF(); err == nil && rtf != "" {
-		d.logger.Debug("Read RTF content from clipboard", zap.Int("length", len(rtf)))
-		return &types.ClipboardContent{
-			Type: types.TypeRTF,
-			Data: []byte(rtf),
-			Tags: []string{},
-		}, nil
-	}
-	
-	// 3. Try files
-	if files, err := d.dc.ReadFiles(); err == nil && files != "" {
-		d.logger.Debug("Read file list from clipboard", zap.String("files", files))
-		return &types.ClipboardContent{
-			Type: types.TypeFile,
-			Data: []byte(files),
-			Tags: []string{},
-		}, nil
-	}
-	
-	
-	
+
 	// 5. Try text (fallback)
 	if text, err := d.dc.ReadText(); err == nil && text != "" {
 		d.logger.Debug("Read text from clipboard", zap.Int("length", len(text)))
@@ -675,6 +674,7 @@ func (d *DirectClipboardBackend) Read() (*types.ClipboardContent, error) {
 			Tags: []string{},
 		}, nil
 	}
+	
 	
 	return nil, fmt.Errorf("no content available in clipboard")
 }
